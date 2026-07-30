@@ -32,6 +32,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+import brain
+import toolbox
+
 HERE = Path(__file__).parent
 load_dotenv(HERE / ".env")
 TOKEN = os.environ["DISCORD_TOKEN"]
@@ -62,6 +65,9 @@ COMMIT = os.environ.get("RENDER_GIT_COMMIT", "local")[:7]
 
 intents = discord.Intents.default()
 intents.members = True
+# The brain needs message text. Requires the Message Content privileged
+# intent in the Developer Portal; only requested when a brain key exists.
+intents.message_content = bool(os.environ.get("GEMINI_API_KEY"))
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -145,6 +151,7 @@ def health_content(guild):
         f"Acts: {len(load_json(ACTS, []))} | Signatures: {len(load_json(SIGNATURES, []))} "
         f"| Custom roles: {len(load_json(ROLES, {}))}",
         f"Floor window: {FLOOR_HOURS:g}h",
+        brain.spend_line(),
         f"-# Updated <t:{int(now_utc().timestamp())}:R>. "
         f"Opt out with Nerd mode in the roles channel.",
     ]
@@ -1553,6 +1560,8 @@ async def start_web():
 @bot.event
 async def setup_hook():
     await start_web()
+    toolbox.configure(HERE, DATA)
+    brain.configure(bot, HERE, DATA, has_key, health_log, chunk_text)
     bot.add_view(SignView())
     bot.add_view(SubmitBillView())
     bot.add_view(BallotView())
@@ -1616,6 +1625,16 @@ async def on_ready():
         check_floor.start()
     if not furniture_loop.is_running():
         furniture_loop.start()
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    try:
+        await brain.handle_message(message)
+    except Exception as e:
+        print(f"brain handler error: {e!r}")
 
 
 @bot.event
