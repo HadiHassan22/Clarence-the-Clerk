@@ -37,6 +37,25 @@ _deps = {}  # injected by clerk.py: bot, here, data, has_key, health_log, chunk_
 _sem = asyncio.Semaphore(1)
 _memory = {}  # channel_id -> deque[(author, text)]
 
+RETRY_CODES = {429, 500, 502, 503, 504}  # transient; 401/403 are not
+
+
+async def _generate(**kwargs):
+    """The annex is occasionally busy. Retry transient failures with
+    backoff before admitting defeat; never retry an auth error."""
+    delay = 1.0
+    for attempt in range(3):
+        try:
+            return await _client.aio.models.generate_content(**kwargs)
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code not in RETRY_CODES or attempt == 2:
+                raise
+            log.warning(f"upstream {code}, retrying in {delay:.0f}s")
+            await asyncio.sleep(delay)
+            delay *= 2.5
+
+
 OUTAGE_LINE = (
     "The clerk's annex is not answering. Governance is unaffected; ballots, "
     "bills, and closings run without me thinking. Try again shortly."
@@ -235,9 +254,7 @@ async def _run_turn(guild, member, channel, text):
     used_tools = []
     cost = 0.0
     for _ in range(MAX_TOOL_ROUNDS):
-        response = await _client.aio.models.generate_content(
-            model=MODEL, contents=contents, config=config
-        )
+        response = await _generate(model=MODEL, contents=contents, config=config)
         if response.usage_metadata:
             cost += _record_usage(response.usage_metadata)
         candidate = response.candidates[0] if response.candidates else None
@@ -277,7 +294,7 @@ async def _study_exchange(guild, member_name, channel_name, text, reply):
 
     try:
         known = len(toolbox.load_memories())
-        response = await _client.aio.models.generate_content(
+        response = await _generate(
             model=MODEL,
             contents=(
                 f"An exchange in #{channel_name} of a friends' Discord server:\n"
@@ -396,7 +413,12 @@ async def handle_message(message):
                 )
         except Exception as e:
             log.error(f"brain turn failed: {e!r}")
-            await _deps["health_log"](guild, f"⚠️ Brain turn failed: `{e!r}`")
+            code = getattr(e, "code", None)
+            await _deps["health_log"](
+                guild,
+                f"⚠️ The annex is unreachable ({code or type(e).__name__}) "
+                f"after 3 attempts. Governance is unaffected.",
+            )
             reply = OUTAGE_LINE
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     log.info(

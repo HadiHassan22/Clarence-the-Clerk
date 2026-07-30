@@ -1702,7 +1702,11 @@ async def on_ready():
         await ensure_furniture(guild, restamp=not getattr(bot, "_boot_announced", False))
         if not getattr(bot, "_boot_announced", False):
             bot._boot_announced = True
-            await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
+            state = load_json(STATE, {})
+            if state.get("announced_commit") != COMMIT:
+                state["announced_commit"] = COMMIT
+                save_json(STATE, state)
+                await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
     if not check_floor.is_running():
         check_floor.start()
     if not furniture_loop.is_running():
