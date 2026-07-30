@@ -962,10 +962,12 @@ async def start_web():
     async def healthz(request):
         bills = load_json(BILLS, [])
         ready = bot.is_ready()
+        guild = bot.get_guild(GUILD_ID) if ready else None
         return web.json_response(
             {
                 "status": "ok",
                 "clerk": str(bot.user) if ready else None,
+                "guild": guild.name if guild else None,
                 "ready": ready,
                 "latency_ms": round(bot.latency * 1000) if ready else None,
                 "open_bills": sum(1 for b in bills if b.get("status") == "on_floor"),
@@ -999,36 +1001,54 @@ async def setup_hook():
     await bot.tree.sync(guild=guild)
 
 
+async def ensure_furniture(guild):
+    """Post any missing clerk furniture. Runs at boot and periodically,
+    so channels created after boot get furnished without a restart."""
+    await ensure_button_message(
+        charter_channel(guild),
+        "sign_message_id",
+        "*Signing accepts the seeded arrangements as a starting point, "
+        "nothing more. Any of it can be overwritten by a later Act.*",
+        SignView(),
+    )
+    await ensure_button_message(
+        find_channel(guild, "submit-a-bill"),
+        "bill_message_id",
+        "*State what should become law and why. The clerk files it, "
+        "the floor decides. Authorship is public; laws do not have "
+        "anonymous authors.*",
+        SubmitBillView(),
+    )
+    await ensure_button_message(
+        roles_channel(guild),
+        "roles_home_id",
+        "*Self-service: a role is a name and a color, nothing more. "
+        "Create up to five, wear up to five, yours or anyone's.*",
+        RolesHomeView(),
+    )
+    await update_wardrobe(guild)
+
+
+@tasks.loop(seconds=300)
+async def furniture_loop():
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        try:
+            await ensure_furniture(guild)
+        except Exception as e:
+            print(f"furniture check failed: {e!r}")
+
+
 @bot.event
 async def on_ready():
     print(f"On duty as {bot.user}")
     guild = bot.get_guild(GUILD_ID)
     if guild:
-        await ensure_button_message(
-            charter_channel(guild),
-            "sign_message_id",
-            "*Signing accepts the seeded arrangements as a starting point, "
-            "nothing more. Any of it can be overwritten by a later Act.*",
-            SignView(),
-        )
-        await ensure_button_message(
-            find_channel(guild, "submit-a-bill"),
-            "bill_message_id",
-            "*State what should become law and why. The clerk files it, "
-            "the floor decides. Authorship is public; laws do not have "
-            "anonymous authors.*",
-            SubmitBillView(),
-        )
-        await ensure_button_message(
-            roles_channel(guild),
-            "roles_home_id",
-            "*Self-service: a role is a name and a color, nothing more. "
-            "Create up to five, wear up to five, yours or anyone's.*",
-            RolesHomeView(),
-        )
-        await update_wardrobe(guild)
+        await ensure_furniture(guild)
     if not check_floor.is_running():
         check_floor.start()
+    if not furniture_loop.is_running():
+        furniture_loop.start()
 
 
 @bot.event
