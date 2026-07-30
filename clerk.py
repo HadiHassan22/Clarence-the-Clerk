@@ -19,6 +19,7 @@ to count and to permit edits, and never shows them to anyone.
 Usage: .venv/bin/python clerk.py
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ BILLS = DATA / "bills.json"
 ACTS = DATA / "acts.json"
 ROLES = DATA / "roles.json"  # custom role registry: {role_id: {creator_id}}
 
+KICK_MIN_YES = 3     # removal floor: never fewer, however small the house
 ROLE_CREATE_MAX = 5  # roles one person may create
 ROLE_WEAR_MAX = 5    # custom roles one person may wear
 
@@ -83,7 +85,10 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2))
+    """Atomic: a crash or redeploy mid-write must never truncate state."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
 
 
 def now_utc():
@@ -92,8 +97,19 @@ def now_utc():
 
 # ---------- lookups ----------
 
+def base_name(name):
+    """Channel identity ignoring the emoji prefix: '🥗・food' -> 'food'."""
+    return name.split("・", 1)[-1].strip().lower()
+
+
 def find_channel(guild, needle):
-    return next((c for c in guild.text_channels if needle in c.name), None)
+    """Exact base-name match first so a channel named 'my-gazette-notes'
+    cannot shadow the gazette; substring only as a fallback."""
+    needle = needle.lower()
+    exact = next((c for c in guild.text_channels if base_name(c.name) == needle), None)
+    if exact:
+        return exact
+    return next((c for c in guild.text_channels if needle in c.name.lower()), None)
 
 
 def charter_channel(guild):
@@ -195,13 +211,29 @@ def bill_by(field, value):
     return None
 
 
-def update_bill(bill):
-    bills = load_json(BILLS, [])
-    for i, b in enumerate(bills):
-        if b["no"] == bill["no"]:
-            bills[i] = bill
-            break
-    save_json(BILLS, bills)
+_state_lock = asyncio.Lock()
+
+
+async def update_bill(bill):
+    """Serialized read-modify-write: concurrent ballots must not clobber."""
+    async with _state_lock:
+        bills = load_json(BILLS, [])
+        for i, b in enumerate(bills):
+            if b["no"] == bill["no"]:
+                bills[i] = bill
+                break
+        save_json(BILLS, bills)
+
+
+async def next_bill_number():
+    """Monotonic, never derived from list length."""
+    async with _state_lock:
+        state = load_json(STATE, {})
+        seed = max((b["no"] for b in load_json(BILLS, [])), default=0)
+        number = max(state.get("bill_counter", 0), seed) + 1
+        state["bill_counter"] = number
+        save_json(STATE, state)
+        return number
 
 
 # ---------- rendering ----------
@@ -393,7 +425,7 @@ class NoteModal(discord.ui.Modal):
                 "message_id": message.id,
                 "first_at": now_utc().isoformat(),
             }
-        update_bill(bill)
+        await update_bill(bill)
         await interaction.followup.send(
             "Noted. You can edit it until the floor closes.", ephemeral=True
         )
@@ -467,7 +499,7 @@ class BallotView(discord.ui.View):
         if choice is None:
             if uid in ballots:
                 del ballots[uid]
-                update_bill(bill)
+                await update_bill(bill)
                 return await interaction.response.send_message(
                     "Ballot retracted.", ephemeral=True
                 )
@@ -475,10 +507,10 @@ class BallotView(discord.ui.View):
                 "You have no ballot to retract.", ephemeral=True
             )
         ballots[uid] = choice
-        update_bill(bill)
+        await update_bill(bill)
         await interaction.response.send_message(
             f"Your ballot: **{choice}**. You can change it until the floor closes. "
-            f"Nobody, including the author, will see how you voted.",
+            f"No member, including the author, will ever see how you voted.",
             ephemeral=True,
         )
 
@@ -556,7 +588,7 @@ class MultiBallotView(discord.ui.View):
         if index is None:
             if uid in ballots:
                 del ballots[uid]
-                update_bill(bill)
+                await update_bill(bill)
                 return await interaction.response.send_message(
                     "Ballot retracted.", ephemeral=True
                 )
@@ -569,10 +601,10 @@ class MultiBallotView(discord.ui.View):
             )
         choice = bill["options"][index]
         ballots[uid] = choice
-        update_bill(bill)
+        await update_bill(bill)
         await interaction.response.send_message(
             f"Your ballot: **{choice}**. You can change it until the floor closes. "
-            f"Nobody, including the author, will see how you voted.",
+            f"No member, including the author, will ever see how you voted.",
             ephemeral=True,
         )
 
@@ -591,7 +623,8 @@ def multi_ballot_content(bill, ends_at, chamber_mention):
 
 
 async def file_bill(interaction, title, what, why, kind="ordinary",
-                    options=None, target_id=None, floor_hours=None):
+                    options=None, target_id=None, floor_hours=None,
+                    eligible_ids=None):
     """Shared filing pipeline for all bill kinds. Assumes the interaction
     was already deferred."""
     guild = interaction.guild
@@ -600,8 +633,7 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
         return await interaction.followup.send(
             "The floor is missing. Run build_server.py first.", ephemeral=True
         )
-    bills = load_json(BILLS, [])
-    number = len(bills) + 1
+    number = await next_bill_number()
     ends_at = now_utc() + timedelta(hours=floor_hours or FLOOR_HOURS)
 
     category, text, voice = await open_chamber(guild, number, title)
@@ -636,12 +668,14 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
             view=BallotView(),
         )
 
+    bills = load_json(BILLS, [])
     bills.append(
         {
             "no": number,
             "title": title,
             "kind": kind,
             "target_id": target_id,
+            "eligible_ids": eligible_ids,
             "author_id": interaction.user.id,
             "author": interaction.user.display_name,
             "what": what,
@@ -782,6 +816,10 @@ class KickModal(discord.ui.Modal, title="Propose a removal"):
             f"tally will never be published. Eligible voters at filing: "
             f"{eligible_now}; the threshold is computed at close."
         )
+        eligible_ids = [
+            m.id for m in self.target.guild.members
+            if has_key(m) and not m.bot and m.id != self.target.id
+        ]
         await file_bill(
             interaction,
             title=f"Removal of {self.target.display_name}"[:100],
@@ -790,6 +828,7 @@ class KickModal(discord.ui.Modal, title="Propose a removal"):
             kind="kick",
             target_id=self.target.id,
             floor_hours=72.0,
+            eligible_ids=eligible_ids,
         )
 
 
@@ -929,6 +968,9 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     thread, close the ballot, archive the chamber."""
     bill["status"] = "passed" if passed else "failed"
     bill["closed_at"] = now_utc().isoformat()
+    # the tally is all the record needs from here; individual ballots are
+    # destroyed at close so a closed vote cannot be reconstructed by anyone
+    bill.pop("ballots", None)
     # people-bills (invite, kick) never publish numbers: a barely-admitted
     # member should never learn the margin
     secret = bill.get("kind") in ("invite", "kick")
@@ -990,7 +1032,7 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     if category and not category.channels:
         await category.delete(reason="Floor closed")
 
-    update_bill(bill)
+    await update_bill(bill)
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
 
 
@@ -1008,8 +1050,6 @@ async def execute_invite(guild, bill):
         max_uses=1, max_age=604800, unique=True,
         reason=f"Invitation act: Bill No. {bill['no']}",
     )
-    bill["invite_url"] = invite.url
-    update_bill(bill)
     try:
         await proposer.send(
             f"The house has approved your invitation (Bill No. {bill['no']}). "
@@ -1056,11 +1096,16 @@ async def close_bill(guild, bill):
     bill["tally"] = {"yes": yes, "no": no}
 
     if bill.get("kind") == "kick":
-        eligible = [
-            m for m in guild.members
+        # eligibility is snapshotted at filing and intersected with current
+        # keyholders, so a shrinking house cannot lower the bar mid-floor,
+        # and a cold member cache cannot either
+        snapshot = set(bill.get("eligible_ids") or [])
+        current = {
+            m.id for m in guild.members
             if has_key(m) and not m.bot and m.id != bill.get("target_id")
-        ]
-        required = max(len(eligible) - 2, 1)
+        }
+        eligible = (snapshot & current) if snapshot else current
+        required = max(len(eligible) - 2, KICK_MIN_YES)
         bill["threshold"] = {"eligible": len(eligible), "required": required}
         passed = yes >= required
         await finalize_bill(guild, bill, passed, f"✅ {yes} / ❌ {no}")
@@ -1139,7 +1184,7 @@ async def close_multi(guild, bill):
         )
         bill["ballot_message_id"] = ballot.id
 
-    update_bill(bill)
+    await update_bill(bill)
     log.info(f"runoff opened: bill no. {bill['no']} ({tally_line})")
 
 
@@ -1187,8 +1232,12 @@ def custom_stack(guild):
 
 
 def parse_colour(value):
-    value = value.strip().lstrip("#")
-    return discord.Colour.from_str(f"#{value}")
+    """Raises ValueError on anything that is not a hex colour."""
+    value = (value or "").strip().lstrip("#")
+    try:
+        return discord.Colour.from_str(f"#{value}")
+    except Exception as e:
+        raise ValueError(str(e)) from e
 
 
 def roles_channel(guild):
@@ -1236,7 +1285,7 @@ class RoleCreateModal(discord.ui.Modal, title="Create a role"):
             return await interaction.response.send_message("Pick another name.", ephemeral=True)
         try:
             colour = parse_colour(str(self.color))
-        except (ValueError, IndexError):
+        except Exception:
             return await interaction.response.send_message(
                 "That is not a hex color. Try something like #ff9d2e.", ephemeral=True
             )
@@ -1261,6 +1310,16 @@ class RoleCreateModal(discord.ui.Modal, title="Create a role"):
         await update_wardrobe(interaction.guild)
 
 
+def owns_role(user_id, role):
+    """The single authority check for custom-role actions. Every edit,
+    delete, and reorder path goes through this; the dropdown filter is a
+    convenience, never the control."""
+    if role is None:
+        return False
+    meta = role_registry().get(str(role.id))
+    return meta is not None and meta.get("creator_id") == user_id
+
+
 class RoleEditModal(discord.ui.Modal, title="Edit role"):
     def __init__(self, role):
         super().__init__()
@@ -1274,11 +1333,13 @@ class RoleEditModal(discord.ui.Modal, title="Edit role"):
 
     async def on_submit(self, interaction: discord.Interaction):
         role = interaction.guild.get_role(self.role_id)
-        if role is None:
-            return await interaction.response.send_message("That role is gone.", ephemeral=True)
+        if not owns_role(interaction.user.id, role):
+            return await interaction.response.send_message(
+                "That role is not yours to edit.", ephemeral=True
+            )
         try:
             colour = parse_colour(str(self.color))
-        except (ValueError, IndexError):
+        except Exception:
             return await interaction.response.send_message(
                 "That is not a hex color.", ephemeral=True
             )
@@ -1341,16 +1402,17 @@ class ManageActionsView(discord.ui.View):
         self.role_id = role.id
 
     def _role(self, interaction):
+        """Re-checks ownership on every action, not just at menu build."""
         role = interaction.guild.get_role(self.role_id)
-        if role is None or str(role.id) not in role_registry():
-            return None
-        return role
+        return role if owns_role(interaction.user.id, role) else None
 
     @discord.ui.button(label="Rename / recolor", style=discord.ButtonStyle.primary)
     async def edit(self, interaction, button):
         role = self._role(interaction)
         if role is None:
-            return await interaction.response.send_message("That role is gone.", ephemeral=True)
+            return await interaction.response.send_message(
+                "That role is gone, or it is not yours.", ephemeral=True
+            )
         await interaction.response.send_modal(RoleEditModal(role))
 
     @discord.ui.button(label="Raise", style=discord.ButtonStyle.secondary)
@@ -1365,7 +1427,9 @@ class ManageActionsView(discord.ui.View):
     async def delete(self, interaction, button):
         role = self._role(interaction)
         if role is None:
-            return await interaction.response.send_message("That role is gone.", ephemeral=True)
+            return await interaction.response.send_message(
+                "That role is gone, or it is not yours.", ephemeral=True
+            )
         registry = role_registry()
         del registry[str(role.id)]
         save_json(ROLES, registry)
@@ -1376,7 +1440,9 @@ class ManageActionsView(discord.ui.View):
     async def _shift(self, interaction, direction):
         role = self._role(interaction)
         if role is None:
-            return await interaction.response.send_message("That role is gone.", ephemeral=True)
+            return await interaction.response.send_message(
+                "That role is gone, or it is not yours.", ephemeral=True
+            )
         stack = sorted(custom_stack(interaction.guild), key=lambda r: r.position)
         i = stack.index(role)
         j = i + direction
@@ -1409,8 +1475,10 @@ class ManageView(discord.ui.View):
 
     async def pick(self, interaction: discord.Interaction):
         role = interaction.guild.get_role(int(self.select.values[0]))
-        if role is None:
-            return await interaction.response.send_message("That role is gone.", ephemeral=True)
+        if not owns_role(interaction.user.id, role):
+            return await interaction.response.send_message(
+                "That role is gone, or it is not yours.", ephemeral=True
+            )
         await interaction.response.edit_message(
             content=f"Managing {role.mention}.", view=ManageActionsView(role)
         )

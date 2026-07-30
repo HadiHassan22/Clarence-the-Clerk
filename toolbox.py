@@ -13,6 +13,7 @@ import asyncio
 import copy
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,12 @@ def configure(here: Path, data: Path):
     _paths["log"] = data / "executor_log.json"
 
 
+def _atomic(path, data):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
+
+
 def _load(path, default):
     if path.exists():
         return json.loads(path.read_text())
@@ -39,9 +46,9 @@ def _load(path, default):
 
 async def _audit(entry):
     async with _log_lock:
-        log = _load(_paths["log"], [])
-        log.append(entry)
-        _paths["log"].write_text(json.dumps(log, indent=2))
+        entries = _load(_paths["log"], [])
+        entries.append(entry)
+        _atomic(_paths["log"], entries)
 
 
 # ---------- handlers (all read-only in stage 2) ----------
@@ -135,7 +142,7 @@ def load_memories():
 
 
 def save_memories(entries):
-    _mem_path().write_text(json.dumps(entries, indent=2))
+    _atomic(_mem_path(), entries)
 
 
 def add_memory(kind, about, text, source="conversation"):
