@@ -27,6 +27,7 @@ RATE_PER_10MIN = 8
 RATE_PER_DAY = 30
 MAX_TOOL_ROUNDS = 6
 MEMORY_MSGS = 30
+WHISPERER = "bot-whisperers"  # only holders of this role may address the clerk
 
 _client = None
 _deps = {}  # injected by clerk.py: bot, here, data, has_key, health_log, chunk_text
@@ -243,6 +244,15 @@ async def handle_message(message):
         try:
             await message.reply(
                 "A key is required to address the clerk. The charter is at the door.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            pass
+        return
+    if discord.utils.get(member.roles, name=WHISPERER) is None:
+        try:
+            await message.reply(
+                "The clerk takes questions from bot-whisperers only.",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:

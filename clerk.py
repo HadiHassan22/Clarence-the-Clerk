@@ -1599,6 +1599,14 @@ async def ensure_furniture(guild):
     )
     await update_wardrobe(guild)
     await update_health(guild)
+    # the brain's gate role: exists so it can be granted, grants nothing
+    if discord.utils.get(guild.roles, name=brain.WHISPERER) is None:
+        await guild.create_role(
+            name=brain.WHISPERER,
+            permissions=discord.Permissions.none(),
+            reason="Gate for addressing the clerk's brain",
+        )
+        print(f"created role: {brain.WHISPERER}")
 
 
 @tasks.loop(seconds=300)
