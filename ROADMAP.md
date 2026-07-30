@@ -65,6 +65,14 @@ All third-party bots are already removed.
 - Full scope in roles-scope.md (member-created cosmetic roles, name + hex
   color, the quiet enabler of political parties).
 
+## Phase 6: the executor
+
+- An agent that applies passed Acts to reality: edits server_config.yaml,
+  runs the builder, changes settings, opens PRs against this repo.
+  The gazette stops being a to-do list for the founder and becomes a
+  queue the machine works through. Needs its own design conversation
+  (safety rails, what is auto-executable vs human-reviewed).
+
 ## Founding sequence on launch day
 
 1. Bot joins, builds everything, posts the charter.

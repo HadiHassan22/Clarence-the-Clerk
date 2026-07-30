@@ -8,6 +8,10 @@ At close:   tally (yes > no passes, ties fail), result posted, passed
             bills become numbered Acts in the gazette, final notes are
             preserved in a record thread, the chamber text channel is
             locked and archived, the voice channel and category removed.
+            Choice ballots (author supplies 2-10 options) need a strict
+            majority of votes cast; otherwise a runoff opens with the
+            leading options, decided by plurality. Bill authors cannot
+            file notes on their own bills.
 
 Anonymity is toward members, not the machine: the clerk keeps records
 to count and to permit edits, and never shows them to anyone.
@@ -194,6 +198,11 @@ class SignView(discord.ui.View):
         await interaction.response.send_message(
             "Signed. Here is your key; the Hangout is open to you.", ephemeral=True
         )
+        general = find_channel(guild, "general")
+        if general:
+            await general.send(
+                f"🔑 The charter has a new signature: welcome, {member.mention}."
+            )
 
 
 # ---------- the chamber ----------
@@ -278,6 +287,10 @@ class NoteModal(discord.ui.Modal):
         bill = bill_by("no", self.bill_no)
         if bill is None or bill["status"] != "on_floor":
             return await interaction.followup.send("This floor has closed.", ephemeral=True)
+        if interaction.user.id == bill["author_id"]:
+            return await interaction.followup.send(
+                "The author already had their say: it is called the bill.", ephemeral=True
+            )
         uid = str(interaction.user.id)
         notes = bill.setdefault("notes", {})
         slots = notes.setdefault(uid, {})
@@ -324,6 +337,12 @@ class NotesView(discord.ui.View):
         if bill is None or bill["status"] != "on_floor":
             return await interaction.response.send_message(
                 "This floor has closed.", ephemeral=True
+            )
+        if interaction.user.id == bill["author_id"]:
+            return await interaction.response.send_message(
+                "The author already had their say: it is called the bill. "
+                "The notes belong to the house.",
+                ephemeral=True,
             )
         slot = bill.get("notes", {}).get(str(interaction.user.id), {}).get(kind)
         await interaction.response.send_modal(
@@ -403,6 +422,93 @@ class BallotView(discord.ui.View):
         await self._vote(interaction, None)
 
 
+MULTI_MAX = 10
+
+
+class MultiBallotView(discord.ui.View):
+    """Choice ballot: one button per option. A registered instance with
+    dummy labels handles routing after restarts; the real labels live on
+    the message itself."""
+
+    def __init__(self, options=None):
+        super().__init__(timeout=None)
+        labels = options if options is not None else [f"Option {i + 1}" for i in range(MULTI_MAX)]
+        for i, label in enumerate(labels[:MULTI_MAX]):
+            button = discord.ui.Button(
+                label=str(label)[:80],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"clerk:opt_{i}",
+                row=i // 5,
+            )
+            button.callback = self._make_callback(i)
+            self.add_item(button)
+        retract = discord.ui.Button(
+            label="Retract",
+            style=discord.ButtonStyle.secondary,
+            custom_id="clerk:opt_retract",
+            row=2,
+        )
+        retract.callback = self._retract
+        self.add_item(retract)
+
+    def _make_callback(self, index):
+        async def callback(interaction):
+            await self._vote(interaction, index)
+        return callback
+
+    async def _retract(self, interaction):
+        await self._vote(interaction, None)
+
+    async def _vote(self, interaction, index):
+        if not has_key(interaction.user):
+            return await interaction.response.send_message(
+                "A key is required to vote. Sign the charter at the door first.",
+                ephemeral=True,
+            )
+        bill = bill_by("ballot_message_id", interaction.message.id)
+        if bill is None or bill["status"] != "on_floor" or not bill.get("options"):
+            return await interaction.response.send_message(
+                "This floor has closed.", ephemeral=True
+            )
+        ballots = bill.setdefault("ballots", {})
+        uid = str(interaction.user.id)
+        if index is None:
+            if uid in ballots:
+                del ballots[uid]
+                update_bill(bill)
+                return await interaction.response.send_message(
+                    "Ballot retracted.", ephemeral=True
+                )
+            return await interaction.response.send_message(
+                "You have no ballot to retract.", ephemeral=True
+            )
+        if index >= len(bill["options"]):
+            return await interaction.response.send_message(
+                "That option is not on this ballot.", ephemeral=True
+            )
+        choice = bill["options"][index]
+        ballots[uid] = choice
+        update_bill(bill)
+        await interaction.response.send_message(
+            f"Your ballot: **{choice}**. You can change it until the floor closes. "
+            f"Nobody, including the author, will see how you voted.",
+            ephemeral=True,
+        )
+
+
+def multi_ballot_content(bill, ends_at, chamber_mention):
+    round_note = " (runoff)" if bill.get("round", 1) > 1 else ""
+    return (
+        f"**Ballot** for Bill No. {bill['no']}{round_note}: choose one option. "
+        f"Cast, change, or retract until the floor closes "
+        f"<t:{int(ends_at.timestamp())}:R>. Debate in {chamber_mention}. "
+        f"An option needs a majority of votes cast"
+        + ("; this runoff is decided by plurality" if bill.get("round", 1) > 1 else
+           "; otherwise a runoff follows with the leading options")
+        + ". Results appear at close; individual votes never do."
+    )
+
+
 # ---------- submitting bills ----------
 
 class BillModal(discord.ui.Modal, title="Submit a bill"):
@@ -424,6 +530,13 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
         placeholder="Your reasons. A bill without reasons is not a bill.",
         max_length=4000,
     )
+    choices = discord.ui.TextInput(
+        label="Options (empty = yes/no ballot)",
+        style=discord.TextStyle.paragraph,
+        placeholder="For a choice ballot: one option per line, 2 to 10 lines.",
+        required=False,
+        max_length=800,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -432,6 +545,17 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
         if floor is None:
             return await interaction.followup.send(
                 "The floor is missing. Run build_server.py first.", ephemeral=True
+            )
+        options = []
+        for line in str(self.choices).splitlines():
+            line = line.strip()
+            if line and line not in options:
+                options.append(line)
+        if options and not 2 <= len(options) <= MULTI_MAX:
+            return await interaction.followup.send(
+                f"A choice ballot needs 2 to {MULTI_MAX} distinct options "
+                f"(one per line), or none at all for a yes/no ballot.",
+                ephemeral=True,
             )
         bills = load_json(BILLS, [])
         number = len(bills) + 1
@@ -452,12 +576,19 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
             for i, piece in enumerate(chunk_text(body)):
                 prefix = f"### {label}\n" if i == 0 else ""
                 await floor.send(prefix + piece)
-        ballot = await floor.send(
-            f"**Ballot** for Bill No. {number}. Cast, change, or retract until the floor "
-            f"closes <t:{int(ends_at.timestamp())}:R>. Debate in {text.mention}. "
-            f"Results appear at close; individual votes never do.",
-            view=BallotView(),
-        )
+        if options:
+            stub = {"no": number, "options": options, "round": 1}
+            ballot = await floor.send(
+                multi_ballot_content(stub, ends_at, text.mention),
+                view=MultiBallotView(options),
+            )
+        else:
+            ballot = await floor.send(
+                f"**Ballot** for Bill No. {number}. Cast, change, or retract until the floor "
+                f"closes <t:{int(ends_at.timestamp())}:R>. Debate in {text.mention}. "
+                f"Results appear at close; individual votes never do.",
+                view=BallotView(),
+            )
         bills.append(
             {
                 "no": number,
@@ -476,6 +607,8 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
                 "submitted_at": now_utc().isoformat(),
                 "ends_at": ends_at.isoformat(),
                 "status": "on_floor",
+                "options": options or None,
+                "round": 1,
                 "ballots": {},
                 "notes": {},
             }
@@ -510,55 +643,71 @@ class SubmitBillView(discord.ui.View):
 
 # ---------- closing the floor ----------
 
-async def close_bill(guild, bill):
-    ballots = bill.get("ballots", {})
-    yes = sum(1 for v in ballots.values() if v == "yes")
-    no = sum(1 for v in ballots.values() if v == "no")
-    passed = yes > no
-    verdict = "Passed" if passed else "Failed"
-    bill["status"] = "passed" if passed else "failed"
-    bill["tally"] = {"yes": yes, "no": no}
-    bill["closed_at"] = now_utc().isoformat()
-
-    floor = find_channel(guild, "the-floor")
+async def publish_act(guild, bill, decided=None):
     gazette = find_channel(guild, "gazette")
+    if gazette is None:
+        return ""
+    acts = load_json(ACTS, [])
+    act_no = len(acts) + 1
+    acts.append(
+        {
+            "act": act_no,
+            "bill": bill["no"],
+            "title": bill["title"],
+            "author": bill["author"],
+            "what": bill["what"],
+            "decided": decided,
+            "tally": bill.get("tally"),
+            "passed_at": bill["closed_at"],
+        }
+    )
+    save_json(ACTS, acts)
+    bill["act"] = act_no
+    await gazette.send(view=Card([f"## Act {act_no}: {bill['title']}"]))
+    for piece in chunk_text(bill["what"]):
+        await gazette.send(piece)
+    segments = []
+    if decided:
+        segments.append(f"### Decided\n{decided}")
+    segments.append(
+        f"-# From Bill No. {bill['no']} by {bill['author']}. "
+        f"Passed with {bill['tally_line']}."
+    )
+    await gazette.send(view=Card(segments))
+    return f"\n-# Recorded as Act {act_no} in the gazette."
 
-    act_line = ""
-    if passed and gazette:
-        acts = load_json(ACTS, [])
-        act_no = len(acts) + 1
-        acts.append(
-            {
-                "act": act_no,
-                "bill": bill["no"],
-                "title": bill["title"],
-                "author": bill["author"],
-                "what": bill["what"],
-                "tally": bill["tally"],
-                "passed_at": bill["closed_at"],
-            }
-        )
-        save_json(ACTS, acts)
-        bill["act"] = act_no
-        await gazette.send(view=Card([f"## Act {act_no}: {bill['title']}"]))
-        for piece in chunk_text(bill["what"]):
-            await gazette.send(piece)
-        await gazette.send(
-            view=Card([
-                f"-# From Bill No. {bill['no']} by {bill['author']}. "
-                f"Passed ✅ {yes} / ❌ {no}."
-            ])
-        )
-        act_line = f"\n-# Recorded as Act {act_no} in the gazette."
+
+async def finalize_bill(guild, bill, passed, tally_line, decided=None):
+    """Common closing: result card, gazette if passed, seal the notes
+    thread, close the ballot, archive the chamber."""
+    bill["status"] = "passed" if passed else "failed"
+    bill["closed_at"] = now_utc().isoformat()
+    bill["tally_line"] = tally_line
+    floor = find_channel(guild, "the-floor")
+
+    act_line = await publish_act(guild, bill, decided) if passed else ""
 
     if floor:
-        await floor.send(
-            view=Card([
+        if decided:
+            headline = (
                 f"## Bill No. {bill['no']}: {bill['title']}\n"
-                f"**{verdict}**  ✅ {yes} / ❌ {no}{act_line}"
-            ])
-        )
-        # seal the notes thread: it already is the record
+                f"**Decided: {decided}**\n{tally_line}{act_line}"
+            )
+        else:
+            verdict = "Passed" if passed else "Failed"
+            headline = (
+                f"## Bill No. {bill['no']}: {bill['title']}\n"
+                f"**{verdict}**  {tally_line}{act_line}"
+            )
+        await floor.send(view=Card([headline]))
+        try:
+            ballot_msg = await floor.fetch_message(bill["ballot_message_id"])
+            await ballot_msg.edit(
+                content=f"**Ballot closed** for Bill No. {bill['no']}. {tally_line}",
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
         thread_id = bill.get("notes_thread_id")
         if thread_id:
             try:
@@ -572,18 +721,7 @@ async def close_bill(guild, bill):
                 await thread.edit(archived=True, locked=True)
             except discord.HTTPException as e:
                 print(f"sealing notes thread failed for bill {bill['no']}: {e!r}")
-        # close the ballot message
-        try:
-            ballot_msg = await floor.fetch_message(bill["ballot_message_id"])
-            await ballot_msg.edit(
-                content=f"**Ballot closed** for Bill No. {bill['no']}. "
-                f"{verdict}: ✅ {yes} / ❌ {no}.",
-                view=None,
-            )
-        except discord.HTTPException:
-            pass
 
-    # archive the chamber: text is kept (owner-visible), voice evaporates
     archive = archive_category(guild)
     hidden = await hidden_overwrites(guild)
     text = guild.get_channel(bill["chamber_text_id"])
@@ -602,7 +740,86 @@ async def close_bill(guild, bill):
         await category.delete(reason="Floor closed")
 
     update_bill(bill)
-    print(f"bill no. {bill['no']} closed: {verdict.lower()} ({yes}/{no})")
+    print(f"bill no. {bill['no']} closed: {bill['status']} ({tally_line})")
+
+
+async def close_bill(guild, bill):
+    if bill.get("options"):
+        return await close_multi(guild, bill)
+    ballots = bill.get("ballots", {})
+    yes = sum(1 for v in ballots.values() if v == "yes")
+    no = sum(1 for v in ballots.values() if v == "no")
+    bill["tally"] = {"yes": yes, "no": no}
+    await finalize_bill(guild, bill, yes > no, f"✅ {yes} / ❌ {no}")
+
+
+async def close_multi(guild, bill):
+    """Choice ballots: round 1 needs a strict majority of votes cast;
+    otherwise a runoff opens with the leading options, decided by
+    plurality. Ties in the runoff fail; the status quo never has to
+    defend itself."""
+    options = bill["options"]
+    counts = {o: 0 for o in options}
+    for v in bill.get("ballots", {}).values():
+        if v in counts:
+            counts[v] += 1
+    total = sum(counts.values())
+    leader = max(counts.values()) if counts else 0
+    leaders = [o for o, n in counts.items() if n == leader]
+    tally_line = " / ".join(f"{o}: {n}" for o, n in counts.items())
+    bill["tally"] = counts
+    final_round = bill.get("round", 1) > 1
+
+    if total > 0 and leader * 2 > total:
+        return await finalize_bill(guild, bill, True, tally_line, decided=leaders[0])
+    if final_round:
+        if leader > 0 and len(leaders) == 1:
+            return await finalize_bill(guild, bill, True, tally_line, decided=leaders[0])
+        return await finalize_bill(
+            guild, bill, False, tally_line + " (tie; the status quo prevails)"
+        )
+    if total == 0:
+        return await finalize_bill(guild, bill, False, "no votes cast")
+
+    # runoff: keep the leading options (top two counts, ties included)
+    distinct = sorted(set(counts.values()), reverse=True)
+    cutoff = distinct[1] if len(distinct) > 1 else distinct[0]
+    finalists = [o for o in options if counts[o] >= cutoff]
+    bill["round"] = bill.get("round", 1) + 1
+    bill["options"] = finalists
+    bill["ballots"] = {}
+    ends = now_utc() + timedelta(hours=FLOOR_HOURS)
+    bill["ends_at"] = ends.isoformat()
+
+    floor = find_channel(guild, "the-floor")
+    if floor:
+        try:
+            old = await floor.fetch_message(bill["ballot_message_id"])
+            await old.edit(
+                content=f"**Round 1 closed** for Bill No. {bill['no']}: "
+                f"no majority. {tally_line}",
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
+        chamber = guild.get_channel(bill["chamber_text_id"])
+        mention = chamber.mention if chamber else "the chamber"
+        await floor.send(
+            view=Card([
+                f"## Bill No. {bill['no']}: {bill['title']}: runoff\n"
+                f"No option won a majority ({tally_line}). The floor "
+                f"reopens with the leading options; regroup around what "
+                f"can win."
+            ])
+        )
+        ballot = await floor.send(
+            multi_ballot_content(bill, ends, mention),
+            view=MultiBallotView(finalists),
+        )
+        bill["ballot_message_id"] = ballot.id
+
+    update_bill(bill)
+    print(f"bill no. {bill['no']}: runoff opened ({tally_line})")
 
 
 @tasks.loop(seconds=60)
