@@ -22,7 +22,7 @@
 # Provisional voting rules (the founder's proposal and nothing more;
 # the parliament legislates the real values later).
 voting:
-  floor_hours: 0.05   # TEMP for sandbox testing (3 minutes); launch value: 48
+  floor_hours: 48
 
 categories:
   # The door: no category, sits above everything.
