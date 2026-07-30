@@ -117,6 +117,84 @@ async def _get_bill(guild, invoker, args):
     return json.dumps({"error": f"no Bill No. {bill_no} on record"})
 
 
+# ---------- the memory book ----------
+
+MEM_CAP = 150
+MEM_KINDS = ("fact", "joke", "preference", "lore")
+
+
+def _mem_path():
+    return _paths["data"] / "clerk_memory.json"
+
+
+def load_memories():
+    return _load(_mem_path(), [])
+
+
+def save_memories(entries):
+    _mem_path().write_text(json.dumps(entries, indent=2))
+
+
+def add_memory(kind, about, text, source="conversation"):
+    """File a memory. Deduped, capped, oldest low-value entries fall off."""
+    kind = kind if kind in MEM_KINDS else "fact"
+    text = (text or "").strip()[:240]
+    about = (about or "the house").strip()[:60]
+    if not text:
+        return "nothing to file"
+    entries = load_memories()
+    for e in entries:
+        if e["about"].lower() == about.lower() and e["text"].lower() == text.lower():
+            return "already on record"
+    entries.append(
+        {
+            "id": max((e["id"] for e in entries), default=0) + 1,
+            "kind": kind,
+            "about": about,
+            "text": text,
+            "learned_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "source": source,
+        }
+    )
+    if len(entries) > MEM_CAP:
+        entries = entries[-MEM_CAP:]
+    save_memories(entries)
+    return f"filed: [{kind}] {about}: {text}"
+
+
+async def _remember(guild, invoker, args):
+    return add_memory(
+        args.get("kind", "fact"),
+        args.get("about"),
+        args.get("text", ""),
+        source=f"filed during conversation with {invoker.display_name}",
+    )
+
+
+async def _forget(guild, invoker, args):
+    """Strike memories. Python-enforced: only the subject of a memory may
+    have it struck (house-wide memories are strikeable by anyone)."""
+    query = (args.get("query") or "").strip().lower()
+    if not query:
+        return json.dumps({"error": "a query is required"})
+    entries = load_memories()
+    allowed_about = {invoker.display_name.lower(), "the house"}
+    struck, kept = [], []
+    for e in entries:
+        matches = query in e["text"].lower() or query in e["about"].lower()
+        if matches and e["about"].lower() in allowed_about:
+            struck.append(e)
+        else:
+            kept.append(e)
+    if not struck:
+        return (
+            "Nothing struck. Either no memory matches, or the memory is "
+            "about someone else: only its subject may have it removed."
+        )
+    save_memories(kept)
+    return f"struck {len(struck)} memor{'y' if len(struck) == 1 else 'ies'} from the book"
+
+
 async def _server_info(guild, invoker, args):
     cats = []
     for cat in guild.categories:
@@ -209,6 +287,36 @@ REGISTRY = {
         "description": "The server's structure: categories, channels, topics, member count.",
         "parameters": {"type": "object", "properties": {}},
         "handler": _server_info,
+    },
+    "remember": {
+        "tier": "minor",
+        "description": "File a memory in your book: a fact about a member, a "
+        "running joke, a preference, or house lore. Use for things still "
+        "worth knowing in a month; never for votes or private matters.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(MEM_KINDS)},
+                "about": {
+                    "type": "string",
+                    "description": "who or what it concerns; a display name, or 'the house'",
+                },
+                "text": {"type": "string", "description": "the memory, one sentence"},
+            },
+            "required": ["kind", "about", "text"],
+        },
+        "handler": _remember,
+    },
+    "forget": {
+        "tier": "minor",
+        "description": "Strike memories matching a query from your book. Only "
+        "works on memories about the person asking (or about the house).",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        "handler": _forget,
     },
 }
 
