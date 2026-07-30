@@ -446,6 +446,12 @@ class BallotView(discord.ui.View):
             return await interaction.response.send_message(
                 "This floor has closed.", ephemeral=True
             )
+        if bill.get("kind") == "kick" and interaction.user.id == bill.get("target_id"):
+            return await interaction.response.send_message(
+                "You are the question, not the jury. The chamber is yours "
+                "for the full floor; the ballot is not.",
+                ephemeral=True,
+            )
         ballots = bill.setdefault("ballots", {})
         uid = str(interaction.user.id)
         if choice is None:
@@ -574,6 +580,87 @@ def multi_ballot_content(bill, ends_at, chamber_mention):
     )
 
 
+async def file_bill(interaction, title, what, why, kind="ordinary",
+                    options=None, target_id=None, floor_hours=None):
+    """Shared filing pipeline for all bill kinds. Assumes the interaction
+    was already deferred."""
+    guild = interaction.guild
+    floor = find_channel(guild, "the-floor")
+    if floor is None:
+        return await interaction.followup.send(
+            "The floor is missing. Run build_server.py first.", ephemeral=True
+        )
+    bills = load_json(BILLS, [])
+    number = len(bills) + 1
+    ends_at = now_utc() + timedelta(hours=floor_hours or FLOOR_HOURS)
+
+    category, text, voice = await open_chamber(guild, number, title)
+
+    stamp = await floor.send(
+        view=Card([f"## Bill No. {number}: {title}\nSubmitted by {interaction.user.mention}"])
+    )
+    notes_thread = await stamp.create_thread(
+        name=(bill_name(number, title) + ": notes")[:100]
+    )
+    notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
+    for label, body in (("What", what), ("Why", why)):
+        for i, piece in enumerate(chunk_text(body)):
+            prefix = f"### {label}\n" if i == 0 else ""
+            await floor.send(prefix + piece)
+    if options:
+        stub = {"no": number, "options": options, "round": 1}
+        ballot = await floor.send(
+            multi_ballot_content(stub, ends_at, text.mention),
+            view=MultiBallotView(options),
+        )
+    else:
+        if kind in ("invite", "kick"):
+            tail = ("The tally will be sealed at close; individual votes "
+                    "are never seen by anyone.")
+        else:
+            tail = "Results appear at close; individual votes never do."
+        ballot = await floor.send(
+            f"**Ballot** for Bill No. {number}. Cast, change, or retract "
+            f"until the floor closes <t:{int(ends_at.timestamp())}:R>. "
+            f"Debate in {text.mention}. {tail}",
+            view=BallotView(),
+        )
+
+    bills.append(
+        {
+            "no": number,
+            "title": title,
+            "kind": kind,
+            "target_id": target_id,
+            "author_id": interaction.user.id,
+            "author": interaction.user.display_name,
+            "what": what,
+            "why": why,
+            "message_id": stamp.id,
+            "ballot_message_id": ballot.id,
+            "notes_message_id": notes_msg.id,
+            "notes_thread_id": notes_thread.id,
+            "chamber_category_id": category.id,
+            "chamber_text_id": text.id,
+            "chamber_voice_id": voice.id,
+            "submitted_at": now_utc().isoformat(),
+            "ends_at": ends_at.isoformat(),
+            "status": "on_floor",
+            "options": options or None,
+            "round": 1,
+            "ballots": {},
+            "notes": {},
+        }
+    )
+    save_json(BILLS, bills)
+    print(f"bill no. {number} ({title}, {kind}) by {interaction.user.display_name}")
+    await interaction.followup.send(
+        f"Filed. Bill No. {number} is on the floor: {floor.mention}, "
+        f"debate in {text.mention}.",
+        ephemeral=True,
+    )
+
+
 # ---------- submitting bills ----------
 
 class BillModal(discord.ui.Modal, title="Submit a bill"):
@@ -605,12 +692,6 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        guild = interaction.guild
-        floor = find_channel(guild, "the-floor")
-        if floor is None:
-            return await interaction.followup.send(
-                "The floor is missing. Run build_server.py first.", ephemeral=True
-            )
         options = []
         for line in str(self.choices).splitlines():
             line = line.strip()
@@ -622,74 +703,134 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
                 f"(one per line), or none at all for a yes/no ballot.",
                 ephemeral=True,
             )
-        bills = load_json(BILLS, [])
-        number = len(bills) + 1
-        title = str(self.bill_title)
-        what, why = str(self.what), str(self.why)
-        ends_at = now_utc() + timedelta(hours=FLOOR_HOURS)
+        await file_bill(
+            interaction,
+            title=str(self.bill_title),
+            what=str(self.what),
+            why=str(self.why),
+            options=options or None,
+        )
 
-        category, text, voice = await open_chamber(guild, number, title)
 
-        stamp = await floor.send(
-            view=Card([f"## Bill No. {number}: {title}\nSubmitted by {interaction.user.mention}"])
+class InviteModal(discord.ui.Modal, title="Propose an invitation"):
+    invitee = discord.ui.TextInput(
+        label="Their username",
+        style=discord.TextStyle.short,
+        placeholder="Who should be invited?",
+        max_length=100,
+    )
+    discord_id = discord.ui.TextInput(
+        label="Their Discord ID (optional)",
+        style=discord.TextStyle.short,
+        required=False,
+        max_length=25,
+    )
+    why = discord.ui.TextInput(
+        label="Why",
+        style=discord.TextStyle.paragraph,
+        placeholder="Why should the house let them in?",
+        max_length=4000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        name = str(self.invitee).strip()
+        id_part = f" (Discord ID {str(self.discord_id).strip()})" if str(self.discord_id).strip() else ""
+        what = (
+            f"{name}{id_part} shall be invited to The Hangout. If this bill "
+            f"passes, the clerk issues a single-use invite link, valid seven "
+            f"days, delivered privately to the proposer."
         )
-        notes_thread = await stamp.create_thread(
-            name=(bill_name(number, title) + ": notes")[:100]
+        await file_bill(
+            interaction,
+            title=f"Invitation of {name}"[:100],
+            what=what,
+            why=str(self.why),
+            kind="invite",
         )
-        notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
-        for label, body in (("What", what), ("Why", why)):
-            for i, piece in enumerate(chunk_text(body)):
-                prefix = f"### {label}\n" if i == 0 else ""
-                await floor.send(prefix + piece)
-        if options:
-            stub = {"no": number, "options": options, "round": 1}
-            ballot = await floor.send(
-                multi_ballot_content(stub, ends_at, text.mention),
-                view=MultiBallotView(options),
+
+
+class KickModal(discord.ui.Modal, title="Propose a removal"):
+    why = discord.ui.TextInput(
+        label="Why",
+        style=discord.TextStyle.paragraph,
+        placeholder="The house deserves your reasons, stated properly.",
+        max_length=4000,
+    )
+
+    def __init__(self, target: discord.Member):
+        super().__init__()
+        self.target = target
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        eligible_now = len([m for m in self.target.guild.members if has_key(m) and not m.bot]) - 1
+        what = (
+            f"{self.target.display_name} shall be removed from The Hangout. "
+            f"Removal requires yes from all eligible voters but two; the "
+            f"subject cannot vote and keeps the full floor to plead. The "
+            f"tally will never be published. Eligible voters at filing: "
+            f"{eligible_now}; the threshold is computed at close."
+        )
+        await file_bill(
+            interaction,
+            title=f"Removal of {self.target.display_name}"[:100],
+            what=what,
+            why=str(self.why),
+            kind="kick",
+            target_id=self.target.id,
+            floor_hours=72.0,
+        )
+
+
+class KickTargetView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.select = discord.ui.UserSelect(placeholder="Who is the subject of this bill?")
+        self.select.callback = self.pick
+        self.add_item(self.select)
+
+    async def pick(self, interaction: discord.Interaction):
+        target = self.select.values[0]
+        guild = interaction.guild
+        member = guild.get_member(target.id)
+        if member is None or not has_key(member):
+            return await interaction.response.send_message(
+                "They hold no key; there is nothing to remove.", ephemeral=True
             )
-        else:
-            ballot = await floor.send(
-                f"**Ballot** for Bill No. {number}. Cast, change, or retract until the floor "
-                f"closes <t:{int(ends_at.timestamp())}:R>. Debate in {text.mention}. "
-                f"Results appear at close; individual votes never do.",
-                view=BallotView(),
+        if member.bot:
+            return await interaction.response.send_message(
+                "The machines are not subject to removal bills.", ephemeral=True
             )
-        bills.append(
-            {
-                "no": number,
-                "title": title,
-                "author_id": interaction.user.id,
-                "author": interaction.user.display_name,
-                "what": what,
-                "why": why,
-                "message_id": stamp.id,
-                "ballot_message_id": ballot.id,
-                "notes_message_id": notes_msg.id,
-                "notes_thread_id": notes_thread.id,
-                "chamber_category_id": category.id,
-                "chamber_text_id": text.id,
-                "chamber_voice_id": voice.id,
-                "submitted_at": now_utc().isoformat(),
-                "ends_at": ends_at.isoformat(),
-                "status": "on_floor",
-                "options": options or None,
-                "round": 1,
-                "ballots": {},
-                "notes": {},
-            }
-        )
-        save_json(BILLS, bills)
-        print(f"bill no. {number} ({title}) by {interaction.user.display_name}")
-        await interaction.followup.send(
-            f"Filed. Bill No. {number} is on the floor: {floor.mention}, "
-            f"debate in {text.mention}.",
-            ephemeral=True,
-        )
+        if member.id == guild.owner_id:
+            return await interaction.response.send_message(
+                "The platform will not allow the owner to be kicked. "
+                "Ownership is a matter for elections, not removals.",
+                ephemeral=True,
+            )
+        if member.id == interaction.user.id:
+            return await interaction.response.send_message(
+                "You may simply leave; the door works in both directions.",
+                ephemeral=True,
+            )
+        for b in load_json(BILLS, []):
+            if (
+                b.get("kind") == "kick"
+                and b.get("target_id") == member.id
+                and b.get("status") == "on_floor"
+            ):
+                return await interaction.response.send_message(
+                    "They are already before the house.", ephemeral=True
+                )
+        await interaction.response.send_modal(KickModal(member))
 
 
 class SubmitBillView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
+    def _keyed(self, interaction):
+        return has_key(interaction.user)
 
     @discord.ui.button(
         label="Submit a bill",
@@ -698,12 +839,43 @@ class SubmitBillView(discord.ui.View):
         custom_id="clerk:bill",
     )
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_key(interaction.user):
+        if not self._keyed(interaction):
             return await interaction.response.send_message(
                 "A key is required to file bills. Sign the charter at the door first.",
                 ephemeral=True,
             )
         await interaction.response.send_modal(BillModal())
+
+    @discord.ui.button(
+        label="Propose an invite",
+        emoji="💌",
+        style=discord.ButtonStyle.secondary,
+        custom_id="clerk:bill_invite",
+    )
+    async def invite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._keyed(interaction):
+            return await interaction.response.send_message(
+                "A key is required. Sign the charter at the door first.", ephemeral=True
+            )
+        await interaction.response.send_modal(InviteModal())
+
+    @discord.ui.button(
+        label="Propose a removal",
+        emoji="🚪",
+        style=discord.ButtonStyle.secondary,
+        custom_id="clerk:bill_kick",
+    )
+    async def kick(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._keyed(interaction):
+            return await interaction.response.send_message(
+                "A key is required. Sign the charter at the door first.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            "Removal is the house's heaviest instrument: a 72-hour floor, "
+            "and it passes only if all eligible voters but two say yes.",
+            view=KickTargetView(),
+            ephemeral=True,
+        )
 
 
 # ---------- closing the floor ----------
@@ -747,7 +919,11 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     thread, close the ballot, archive the chamber."""
     bill["status"] = "passed" if passed else "failed"
     bill["closed_at"] = now_utc().isoformat()
-    bill["tally_line"] = tally_line
+    # people-bills (invite, kick) never publish numbers: a barely-admitted
+    # member should never learn the margin
+    secret = bill.get("kind") in ("invite", "kick")
+    bill["tally_line"] = "a sealed tally" if secret else tally_line
+    shown = "The tally is sealed." if secret else tally_line
     floor = find_channel(guild, "the-floor")
 
     act_line = await publish_act(guild, bill, decided) if passed else ""
@@ -756,19 +932,19 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
         if decided:
             headline = (
                 f"## Bill No. {bill['no']}: {bill['title']}\n"
-                f"**Decided: {decided}**\n{tally_line}{act_line}"
+                f"**Decided: {decided}**\n{shown}{act_line}"
             )
         else:
             verdict = "Passed" if passed else "Failed"
             headline = (
                 f"## Bill No. {bill['no']}: {bill['title']}\n"
-                f"**{verdict}**  {tally_line}{act_line}"
+                f"**{verdict}**  {shown}{act_line}"
             )
         await floor.send(view=Card([headline]))
         try:
             ballot_msg = await floor.fetch_message(bill["ballot_message_id"])
             await ballot_msg.edit(
-                content=f"**Ballot closed** for Bill No. {bill['no']}. {tally_line}",
+                content=f"**Ballot closed** for Bill No. {bill['no']}. {shown}",
                 view=None,
             )
         except discord.HTTPException:
@@ -808,6 +984,59 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     print(f"bill no. {bill['no']} closed: {bill['status']} ({tally_line})")
 
 
+async def execute_invite(guild, bill):
+    """A passed invite bill: single-use 7-day link, DMed to the proposer."""
+    reception = reception_channel(guild)
+    proposer = guild.get_member(bill["author_id"])
+    if reception is None or proposer is None:
+        return await health_log(
+            guild,
+            f"⚠️ Bill No. {bill['no']} passed but the invite could not be "
+            f"issued (missing reception or proposer).",
+        )
+    invite = await reception.create_invite(
+        max_uses=1, max_age=604800, unique=True,
+        reason=f"Invitation act: Bill No. {bill['no']}",
+    )
+    bill["invite_url"] = invite.url
+    update_bill(bill)
+    try:
+        await proposer.send(
+            f"The house has approved your invitation (Bill No. {bill['no']}). "
+            f"One link, single use, seven days: {invite.url}"
+        )
+    except discord.HTTPException:
+        desk = find_channel(guild, "submit-a-bill")
+        if desk:
+            await desk.send(
+                f"{proposer.mention}: your invitation passed, but your DMs "
+                f"are closed and the clerk cannot deliver the link. Open "
+                f"them and ask at the desk."
+            )
+    await health_log(guild, f"⚖️ Invite issued under Bill No. {bill['no']}.")
+
+
+async def execute_kick(guild, bill):
+    """A passed removal bill: sealed farewell, key withdrawn, removal."""
+    member = guild.get_member(bill.get("target_id"))
+    if member is None:
+        return await health_log(
+            guild, f"Bill No. {bill['no']}: the subject had already left."
+        )
+    try:
+        await member.send(
+            f"The house of {guild.name} has voted for your removal. The "
+            f"tally is sealed and will remain so. The clerk wishes you well."
+        )
+    except discord.HTTPException:
+        pass
+    key = key_role(guild)
+    if key and key in member.roles:
+        await member.remove_roles(key, reason=f"Removal: Bill No. {bill['no']}")
+    await member.kick(reason=f"Removal: Bill No. {bill['no']}")
+    await health_log(guild, f"⚖️ Removal executed under Bill No. {bill['no']}.")
+
+
 async def close_bill(guild, bill):
     if bill.get("options"):
         return await close_multi(guild, bill)
@@ -815,7 +1044,24 @@ async def close_bill(guild, bill):
     yes = sum(1 for v in ballots.values() if v == "yes")
     no = sum(1 for v in ballots.values() if v == "no")
     bill["tally"] = {"yes": yes, "no": no}
-    await finalize_bill(guild, bill, yes > no, f"✅ {yes} / ❌ {no}")
+
+    if bill.get("kind") == "kick":
+        eligible = [
+            m for m in guild.members
+            if has_key(m) and not m.bot and m.id != bill.get("target_id")
+        ]
+        required = max(len(eligible) - 2, 1)
+        bill["threshold"] = {"eligible": len(eligible), "required": required}
+        passed = yes >= required
+        await finalize_bill(guild, bill, passed, f"✅ {yes} / ❌ {no}")
+        if passed:
+            await execute_kick(guild, bill)
+        return
+
+    passed = yes > no
+    await finalize_bill(guild, bill, passed, f"✅ {yes} / ❌ {no}")
+    if passed and bill.get("kind") == "invite":
+        await execute_invite(guild, bill)
 
 
 async def close_multi(guild, bill):
