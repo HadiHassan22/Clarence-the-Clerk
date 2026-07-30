@@ -1,0 +1,110 @@
+# Server layout: the minimal set of channels that are absolutely needed.
+# A channel not on this list is one passed bill away from existing;
+# that is the system working, not a gap.
+#
+# Naming style: emoji + "・" separator for text, emoji + space for voice.
+# Legislative terminology: a proposed law is a bill; bills are debated and
+# voted on the floor; a passed bill becomes an act; acts are published in
+# the gazette.
+#
+# Permission model: one role, Citizen, granted by Clarence when a member
+# signs the charter. No hierarchy among citizens; the role only marks the
+# boundary between the door and the house.
+# visibility levels:
+#   gate     - visible to everyone, even the unsigned (the door)
+#   citizens - visible to Citizens only (the default for everything)
+#   owner    - visible to the server owner alone (the archive)
+# read_only: true means only the bot (the executive) can post there;
+# members can react.
+#
+# The bot builds all of this in one shot on first run (see ROADMAP.md).
+
+# Provisional voting rules (the founder's proposal and nothing more;
+# the parliament legislates the real values later).
+voting:
+  floor_hours: 0.05   # TEMP for sandbox testing (3 minutes); launch value: 48
+
+categories:
+  # The door: no category, sits above everything.
+  - name: ""
+    channels:
+      - name: "📜・charter"
+        read_only: true
+        visibility: gate
+        topic: "The founding charter. Sign below to enter. Amended only by Act."
+      - name: "🛎️・reception"
+        visibility: gate
+        topic: "The desk at the door. Say hello before you sign; the house can hear you."
+
+  - name: hangout
+    channels:
+      - name: "💬・general"
+        topic: "The room."
+      - name: "😂・memes"
+        topic: "Quantity over quality."
+      - name: "🥗・food"
+        topic: "What you cooked, what you ordered, what you regret."
+      - name: "🐶・pets"
+        topic: "Mandatory tax payments accepted here."
+      - name: "📷・photos"
+        topic: "Things you saw and pointed a camera at."
+      - name: "🎨・art"
+        topic: "Things you made. Skill optional."
+      - name: "🖥️・tech"
+        topic: "Setups, gadgets, code, and strong opinions about all three."
+      - name: "🎭・roles"
+        read_only: true
+        topic: "Make yourself a color. Wear up to five, yours or anyone's."
+      # Voice inside hangout so it sits under the texts, above gaming.
+      - name: "🛋️ General"
+        type: voice
+
+  - name: "🎵 music"
+    channels:
+      - name: "🎵 Music 1"
+        type: voice
+      - name: "🎵 Music 2"
+        type: voice
+      - name: "🎵 Music 3"
+        type: voice
+
+  - name: "🎮 gaming"
+    channels:
+      - name: "🕹️・gaming"
+        topic: "What we play, when we play it, and whose fault the loss was."
+      - name: "🎮 Lobby"
+        type: voice
+      - name: "🎮 Team of 10"
+        type: voice
+        user_limit: 10
+      - name: "🎮 Team of 5 A"
+        type: voice
+        user_limit: 5
+      - name: "🎮 Team of 5 B"
+        type: voice
+        user_limit: 5
+      - name: "🎮 Trio A"
+        type: voice
+        user_limit: 3
+      - name: "🎮 Trio B"
+        type: voice
+        user_limit: 3
+
+  - name: governance
+    channels:
+      - name: "🖋️・submit-a-bill"
+        read_only: true
+        topic: "Click the button, state your bill and your reasons. The clerk handles the rest."
+      - name: "🗳️・the-floor"
+        read_only: true
+        topic: "Bills before the house. Notes in threads, ballots by button, always anonymous."
+      - name: "🏛️・gazette"
+        read_only: true
+        topic: "Every Act ever passed, numbered. The permanent record."
+
+  # Closed debate chambers land here: text channels locked and moved by
+  # the clerk when a bill's floor closes. Visible to the server owner
+  # only (standing-orders wording amendment pending). Starts empty.
+  - name: "🗄️ archive"
+    visibility: owner
+    channels: []

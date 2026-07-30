@@ -1,0 +1,24 @@
+{
+  "asset": "clerk_avatar",
+  "bot_name": "Clarence the Clerk",
+  "character": "A sharp, agender legal assistant. Anonymous by design (nonhuman or faceless). Tailored, crisp, composed, quietly formidable. Never an accountant: no visor, no ledger, no banker's lamp.",
+  "usage": "Discord bot avatar. Reads at 40px in chat: subject centered, bold, the silhouette or face large in frame.",
+  "size": "1024x1024, square",
+  "style_anchor": "Match the approved victory banner: flat vector illustration with subtle paper grain, dark charcoal navy base (#14161f), warm amber accent light (#e0a458), cyan rim light (#6ec3d9), no text, no letters, no watermark.",
+  "variants": [
+    {
+      "id": "avatar_owl_counsel",
+      "prompt": "A sleek sharp-groomed owl in a perfectly tailored dark blazer with a crisp white collar and a slim dark tie, thin elegant round spectacles, holding a leather document folio under one wing, upright confident posture behind a minimal modern lectern, one warm amber accent light (#e0a458) and one cool cyan rim light (#6ec3d9), near-black charcoal navy background (#14161f), flat vector illustration with subtle paper grain, composed and quietly formidable, the round face large and readable at tiny avatar size, no text, no letters"
+    },
+    {
+      "id": "avatar_faceless_counsel",
+      "prompt": "An anonymous figure in a sharply tailored dark suit with a crisp white shirt and slim tie, where the head is a smooth featureless silhouette with a soft warm glow outline (#e0a458), holding a leather document folio against the chest, cyan rim light (#6ec3d9) tracing one shoulder, near-black charcoal navy background (#14161f), flat vector illustration with subtle paper grain, elegant, composed, genderless and faceless by design, bold readable shape at tiny avatar size, no text, no letters"
+    }
+  ],
+  "reject_if": [
+    "reads as an accountant (visor, ledger, banker's lamp)",
+    "gendered features",
+    "face or silhouette not readable at 40px",
+    "any text or letters appear"
+  ]
+}
