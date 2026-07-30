@@ -23,6 +23,7 @@ from pathlib import Path
 
 import discord
 import yaml
+from aiohttp import web
 from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -949,10 +950,45 @@ async def ensure_button_message(channel, state_key, content, view):
     print(f"button posted in #{channel.name}")
 
 
+# ---------- health endpoint ----------
+# Binds only when PORT is set (Render provides it). Serves /healthz with
+# read-only vitals; the future dashboard grows from here.
+
+async def start_web():
+    port = int(os.environ.get("PORT", 0))
+    if not port:
+        return
+
+    async def healthz(request):
+        bills = load_json(BILLS, [])
+        ready = bot.is_ready()
+        return web.json_response(
+            {
+                "status": "ok",
+                "clerk": str(bot.user) if ready else None,
+                "ready": ready,
+                "latency_ms": round(bot.latency * 1000) if ready else None,
+                "open_bills": sum(1 for b in bills if b.get("status") == "on_floor"),
+                "acts": len(load_json(ACTS, [])),
+                "signatures": len(load_json(SIGNATURES, [])),
+                "custom_roles": len(load_json(ROLES, {})),
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/healthz", healthz)
+    app.router.add_get("/", healthz)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    print(f"health endpoint listening on :{port}/healthz")
+
+
 # ---------- lifecycle ----------
 
 @bot.event
 async def setup_hook():
+    await start_web()
     bot.add_view(SignView())
     bot.add_view(SubmitBillView())
     bot.add_view(BallotView())
