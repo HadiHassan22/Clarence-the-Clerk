@@ -1498,7 +1498,10 @@ async def ensure_button_message(channel, state_key, content, view):
     msg_id = state.get(state_key)
     if msg_id:
         try:
-            await channel.fetch_message(msg_id)
+            message = await channel.fetch_message(msg_id)
+            # re-stamp content and components so new buttons and wording
+            # appear on existing messages after a deploy
+            await message.edit(content=content, view=view)
             return
         except discord.NotFound:
             pass
