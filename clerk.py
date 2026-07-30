@@ -55,7 +55,10 @@ ROLE_CREATE_MAX = 5  # roles one person may create
 ROLE_WEAR_MAX = 5    # custom roles one person may wear
 
 CITIZEN = "Key"  # the signing role is an object you receive, not a title
+NERD = "nerd"    # opt-in subscription to the bot-health channel, not a rank
 ACCENT = discord.Colour(0xE0A458)
+BOOT_AT = datetime.now(timezone.utc)
+COMMIT = os.environ.get("RENDER_GIT_COMMIT", "local")[:7]
 
 intents = discord.Intents.default()
 intents.members = True
@@ -106,6 +109,68 @@ def archive_category(guild):
 
 def governance_category(guild):
     return next((c for c in guild.categories if "governance" in c.name.lower()), None)
+
+
+def health_channel(guild):
+    return find_channel(guild, "bot-health")
+
+
+async def health_log(guild, text):
+    """Post an event line to bot-health; never let reporting break the op."""
+    channel = health_channel(guild)
+    if channel:
+        try:
+            await channel.send(text[:1900])
+        except discord.HTTPException:
+            pass
+
+
+def health_content(guild):
+    bills = load_json(BILLS, [])
+    open_bills = [b for b in bills if b.get("status") == "on_floor"]
+    next_close = min(
+        (b["ends_at"] for b in open_bills if "ends_at" in b), default=None
+    )
+    lines = [
+        "## Clerk vitals",
+        f"Commit: `{COMMIT}`",
+        f"On duty since <t:{int(BOOT_AT.timestamp())}:R>",
+        f"Gateway latency: {round(bot.latency * 1000)}ms" if bot.is_ready() else "Gateway: connecting",
+        f"Open bills: {len(open_bills)}"
+        + (
+            f" (next close <t:{int(datetime.fromisoformat(next_close).timestamp())}:R>)"
+            if next_close
+            else ""
+        ),
+        f"Acts: {len(load_json(ACTS, []))} | Signatures: {len(load_json(SIGNATURES, []))} "
+        f"| Custom roles: {len(load_json(ROLES, {}))}",
+        f"Floor window: {FLOOR_HOURS:g}h",
+        f"-# Updated <t:{int(now_utc().timestamp())}:R>. "
+        f"Opt out with Nerd mode in the roles channel.",
+    ]
+    return "\n".join(lines)
+
+
+async def update_health(guild):
+    channel = health_channel(guild)
+    if channel is None:
+        return
+    state = load_json(STATE, {})
+    content = health_content(guild)
+    msg_id = state.get("health_message_id")
+    if msg_id:
+        try:
+            message = await channel.fetch_message(msg_id)
+            return await message.edit(content=content)
+        except discord.NotFound:
+            pass
+    message = await channel.send(content)
+    try:
+        await message.pin(reason="Clerk vitals")
+    except discord.HTTPException:
+        pass
+    state["health_message_id"] = message.id
+    save_json(STATE, state)
 
 
 def has_key(member):
@@ -835,6 +900,9 @@ async def check_floor():
                 await close_bill(guild, bill)
             except Exception as e:
                 print(f"failed to close bill {bill['no']}: {e!r}")
+                await health_log(
+                    guild, f"⚠️ Failed to close Bill No. {bill['no']}: `{e!r}`"
+                )
 
 
 # ---------- custom roles (purely aesthetic) ----------
@@ -1146,6 +1214,33 @@ class RolesHomeView(discord.ui.View):
             ephemeral=True,
         )
 
+    @discord.ui.button(
+        label="Nerd mode", emoji="🩺",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:nerd_toggle",
+    )
+    async def nerd_mode(self, interaction, button):
+        if not has_key(interaction.user):
+            return await interaction.response.send_message(
+                "A key is required. Sign the charter first.", ephemeral=True
+            )
+        role = discord.utils.get(interaction.guild.roles, name=NERD)
+        if role is None:
+            return await interaction.response.send_message(
+                "The nerd role is missing. Run build_server.py first.", ephemeral=True
+            )
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role, reason="Nerd mode off")
+            return await interaction.response.send_message(
+                "Nerd mode off. The clerk's vitals are once again none of your business.",
+                ephemeral=True,
+            )
+        await interaction.user.add_roles(role, reason="Nerd mode on")
+        channel = health_channel(interaction.guild)
+        where = f" {channel.mention} awaits." if channel else ""
+        await interaction.response.send_message(
+            f"Nerd mode on.{where}", ephemeral=True
+        )
+
 
 # ---------- pinned buttons ----------
 
@@ -1245,6 +1340,7 @@ async def ensure_furniture(guild):
         RolesHomeView(),
     )
     await update_wardrobe(guild)
+    await update_health(guild)
 
 
 @tasks.loop(seconds=300)
@@ -1255,6 +1351,7 @@ async def furniture_loop():
             await ensure_furniture(guild)
         except Exception as e:
             print(f"furniture check failed: {e!r}")
+            await health_log(guild, f"⚠️ Furniture check failed: `{e!r}`")
 
 
 @bot.event
@@ -1263,6 +1360,9 @@ async def on_ready():
     guild = bot.get_guild(GUILD_ID)
     if guild:
         await ensure_furniture(guild)
+        if not getattr(bot, "_boot_announced", False):
+            bot._boot_announced = True
+            await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
     if not check_floor.is_running():
         check_floor.start()
     if not furniture_loop.is_running():

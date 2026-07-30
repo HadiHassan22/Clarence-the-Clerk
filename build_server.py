@@ -50,20 +50,24 @@ def config_channels():
 
 
 CITIZEN = "Key"  # the signing role is an object you receive, not a title
+NERD = "nerd"    # opt-in subscription to the bot-health channel, not a rank
 
 
-async def ensure_citizen(guild):
-    role = discord.utils.get(guild.roles, name=CITIZEN)
+async def ensure_role(guild, name, reason):
+    role = discord.utils.get(guild.roles, name=name)
     if role is None:
         role = await guild.create_role(
-            name=CITIZEN, permissions=discord.Permissions.none(),
-            reason="The boundary between the door and the house",
+            name=name, permissions=discord.Permissions.none(), reason=reason
         )
-        print(f"created role: {CITIZEN}")
+        print(f"created role: {name}")
     return role
 
 
-def overwrites_for(guild, citizen, owner, spec, default_vis="citizens"):
+async def ensure_citizen(guild):
+    return await ensure_role(guild, CITIZEN, "The boundary between the door and the house")
+
+
+def overwrites_for(guild, citizen, owner, spec, default_vis="citizens", nerd=None):
     """Build overwrites from visibility + read_only."""
     vis = spec.get("visibility", default_vis)
     no_posting = dict(
@@ -96,6 +100,19 @@ def overwrites_for(guild, citizen, owner, spec, default_vis="citizens"):
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             citizen: discord.PermissionOverwrite(view_channel=False),
             owner: discord.PermissionOverwrite(view_channel=True, **no_posting),
+        }
+    elif vis == "nerds":
+        if nerd is None:
+            raise ValueError("nerds visibility requires the nerd role")
+        nerd_ow = (
+            discord.PermissionOverwrite(view_channel=True, **no_posting)
+            if spec.get("read_only")
+            else discord.PermissionOverwrite(view_channel=True)
+        )
+        ow = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            citizen: discord.PermissionOverwrite(view_channel=False),
+            nerd: nerd_ow,
         }
     else:
         raise ValueError(f"unknown visibility {vis!r}")
@@ -130,9 +147,14 @@ async def sweep(guild, citizen, owner):
     archive = await ensure_archive(guild, citizen, owner)
     hidden = overwrites_for(guild, citizen, owner, {"visibility": "owner"})
 
+    def is_chamber(ch):
+        # live debate chambers (🗳️ bill categories) belong to the clerk,
+        # not the builder; never sweep them
+        return ch.category is not None and ch.category.name.startswith("🗳️")
+
     keep_bases = {base_name(n) for n in keep_text}
     for ch in list(guild.text_channels):
-        if ch.name in keep_text:
+        if ch.name in keep_text or is_chamber(ch):
             continue
         if not ch.name.startswith("archived_") and base_name(ch.name) in keep_bases:
             continue  # emoji rename pending; build() adopts it by base name
@@ -149,7 +171,7 @@ async def sweep(guild, citizen, owner):
         print(f"archived: #{ch.name} -> #{new_name}")
 
     for vc in list(guild.voice_channels):
-        if vc.name in keep_voice:
+        if vc.name in keep_voice or is_chamber(vc):
             continue
         await vc.delete(reason="Pre-launch sweep: voice has no history")
         print(f"deleted voice: {vc.name}")
@@ -160,14 +182,14 @@ async def sweep(guild, citizen, owner):
             print(f"deleted category: {cat.name}")
 
 
-async def build(guild, citizen, owner):
+async def build(guild, citizen, owner, nerd):
     """Create or adopt everything in server_config.yaml, in order."""
     position = 0
     for cat_spec in CONFIG["categories"]:
         category = None
         cat_vis = cat_spec.get("visibility", "citizens")
         if cat_spec["name"]:
-            cat_ow = overwrites_for(guild, citizen, owner, {"visibility": cat_vis})
+            cat_ow = overwrites_for(guild, citizen, owner, {"visibility": cat_vis}, nerd=nerd)
             category = discord.utils.get(guild.categories, name=cat_spec["name"])
             if category is None:
                 category = await guild.create_category(cat_spec["name"], overwrites=cat_ow)
@@ -179,7 +201,9 @@ async def build(guild, citizen, owner):
 
         for spec in cat_spec.get("channels") or []:
             is_voice = spec.get("type") == "voice"
-            overwrites = overwrites_for(guild, citizen, owner, spec, default_vis=cat_vis)
+            overwrites = overwrites_for(
+                guild, citizen, owner, spec, default_vis=cat_vis, nerd=nerd
+            )
 
             if is_voice:
                 existing = discord.utils.get(guild.voice_channels, name=spec["name"])
@@ -311,11 +335,12 @@ async def on_ready():
         guild = client.get_guild(GUILD_ID)
         print(f"Clerk on duty in: {guild.name}")
         citizen = await ensure_citizen(guild)
+        nerd = await ensure_role(guild, NERD, "Opt-in bot-health visibility, not a rank")
         owner = guild.owner or await guild.fetch_member(guild.owner_id)
         print("-- sweep --")
         await sweep(guild, citizen, owner)
         print("-- build --")
-        await build(guild, citizen, owner)
+        await build(guild, citizen, owner, nerd)
         await enforce_order(guild)
         await cleanup_stray_categories(guild)
         print("-- charter --")

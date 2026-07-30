@@ -101,6 +101,10 @@ categories:
       - name: "🏛️・gazette"
         read_only: true
         topic: "Every Act ever passed, numbered. The permanent record."
+      - name: "🩺・bot-health"
+        read_only: true
+        visibility: nerds
+        topic: "The clerk's vitals. Opt in or out with Nerd mode in the roles channel."
 
   # Closed debate chambers land here: text channels locked and moved by
   # the clerk when a bill's floor closes. Visible to the server owner
