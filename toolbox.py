@@ -12,8 +12,11 @@ authorship, and sealed tallies before the model ever sees them.
 import asyncio
 import copy
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger("toolbox")
 
 # configured by clerk.py at startup
 _paths = {}
@@ -159,6 +162,7 @@ def add_memory(kind, about, text, source="conversation"):
     if len(entries) > MEM_CAP:
         entries = entries[-MEM_CAP:]
     save_memories(entries)
+    log.info(f"memory filed [{kind}] {about}: {text}")
     return f"filed: [{kind}] {about}: {text}"
 
 
@@ -353,6 +357,7 @@ async def dispatch(guild, invoker, name, args):
         result = await spec["handler"](guild, invoker, args or {})
         entry["result"] = "ok"
         await _audit(entry)
+        log.info(f"tool {name} by {entry['user']}: ok")
         return result
     except Exception as e:
         entry["result"] = "error"

@@ -10,6 +10,7 @@ Activation requires GEMINI_API_KEY. Without it, handle_message is a no-op.
 
 import asyncio
 import json
+import logging
 import os
 from collections import deque
 from datetime import datetime, timezone
@@ -17,14 +18,16 @@ from pathlib import Path
 
 import discord
 
+log = logging.getLogger("brain")
+
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL = os.environ.get("CLERK_MODEL", "gemini-3.1-flash-lite")
 BUDGET_USD = float(os.environ.get("CLERK_BUDGET_USD", "10"))
 PRICE_IN_PER_M = 0.25
 PRICE_OUT_PER_M = 1.50
 
-RATE_PER_10MIN = 8
-RATE_PER_DAY = 30
+RATE_PER_10MIN = 15
+RATE_PER_DAY = 80
 MAX_TOOL_ROUNDS = 6
 MEMORY_MSGS = 40
 WHISPERER = "bot-whisperers"  # only holders of this role may address the clerk
@@ -229,26 +232,29 @@ async def _run_turn(guild, member, channel, text):
         temperature=0.4,
     )
 
+    used_tools = []
+    cost = 0.0
     for _ in range(MAX_TOOL_ROUNDS):
         response = await _client.aio.models.generate_content(
             model=MODEL, contents=contents, config=config
         )
         if response.usage_metadata:
-            _record_usage(response.usage_metadata)
+            cost += _record_usage(response.usage_metadata)
         candidate = response.candidates[0] if response.candidates else None
         if candidate is None or candidate.content is None:
-            return OUTAGE_LINE
+            return OUTAGE_LINE, used_tools, cost
         calls = [
             p.function_call
             for p in (candidate.content.parts or [])
             if getattr(p, "function_call", None)
         ]
         if not calls:
-            return (response.text or "").strip() or "..."
+            return ((response.text or "").strip() or "...", used_tools, cost)
         contents.append(candidate.content)
         result_parts = []
         for call in calls:
             args = dict(call.args) if call.args else {}
+            used_tools.append(call.name)
             result = await toolbox.dispatch(guild, member, call.name, args)
             result_parts.append(
                 types.Part.from_function_response(
@@ -256,7 +262,11 @@ async def _run_turn(guild, member, channel, text):
                 )
             )
         contents.append(types.Content(role="user", parts=result_parts))
-    return "The clerk has consulted enough records for one question. Ask again, more narrowly."
+    return (
+        "The clerk has consulted enough records for one question. Ask again, more narrowly.",
+        used_tools,
+        cost,
+    )
 
 
 async def _study_exchange(guild, member_name, channel_name, text, reply):
@@ -313,7 +323,7 @@ async def _study_exchange(guild, member_name, channel_name, text, reply):
                 source="observed",
             )
     except Exception as e:
-        print(f"memory study failed (harmless): {e!r}")
+        log.warning(f"memory study failed (harmless): {e!r}")
 
 
 def _is_addressed(message):
@@ -376,14 +386,24 @@ async def handle_message(message):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    started = datetime.now(timezone.utc)
+    used_tools, cost = [], 0.0
     async with _sem:
         try:
             async with message.channel.typing():
-                reply = await _run_turn(guild, member, message.channel, text)
+                reply, used_tools, cost = await _run_turn(
+                    guild, member, message.channel, text
+                )
         except Exception as e:
-            print(f"brain turn failed: {e!r}")
+            log.error(f"brain turn failed: {e!r}")
             await _deps["health_log"](guild, f"⚠️ Brain turn failed: `{e!r}`")
             reply = OUTAGE_LINE
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    log.info(
+        f"turn: {member.display_name} in #{getattr(message.channel, 'name', 'DM')} "
+        f"{elapsed:.1f}s ${cost:.4f} tools={used_tools or 'none'} "
+        f"({len(text)} chars in, {len(reply)} out)"
+    )
     _remember(message.channel.id, "Clarence", reply)
 
     # study the exchange for the memory book, off the hot path; only for

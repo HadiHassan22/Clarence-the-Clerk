@@ -20,6 +20,7 @@ Usage: .venv/bin/python clerk.py
 """
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,8 @@ ROLES = DATA / "roles.json"  # custom role registry: {role_id: {creator_id}}
 
 ROLE_CREATE_MAX = 5  # roles one person may create
 ROLE_WEAR_MAX = 5    # custom roles one person may wear
+
+log = logging.getLogger("clerk")
 
 CITIZEN = "Key"  # the signing role is an object you receive, not a title
 NERD = "nerd"    # opt-in subscription to the bot-health channel, not a rank
@@ -266,7 +269,7 @@ class SignView(discord.ui.View):
             }
         )
         save_json(SIGNATURES, signatures)
-        print(f"signature: {member.display_name} ({member.id})")
+        log.info(f"signature: {member.display_name} ({member.id})")
         await interaction.response.send_message(
             "Signed. Here is your key; the Hangout is open to you.", ephemeral=True
         )
@@ -660,7 +663,7 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
         }
     )
     save_json(BILLS, bills)
-    print(f"bill no. {number} ({title}, {kind}) by {interaction.user.display_name}")
+    log.info(f"bill filed: no. {number} ({title!r}, {kind}) by {interaction.user.display_name}")
     await interaction.followup.send(
         f"Filed. Bill No. {number} is on the floor: {floor.mention}, "
         f"debate in {text.mention}.",
@@ -968,7 +971,7 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
                 )
                 await thread.edit(archived=True, locked=True)
             except discord.HTTPException as e:
-                print(f"sealing notes thread failed for bill {bill['no']}: {e!r}")
+                log.warning(f"sealing notes thread failed for bill {bill['no']}: {e!r}")
 
     archive = archive_category(guild)
     hidden = await hidden_overwrites(guild)
@@ -988,7 +991,7 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
         await category.delete(reason="Floor closed")
 
     update_bill(bill)
-    print(f"bill no. {bill['no']} closed: {bill['status']} ({tally_line})")
+    log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
 
 
 async def execute_invite(guild, bill):
@@ -1137,7 +1140,7 @@ async def close_multi(guild, bill):
         bill["ballot_message_id"] = ballot.id
 
     update_bill(bill)
-    print(f"bill no. {bill['no']}: runoff opened ({tally_line})")
+    log.info(f"runoff opened: bill no. {bill['no']} ({tally_line})")
 
 
 @tasks.loop(seconds=60)
@@ -1152,7 +1155,7 @@ async def check_floor():
             try:
                 await close_bill(guild, bill)
             except Exception as e:
-                print(f"failed to close bill {bill['no']}: {e!r}")
+                log.error(f"failed to close bill {bill['no']}: {e!r}")
                 await health_log(
                     guild, f"⚠️ Failed to close Bill No. {bill['no']}: `{e!r}`"
                 )
@@ -1497,25 +1500,25 @@ class RolesHomeView(discord.ui.View):
 
 # ---------- pinned buttons ----------
 
-async def ensure_button_message(channel, state_key, content, view):
+async def ensure_button_message(channel, state_key, content, view, restamp=False):
     if channel is None:
-        print(f"WARNING: channel for {state_key} missing; button not posted")
+        log.warning(f"channel for {state_key} missing; button not posted")
         return
     state = load_json(STATE, {})
     msg_id = state.get(state_key)
     if msg_id:
         try:
             message = await channel.fetch_message(msg_id)
-            # re-stamp content and components so new buttons and wording
-            # appear on existing messages after a deploy
-            await message.edit(content=content, view=view)
+            if restamp:
+                # once per boot: new buttons/wording appear after a deploy
+                await message.edit(content=content, view=view)
             return
         except discord.NotFound:
             pass
     message = await channel.send(content, view=view)
     state[state_key] = message.id
     save_json(STATE, state)
-    print(f"button posted in #{channel.name}")
+    log.info(f"button posted in #{channel.name}")
 
 
 # ---------- health endpoint ----------
@@ -1552,7 +1555,7 @@ async def start_web():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    print(f"health endpoint listening on :{port}/healthz")
+    log.info(f"health endpoint listening on :{port}/healthz")
 
 
 # ---------- lifecycle ----------
@@ -1572,15 +1575,16 @@ async def setup_hook():
     await bot.tree.sync(guild=guild)
 
 
-async def ensure_furniture(guild):
-    """Post any missing clerk furniture. Runs at boot and periodically,
-    so channels created after boot get furnished without a restart."""
+async def ensure_furniture(guild, restamp=False):
+    """Post any missing clerk furniture. Runs at boot (restamp=True, so
+    deploys refresh buttons and wording) and periodically (verify only)."""
     await ensure_button_message(
         charter_channel(guild),
         "sign_message_id",
         "*Signing accepts the seeded arrangements as a starting point, "
         "nothing more. Any of it can be overwritten by a later Act.*",
         SignView(),
+        restamp=restamp,
     )
     await ensure_button_message(
         find_channel(guild, "submit-a-bill"),
@@ -1589,6 +1593,7 @@ async def ensure_furniture(guild):
         "the floor decides. Authorship is public; laws do not have "
         "anonymous authors.*",
         SubmitBillView(),
+        restamp=restamp,
     )
     await ensure_button_message(
         roles_channel(guild),
@@ -1596,6 +1601,7 @@ async def ensure_furniture(guild):
         "*Self-service: a role is a name and a color, nothing more. "
         "Create up to five, wear up to five, yours or anyone's.*",
         RolesHomeView(),
+        restamp=restamp,
     )
     await update_wardrobe(guild)
     await update_health(guild)
@@ -1606,7 +1612,7 @@ async def ensure_furniture(guild):
             permissions=discord.Permissions.none(),
             reason="Gate for addressing the clerk's brain",
         )
-        print(f"created role: {brain.WHISPERER}")
+        log.info(f"created role: {brain.WHISPERER}")
 
 
 @tasks.loop(seconds=300)
@@ -1616,16 +1622,16 @@ async def furniture_loop():
         try:
             await ensure_furniture(guild)
         except Exception as e:
-            print(f"furniture check failed: {e!r}")
+            log.error(f"furniture check failed: {e!r}")
             await health_log(guild, f"⚠️ Furniture check failed: `{e!r}`")
 
 
 @bot.event
 async def on_ready():
-    print(f"On duty as {bot.user}")
+    log.info(f"on duty as {bot.user} (commit {COMMIT})")
     guild = bot.get_guild(GUILD_ID)
     if guild:
-        await ensure_furniture(guild)
+        await ensure_furniture(guild, restamp=not getattr(bot, "_boot_announced", False))
         if not getattr(bot, "_boot_announced", False):
             bot._boot_announced = True
             await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
@@ -1642,7 +1648,7 @@ async def on_message(message: discord.Message):
     try:
         await brain.handle_message(message)
     except Exception as e:
-        print(f"brain handler error: {e!r}")
+        log.error(f"brain handler error: {e!r}")
 
 
 @bot.event
@@ -1660,4 +1666,5 @@ async def on_member_join(member: discord.Member):
         )
 
 
-bot.run(TOKEN)
+logging.getLogger("discord").setLevel(logging.WARNING)
+bot.run(TOKEN, log_level=logging.INFO)
