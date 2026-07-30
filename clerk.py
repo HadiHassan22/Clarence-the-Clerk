@@ -1183,6 +1183,7 @@ async def start_web():
         return web.json_response(
             {
                 "status": "ok",
+                "commit": os.environ.get("RENDER_GIT_COMMIT", "local")[:7],
                 "clerk": str(bot.user) if ready else None,
                 "guild": guild.name if guild else None,
                 "ready": ready,
