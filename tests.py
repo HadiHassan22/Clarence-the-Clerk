@@ -41,7 +41,9 @@ def skip(label, why):
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run, because get_event_loop stopped making one
+    # of its own in 3.14 and the repo is developed on it
+    return asyncio.run(coro)
 
 
 GUILD = types.SimpleNamespace(name="The Hangout")
@@ -192,6 +194,13 @@ def test_filing(clerk, data):
     check("a full floor stops everyone, not just the loudest", "error" in json.loads(
         run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
                              {"title": "t", "what": "w", "why": "y"}))))
+    set_floor([])
+    check("the same caps bind the button, not only the asking",
+          clerk._floor_full(CITIZEN) is None)
+    set_floor([{"no": i, "status": "on_floor", "author_id": 99} for i in range(2)])
+    check("a citizen at their limit is stopped whichever route they take",
+          clerk._floor_full(CITIZEN) is not None)
+
     set_floor([{"no": i, "status": "passed", "author_id": 99} for i in range(9)])
     check("closed bills do not count against the cap", "filed" in json.loads(
         run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
@@ -248,7 +257,8 @@ def test_closing(clerk, data):
     def on_floor(hours_ago, window_hours=48):
         submitted = now - clerk.timedelta(hours=hours_ago)
         return {"no": 5, "title": "t", "what": "w", "status": "on_floor",
-                "kind": "ordinary", "ballots": {}, "notes": {},
+                "kind": "ordinary", "author_id": 1, "notes": {},
+                "ballots": {"1": "yes", "2": "yes", "3": "no"},
                 "submitted_at": submitted.isoformat(),
                 "ends_at": (submitted + clerk.timedelta(hours=window_hours)).isoformat()}
 
@@ -282,6 +292,34 @@ def test_closing(clerk, data):
           out.get("outstanding") and out.get("done"))
     check("naming who called time", out.get("closed_early_by") == "Hadi")
 
+    print("\ncalling time cannot be aimed")
+    thin = on_floor(hours_ago=13)
+    thin["ballots"] = {"1": "yes"}
+    live[5] = thin
+    closed.clear()
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+    check("a floor nobody has voted on cannot be closed",
+          "error" in out and not closed)
+    check("and the refusal counts heads without reading them",
+          "voted" in out.get("error", "") and "sealed" in out.get("error", ""))
+
+    mine = on_floor(hours_ago=13)
+    mine["author_id"] = CITIZEN.id
+    live[5] = mine
+    closed.clear()
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+    check("an author cannot call time on their own bill",
+          "error" in out and not closed)
+
+    for kind in ("invite", "kick"):
+        people = on_floor(hours_ago=40)
+        people["kind"] = kind
+        live[5] = people
+        closed.clear()
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+        check(f"{'an' if kind == 'invite' else 'a'} {kind} bill is never closed early", "error" in out and not closed)
+
+    live[5] = on_floor(hours_ago=13)
     live[5]["status"] = "passed"
     out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
     check("a bill that already closed cannot be closed again", "error" in out)
@@ -295,6 +333,7 @@ def test_closing(clerk, data):
 
     # a three-minute sandbox floor must still be closable
     live[6] = dict(on_floor(hours_ago=0.02, window_hours=0.05), no=6)
+    live[6]["ballots"] = {"1": "yes", "2": "yes", "3": "no"}
     clerk.bill_by = lambda field, value: live.get(value)
     out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 6})))
     check("the guard scales to a three-minute test floor", "error" not in out)

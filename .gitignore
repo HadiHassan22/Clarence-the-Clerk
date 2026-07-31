@@ -15,3 +15,6 @@ votes.json
 
 # personal scratch
 w.md
+
+# Discord exports: private message history, never commit these
+discord_*.json

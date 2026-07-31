@@ -757,7 +757,12 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
 
 
 async def file_from_modal(interaction, **kwargs):
-    """Filing from a button, with the ephemeral receipt that expects."""
+    """Filing from a button, with the ephemeral receipt that expects. The
+    floor caps apply here exactly as they do when asking the clerk: the
+    two routes are the same power and must not differ."""
+    denial = _floor_full(interaction.user)
+    if denial:
+        return await interaction.followup.send(denial, ephemeral=True)
     bill = await file_bill(interaction.guild, interaction.user, **kwargs)
     if bill is None:
         return await interaction.followup.send(
@@ -2010,12 +2015,29 @@ async def act_propose_member(guild, invoker, args):
                        "ballot": "yes, no, or abstain; anonymous; tally sealed at close"})
 
 
-# A bill can be closed before its window runs out, but not the instant it
-# is filed: an author could otherwise file, vote for themselves, close, and
-# have an Act before anyone saw the bill exist. The floor must have run a
-# quarter of its own window first, which scales with floor_hours and so
-# stays workable on a three-minute sandbox setting.
+# A bill can be closed before its window runs out, under three guards.
+# Time alone is not enough: twelve hours into a live floor is still the
+# middle of the night, and an author with one friend awake could file,
+# vote, close, and hold an Act before the house had seen it.
+#   - a quarter of the bill's own window must have run, which scales with
+#     floor_hours and stays workable on a three-minute sandbox floor;
+#   - half the house must have voted, counted and never read, so the test
+#     is "the house has had its say" and calling time stays blind;
+#   - the author cannot call time on their own bill.
+# Bills about people are never closed early at all: their long window
+# exists so that no timezone is left out of a decision about a person.
 EARLY_CLOSE_FRACTION = 0.25
+EARLY_CLOSE_MIN_BALLOTS = 3
+
+
+def early_close_quorum(guild):
+    """Half the key-holders, never fewer than three. Counting ballots is
+    not reading them: this stays blind."""
+    keys = len([
+        m for m in getattr(guild, "members", [])
+        if not getattr(m, "bot", False) and has_key(m)
+    ])
+    return max(EARLY_CLOSE_MIN_BALLOTS, (keys + 1) // 2)
 
 
 async def act_close_floor(guild, invoker, args):
@@ -2031,6 +2053,16 @@ async def act_close_floor(guild, invoker, args):
             {"error": f"Bill No. {bill_no} closed already",
              "ruling": bill.get("status"), "act": bill.get("act")}
         )
+    if bill.get("kind") in ("invite", "kick"):
+        return json.dumps(
+            {"error": "bills about people run their full window, so that no "
+                      "timezone is left out of a decision about a person"}
+        )
+    if invoker.id == bill.get("author_id"):
+        return json.dumps(
+            {"error": "an author cannot call time on their own bill; anyone "
+                      "else may"}
+        )
 
     submitted = datetime.fromisoformat(bill["submitted_at"])
     ends = datetime.fromisoformat(bill["ends_at"])
@@ -2042,6 +2074,14 @@ async def act_close_floor(guild, invoker, args):
             {"error": "too early: the house has not had a fair look at this "
                       "one yet",
              "closable_from": opens.isoformat()}
+        )
+    cast = len(bill.get("ballots", {}))
+    needed = early_close_quorum(guild)
+    if cast < needed:
+        return json.dumps(
+            {"error": f"only {cast} of the house has voted; time cannot be "
+                      f"called until {needed} have. How they voted is sealed, "
+                      f"and this counts nothing but heads."}
         )
 
     floor = find_channel(guild, "the-floor")

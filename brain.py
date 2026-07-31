@@ -37,6 +37,21 @@ _deps = {}  # injected by clerk.py: bot, here, data, has_key, health_log, chunk_
 _sem = asyncio.Semaphore(1)
 _memory = {}  # channel_id -> deque[(author, text)]
 
+def _tool_failure(result):
+    """The reason a tool refused, or None if it did its job. Handlers
+    speak two dialects: a FAILED: prefix, or a JSON error field."""
+    if result.startswith("FAILED:"):
+        return result[len("FAILED:"):].strip()
+    if result.lstrip().startswith("{"):
+        try:
+            payload = json.loads(result)
+        except ValueError:
+            return None
+        if isinstance(payload, dict) and payload.get("error"):
+            return str(payload["error"])
+    return None
+
+
 RETRY_CODES = {429, 500, 502, 503, 504}  # transient; 401/403 are not
 
 
@@ -354,8 +369,9 @@ async def _run_turn(guild, member, channel, text):
             args = dict(call.args) if call.args else {}
             used_tools.append(call.name)
             result = await toolbox.dispatch(guild, member, call.name, args)
-            if result.startswith("FAILED:"):
-                failures.append(f"{call.name}: {result[7:].strip()}")
+            failed = _tool_failure(result)
+            if failed:
+                failures.append(f"{call.name}: {failed}")
             result_parts.append(
                 types.Part.from_function_response(
                     name=call.name, response={"result": result[:20000]}

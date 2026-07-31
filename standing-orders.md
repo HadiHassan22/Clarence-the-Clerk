@@ -67,11 +67,14 @@ A bill remains on the floor for [48 hours]. When the floor closes:
 - More yes than no: the bill passes. Ties fail. Abstention is not a veto;
   it is a delegation to those who voted.
 
-Any citizen may ask the clerk to call time early, once the bill has run a
-quarter of its window. Nobody can see how a vote stands before it shuts,
-including the clerk, so calling time is always done blind and can never be
-timed to suit anyone. The clerk announces an early close on the floor and
-names who called it.
+Any citizen except the bill's author may ask the clerk to call time
+early, once the bill has run a quarter of its window and half the house
+has voted. Bills that admit or remove a person are never closed early:
+their long window exists so that no timezone is left out of a decision
+about a person. Nobody can see how a vote stands before it shuts,
+including the clerk, so calling time is always done blind; the clerk
+counts heads to know the house has had its say, and reads none of them.
+An early close is announced on the floor, naming who called it.
 
 ### 5. Passage
 
