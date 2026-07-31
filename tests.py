@@ -1003,15 +1003,21 @@ def _wardrobe(clerk):
 
     hadi = Member(99, "Hadi")
     other = Member(7, "Ricky")
+
+    async def create_role(name, colour, **kw):
+        made.append(Role(600 + len(made), name, colour.value, 1))
+        return made[-1]
+
     guild = types.SimpleNamespace(
         id=1, name="The Hangout", roles=made, members=[hadi, other],
         text_channels=[], channels=[], premium_subscriber_role=None,
         get_role=lambda rid: next((r for r in made if r.id == int(rid)), None),
         get_member=lambda uid: {99: hadi, 7: other}.get(uid),
+        create_role=create_role,
     )
     clerk.save_json(clerk.ROLES, {"500": {"creator_id": 99},
                                   "501": {"creator_id": 7}})
-    return guild, hadi, hers, theirs
+    return guild, hadi, other, hers, theirs
 
 
 def test_colour_hands(clerk, data):
@@ -1027,7 +1033,7 @@ def test_colour_hands(clerk, data):
     print("\nwhat the colour tools hand back")
     keep = clerk.load_json(clerk.ROLES, {})
     try:
-        guild, hadi, hers, theirs = _wardrobe(clerk)
+        guild, hadi, ricky, hers, theirs = _wardrobe(clerk)
 
         # ---- the listing: named colours, and made-versus-worn ----
         seen = json.loads(run(clerk.act_list_colors(guild, hadi, {})))
@@ -1090,6 +1096,53 @@ def test_colour_hands(clerk, data):
         check("taking off what is already off says exactly that",
               "not wearing horsy role" in empty
               and "not wearing any colour role" in empty)
+
+        # ---- for somebody else, which is the whole of the ask ----
+        # "give Dio the -.- role" used to be answered with an apology about
+        # only being able to act on the person speaking. He can act on
+        # anybody now, so the rules that are left are about ownership, not
+        # about who is in front of him.
+        on_ricky = run(clerk.act_wear_color(
+            guild, hadi, {"role": "horse", "member": "Ricky"}))
+        check("a colour asked for on somebody else goes on them",
+              theirs in ricky.roles and theirs not in hadi.roles)
+        check("and the report names the person it went on",
+              "Ricky is now wearing" in on_ricky)
+
+        nobody = run(clerk.act_wear_color(
+            guild, hadi, {"role": "horsy role", "member": "Dio"}))
+        check("a name nobody here goes by is reported, not guessed at",
+              "could not work out who 'Dio' is" in nobody
+              and hers not in ricky.roles)
+
+        not_yours = run(clerk.act_shed_color(
+            guild, hadi, {"role": "horse", "member": "Ricky"}))
+        check("stripping a colour off somebody is refused unless you made it",
+              theirs in ricky.roles and "not Hadi's to take off" in not_yours)
+
+        run(clerk.act_wear_color(
+            guild, hadi, {"role": "horsy role", "member": "Ricky"}))
+        mine_back = run(clerk.act_shed_color(
+            guild, hadi, {"role": "horsy role", "member": "Ricky"}))
+        check("but the person who made a role can take it back off anyone",
+              hers not in ricky.roles and "Ricky took off" in mine_back)
+
+        cap = settings.voting()["role_create_max"]
+        settings.configure_voting(role_create_max=3)
+        try:
+            made_for = run(clerk.act_create_color(
+                guild, ricky, {"name": "sea thing", "color": "sea green",
+                               "member": "Hadi"}))
+        finally:
+            settings.configure_voting(role_create_max=cap)
+        gift = next(r for r in guild.roles if r.name == "sea thing")
+        check("a colour made for somebody else is worn by them",
+              gift in hadi.roles and gift not in ricky.roles)
+        check("and is still the asker's role, counting against their cap and "
+              "not against the cap of whoever wears it",
+              clerk.role_registry()[str(gift.id)]["creator_id"] == 7)
+        check("the report says who it was made for",
+              "for Hadi" in made_for)
 
         # ---- a role deleted in Discord's own settings frees the cap ----
         guild.roles.remove(hers)

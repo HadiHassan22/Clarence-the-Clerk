@@ -15,6 +15,10 @@ __pycache__/
 # it is fine to keep one to work from, and it is not fine to publish one.
 logs/
 raw/
+# and the export by the name the exporter gives it, wherever it is dropped:
+# two of them have been committed to this repo already, from two different
+# branches, because the directory rule only catches the tidy case.
+discord_*.json
 
 # runtime state (lives on the host's data dir, not in git)
 signatures.json

@@ -3203,6 +3203,27 @@ def _protected_names():
     return BANNED_ROLE_NAMES | {COOPERATIVE.lower(), MEMBER.lower(), NERD, "clerk", "eugene"}
 
 
+def _colour_subject(guild, member, args):
+    """Who a colour tool is aimed at: the person speaking, unless they named
+    somebody else. Returns (member, refusal); exactly one of them is None.
+
+    Resolution is `powers.find_member`, which is the one used on the way to a
+    timeout, and it is the one used here for the same reason: it reports an
+    ambiguity instead of picking a Sam. The stakes are lower -- a colour on
+    the wrong person comes off again -- but a bot that quietly guesses who
+    was meant is wrong in both places, and there is no reason to keep a
+    second, laxer answer to the same question.
+    """
+    needle = (args.get("member") or "").strip()
+    if not needle:
+        return member, None
+    target, why = powers.find_member(guild, needle)
+    if target is None:
+        return None, (f"I could not work out who {needle!r} is: {why}. Ask "
+                      f"them who they meant, or use their @mention.")
+    return target, None
+
+
 def _find_custom_role(guild, needle):
     registry = role_registry()
     needle = (needle or "").strip().lower()
@@ -3317,6 +3338,12 @@ async def act_list_colors(guild, member, args):
 
 
 async def act_create_color(guild, member, args):
+    # Made for somebody else, it is still the asker's role and still counts
+    # against the asker's allowance: the wearer did not ask for it and must
+    # not lose one of their own five to somebody else's present.
+    wearer, refusal = _colour_subject(guild, member, args)
+    if refusal:
+        return refusal
     name = (args.get("name") or "").strip()[:100]
     if not name or name.lower() in _protected_names():
         return "That name is not available."
@@ -3354,13 +3381,24 @@ async def act_create_color(guild, member, args):
     registry[str(role.id)] = {"creator_id": member.id}
     save_json(ROLES, registry)
     worn = ""
-    if len(worn_custom(member)) < numbers(guild)['role_wear_max']:
-        await member.add_roles(role, reason="Creator wears their creation")
-        worn = " and is wearing it"
+    if len(worn_custom(wearer)) < numbers(guild)['role_wear_max']:
+        await wearer.add_roles(
+            role,
+            reason=("Creator wears their creation" if wearer.id == member.id
+                    else f"Made for them by {member.display_name}"),
+        )
+        worn = (" and is wearing it" if wearer.id == member.id
+                else f" and it is on {wearer.display_name}")
+    else:
+        # A colour nobody can see is worth saying out loud, or the answer is
+        # "created it" and the person it was made for sees no change at all.
+        worn = (f", but {wearer.display_name} is already wearing "
+                f"{numbers(guild)['role_wear_max']}, so it will not show "
+                f"until one comes off")
     await ensure_color_stack(guild)
     await update_wardrobe(guild)
     shown = colour_name(colour.value) or f"#{colour.value:06x}"
-    return f"Created {role.name} ({shown}) for {member.display_name}{worn}."
+    return f"Created {role.name} ({shown}) for {wearer.display_name}{worn}."
 
 
 async def act_edit_color(guild, member, args):
@@ -3426,38 +3464,60 @@ async def act_delete_color(guild, member, args):
 
 
 async def act_wear_color(guild, member, args):
+    """Colours are cosmetic and reversible, so anyone may put one on anyone.
+    The wearer can always take it off again."""
+    target, refusal = _colour_subject(guild, member, args)
+    if refusal:
+        return refusal
     role, refusal = _resolve_custom_role(guild, args.get("role"))
     if refusal:
         return refusal
-    if role in member.roles:
-        return f"{member.display_name} is already wearing {role.name}."
-    worn = worn_custom(member)
+    if role in target.roles:
+        return f"{target.display_name} is already wearing {role.name}."
+    worn = worn_custom(target)
     if len(worn) >= numbers(guild)['role_wear_max']:
         # Naming what is in the way is the difference between a refusal
         # they can act on and one they have to ask a second question about.
-        return (f"{member.display_name} is wearing "
+        return (f"{target.display_name} is wearing "
                 f"{numbers(guild)['role_wear_max']} already, which is the "
                 f"limit: {', '.join(repr(r.name) for r in worn)}. One has to "
                 f"come off first -- ask which, do not pick for them.")
-    await member.add_roles(role, reason="Worn via Eugene")
+    await target.add_roles(
+        role,
+        reason=("Worn via Eugene" if target.id == member.id
+                else f"Put on via Eugene by {member.display_name}"),
+    )
     await update_wardrobe(guild)
     shown = colour_name(role.colour.value) or f"#{role.colour.value:06x}"
-    return f"{member.display_name} is now wearing {role.name} ({shown})."
+    return f"{target.display_name} is now wearing {role.name} ({shown})."
 
 
 async def act_shed_color(guild, member, args):
+    """Off yourself always, and off anybody else only if you made the role.
+    Anything looser and one person can strip another's colours for fun."""
+    target, refusal = _colour_subject(guild, member, args)
+    if refusal:
+        return refusal
     role, refusal = _resolve_custom_role(guild, args.get("role"))
     if refusal:
         return refusal
-    if role not in member.roles:
-        worn = [r.name for r in worn_custom(member)]
-        return (f"{member.display_name} is not wearing {role.name}, so there "
+    if target.id != member.id and not owns_role(member.id, role):
+        return (f"{role.name} is not {member.display_name}'s to take off "
+                f"{target.display_name}: only the person wearing a colour, or "
+                f"whoever made it, can take it off.")
+    if role not in target.roles:
+        worn = [r.name for r in worn_custom(target)]
+        return (f"{target.display_name} is not wearing {role.name}, so there "
                 f"is nothing to take off. "
                 + (f"They are wearing: {', '.join(repr(n) for n in worn)}."
                    if worn else "They are not wearing any colour role."))
-    await member.remove_roles(role, reason="Shed via Eugene")
+    await target.remove_roles(
+        role,
+        reason=("Shed via Eugene" if target.id == member.id
+                else f"Taken off via Eugene by {member.display_name}"),
+    )
     await update_wardrobe(guild)
-    return f"{member.display_name} took off {role.name}."
+    return f"{target.display_name} took off {role.name}."
 
 
 COLOR_ACTIONS = {

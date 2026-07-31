@@ -434,12 +434,14 @@ COLOUR_TOOLS = {
         "parameters": {"type": "object", "properties": {}},
     },
     "create_color_role": {
-        "description": "Create a colour role for the person you are talking "
-        "to. This house lets one person make {make} of their own, so check "
-        "what they already have before offering a new one -- if they are at "
-        "the limit, recolouring what they have is what they want, not a "
-        "deletion. Purely cosmetic: a name and a colour. Refused if a role by "
-        "that name already exists, so pass what they actually asked for "
+        "description": "Create a colour role, worn by the person you are "
+        "talking to or by anybody they name. This house lets one person make "
+        "{make} of their own, so check what they already have before offering "
+        "a new one -- if they are at the limit, recolouring what they have is "
+        "what they want, not a deletion. Made for somebody else it still "
+        "counts against the asker, because the role stays theirs to rename "
+        "and delete. Purely cosmetic: a name and a colour. Refused if a role "
+        "by that name already exists, so pass what they actually asked for "
         "rather than a variation on it.",
         "parameters": {
             "type": "object",
@@ -450,6 +452,11 @@ COLOUR_TOOLS = {
                     "description": "a colour name like 'sea green' or 'hot "
                     "pink', or hex like #ff9d2e. Pass on whatever word they "
                     "used; do not convert it to hex yourself.",
+                },
+                "member": {
+                    "type": "string",
+                    "description": "who ends up wearing it -- a mention, an "
+                    "id, or the name they used. Omit for the person asking.",
                 },
             },
             "required": ["name", "color"],
@@ -483,21 +490,38 @@ COLOUR_TOOLS = {
         },
     },
     "wear_color_role": {
-        "description": "Put a colour role on the person you are talking to. "
-        "Anyone may wear anyone's colour; {wear} at a time in this house. "
-        "Owning a colour and wearing it are different things -- somebody can "
-        "have made one they took off.",
+        "description": "Put an existing colour role on the person you are "
+        "talking to, or on anybody they name. Anyone may put any colour on "
+        "anyone; {wear} at a time in this house. Owning a colour and "
+        "wearing it are different things -- somebody can have made one they "
+        "took off.",
         "parameters": {
             "type": "object",
-            "properties": {"role": {"type": "string"}},
+            "properties": {
+                "role": {"type": "string"},
+                "member": {
+                    "type": "string",
+                    "description": "who wears it -- a mention, an id, or the "
+                    "name they used. Omit for the person asking.",
+                },
+            },
             "required": ["role"],
         },
     },
     "shed_color_role": {
-        "description": "Take a colour role off the person you are talking to.",
+        "description": "Take a colour role off someone: off the person "
+        "asking always, and off anybody else only if they made that role. "
+        "Nothing is destroyed: the role still exists and can go back on.",
         "parameters": {
             "type": "object",
-            "properties": {"role": {"type": "string"}},
+            "properties": {
+                "role": {"type": "string"},
+                "member": {
+                    "type": "string",
+                    "description": "whose colour comes off -- a mention, an "
+                    "id, or the name they used. Omit for the asker.",
+                },
+            },
             "required": ["role"],
         },
     },
