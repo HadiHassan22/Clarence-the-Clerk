@@ -293,6 +293,7 @@ async def _run_turn(guild, member, channel, text):
     )
 
     used_tools = []
+    failures = []
     cost = 0.0
     nudged = False
     for _ in range(MAX_TOOL_ROUNDS):
@@ -312,25 +313,33 @@ async def _run_turn(guild, member, channel, text):
             claimed = any(
                 w in reply.lower()
                 for w in ("done", "i have ", "i've ", "created", "put it on",
-                          "moved the role", "removed", "deleted")
+                          "applied", "moved the role", "removed", "deleted",
+                          "is now wearing")
             )
-            if claimed and not used_tools and not nudged:
-                # he said he acted without acting: make him do it or admit it
+            # a success claim is a lie if nothing ran, or if what ran failed
+            lying = claimed and (not used_tools or failures)
+            if lying and not nudged:
                 nudged = True
+                why = (
+                    "nothing ran at all"
+                    if not used_tools
+                    else "what ran failed: " + "; ".join(failures)
+                )
                 contents.append(candidate.content)
                 contents.append(
                     types.Content(
                         role="user",
                         parts=[
                             types.Part(
-                                text="(You reported an action but called no "
-                                "tool, so nothing happened. Either call the "
-                                "right tool now, or say plainly that you did "
-                                "not do it and why.)"
+                                text=f"(You reported success but {why}. Either "
+                                f"call the right tool correctly now, or tell "
+                                f"them plainly what did not work. Do not "
+                                f"apologise twice.)"
                             )
                         ],
                     )
                 )
+                failures.clear()
                 continue
             return (reply, used_tools, cost)
         contents.append(candidate.content)
@@ -339,6 +348,8 @@ async def _run_turn(guild, member, channel, text):
             args = dict(call.args) if call.args else {}
             used_tools.append(call.name)
             result = await toolbox.dispatch(guild, member, call.name, args)
+            if result.startswith("FAILED:"):
+                failures.append(f"{call.name}: {result[7:].strip()}")
             result_parts.append(
                 types.Part.from_function_response(
                     name=call.name, response={"result": result[:20000]}
