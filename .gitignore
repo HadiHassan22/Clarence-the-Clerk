@@ -1,6 +1,9 @@
 # secrets
 .env
 
+# per-server settings and state, including each server's own AI keys
+guilds/
+
 # local env
 .venv/
 __pycache__/
@@ -12,6 +15,11 @@ bills.json
 acts.json
 roles.json
 votes.json
+brain_state.json
+clerk_memory.json
+executor_log.json
+duties.json
+roster.json
 
 # personal scratch
 w.md

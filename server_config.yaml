@@ -1,40 +1,54 @@
 # Server layout: the minimal set of channels that are absolutely needed.
-# A channel not on this list is one passed bill away from existing;
+# A channel not on this list is one passed proposal away from existing;
 # that is the system working, not a gap.
 #
 # Naming style: emoji + "・" separator for text, emoji + space for voice.
-# Legislative terminology: a proposed law is a bill; bills are debated and
-# voted on the floor; a passed bill becomes an act; acts are published in
-# the gazette.
+# Terminology: anyone can make a proposal; proposals are debated and voted
+# on; a passed proposal becomes a decision; decisions are published to the
+# permanent record.
 #
-# Permission model: one role, Citizen, granted by Clarence when a member
-# signs the charter. No hierarchy among citizens; the role only marks the
-# boundary between the door and the house.
+# Permission model: two roles. Cooperative holds a vote; Member is in the
+# room without one. Neither is a rank and neither sees more than the other
+# -- everything except an individual ballot is public to everyone inside.
+# Right now everybody is in the cooperative, so Member sits unused.
+#
+# `former:` on a channel lists names it used to go by, so a rename adopts
+# the existing channel and keeps its history instead of archiving it and
+# starting an empty one.
 # visibility levels:
-#   gate     - visible to everyone, even the unsigned (the door)
-#   citizens - visible to Citizens only (the default for everything)
+#   gate     - visible to everyone in the server, role or no role
+#   members  - visible to anyone inside (the default for everything)
+#   cooperative - the cooperative only; members are outside it
 #   owner    - visible to the server owner alone (the archive)
 # read_only: true means only the bot (the executive) can post there;
 # members can react.
 #
-# The bot builds all of this in one shot on first run (see ROADMAP.md).
+# This file is a starting layout for an EMPTY server, not a description of
+# any particular one. Eugene finds his rooms through `/setup rooms`, which
+# binds them by id; nothing here has to match a server that already exists.
+#
+# `governance: true` on a category marks it as one Eugene actually needs.
+# That is the default install: a server that already has its own rooms
+# gets the governance ones and nothing else. The rest of this file is the
+# hangout, and it is only built when somebody asks for it in as many words
+# (`build_server.py --full-layout`). Adding channels to a server that did
+# not ask for them is how the first install went wrong.
 
-# Provisional voting rules (the founder's proposal and nothing more;
-# the parliament legislates the real values later).
+# The backstop only: a vote now ends as soon as its result is settled,
+# so this is the deadline for one nobody finishes.
 voting:
   floor_hours: 48
 
 categories:
-  # The door: no category, sits above everything.
+  # No door. Roles are given by people, not earned at a button, so there is
+  # nothing to sign and nowhere to queue. This channel is only somewhere an
+  # invite link can point and new arrivals can be greeted.
   - name: ""
     channels:
-      - name: "📜・charter"
-        read_only: true
+      - name: "🛎️・welcome"
+        former: ["reception"]
         visibility: gate
-        topic: "The founding charter. Sign below to enter. Amended only by Act."
-      - name: "🛎️・reception"
-        visibility: gate
-        topic: "The desk at the door. Say hello before you sign; the house can hear you."
+        topic: "Say hello."
 
   - name: hangout
     channels:
@@ -90,25 +104,42 @@ categories:
         type: voice
         user_limit: 3
 
+  # The cooperative's own rooms. Members are not in here: this is where the
+  # chores get argued over. What comes out of it is published to everyone
+  # next door, which is the part that stays open.
   - name: governance
+    governance: true
+    visibility: cooperative
     channels:
-      - name: "🖋️・submit-a-bill"
+      - name: "🖋️・propose"
+        former: ["submit-a-bill"]
         read_only: true
-        topic: "Click the button, state your bill and your reasons. The clerk handles the rest."
-      - name: "🗳️・the-floor"
+        topic: "Click the button, say what should change and why. Eugene handles the rest."
+      - name: "🗳️・votes"
+        former: ["the-floor"]
         read_only: true
-        topic: "Bills before the house. Notes in threads, ballots by button, always anonymous."
-      - name: "🏛️・gazette"
+        topic: "Proposals up for a vote. Notes in threads, ballots by button, always anonymous."
+
+  # Open to everyone in the room, members included.
+  - name: commons
+    governance: true
+    channels:
+      - name: "🏛️・decisions"
+        former: ["gazette"]
         read_only: true
-        topic: "Every Act ever passed, numbered. The permanent record."
+        topic: "Every decision ever made, numbered. The permanent record."
+      - name: "📊・polls"
+        read_only: true
+        topic: "Polls open to everyone. Advisory: they tell us what the room thinks."
       - name: "🩺・bot-health"
         read_only: true
         visibility: nerds
-        topic: "The clerk's vitals. Opt in or out with Nerd mode in the roles channel."
+        topic: "Eugene's vitals. Opt in or out with Nerd mode in the roles channel."
 
   # Closed debate chambers land here: text channels locked and moved by
-  # the clerk when a bill's floor closes. Visible to the server owner
+  # Eugene when a proposal's vote closes. Visible to the server owner
   # only (standing-orders wording amendment pending). Starts empty.
   - name: "🗄️ archive"
+    governance: true
     visibility: owner
     channels: []

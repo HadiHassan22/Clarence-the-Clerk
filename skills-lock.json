@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "discord-bot": {
+      "source": "claude-office-skills/skills",
+      "sourceType": "github",
+      "skillPath": "discord-bot/SKILL.md",
+      "computedHash": "c6ab4b49cbcb54f2c1c26f0ec41aa0c66ff3b96c76616a06310413f556fb6991"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-"""The harness: the only door between Clarence's brain and reality.
+"""The harness: the only door between Eugene's brain and reality.
 
 A frozen registry of typed tools. The model may request these and nothing
 else; every dispatch is validated, executed by hand-written handlers, and
@@ -27,12 +27,17 @@ _log_lock = asyncio.Lock()
 PEOPLE_KINDS = ("invite", "kick")
 
 
-def configure(here: Path, data: Path, actions=None):
+def configure(here: Path, data: Path, actions=None, in_cooperative=None):
     """actions: hand-written handlers injected by clerk.py, so the harness
-    never reaches into the bot's internals itself."""
+    never reaches into the bot's internals itself.
+
+    in_cooperative decides who a vote is counted against. Without it the
+    roster is simply left out of what `server_info` reports, rather than
+    guessed at -- a wrong threshold is worse than a missing one."""
     _paths["here"] = here
     _paths["data"] = data
     _paths["log"] = data / "executor_log.json"
+    _paths["in_cooperative"] = in_cooperative
     _actions.update(actions or {})
 
 
@@ -56,10 +61,6 @@ async def _audit(entry):
 
 
 # ---------- handlers (all read-only in stage 2) ----------
-
-async def _get_charter(guild, invoker, args):
-    return (_paths["here"] / "constitution.md").read_text()
-
 
 async def _get_standing_orders(guild, invoker, args):
     return (_paths["here"] / "standing-orders.md").read_text()
@@ -89,9 +90,9 @@ async def _get_act(guild, invoker, args):
         if a["act"] == act_no:
             a = copy.deepcopy(a)
             if _bill_kind(a.get("bill")) in PEOPLE_KINDS:
-                a.pop("tally", None)  # sealed by order of the house
+                a.pop("tally", None)  # sealed, and stays sealed
             return json.dumps(a)
-    return json.dumps({"error": f"no Act {act_no} on record"})
+    return json.dumps({"error": f"no Decision {act_no} on record"})
 
 
 async def _list_bills(guild, invoker, args):
@@ -128,7 +129,7 @@ async def _get_bill(guild, invoker, args):
                     )
             b["notes"] = sorted(notes, key=lambda n: n.get("first_at") or "")
             return json.dumps(b)
-    return json.dumps({"error": f"no Bill No. {bill_no} on record"})
+    return json.dumps({"error": f"no Proposal No. {bill_no} on record"})
 
 
 # ---------- the memory book ----------
@@ -153,7 +154,7 @@ def add_memory(kind, about, text, source="conversation"):
     """File a memory. Deduped, capped, oldest low-value entries fall off."""
     kind = kind if kind in MEM_KINDS else "fact"
     text = (text or "").strip()[:240]
-    about = (about or "the house").strip()[:60]
+    about = (about or "the server").strip()[:60]
     if not text:
         return "nothing to file"
     entries = load_memories()
@@ -193,7 +194,7 @@ async def _forget(guild, invoker, args):
     if not query:
         return json.dumps({"error": "a query is required"})
     entries = load_memories()
-    allowed_about = {invoker.display_name.lower(), "the house"}
+    allowed_about = {invoker.display_name.lower(), "the server", "the house"}
     struck, kept = [], []
     for e in entries:
         matches = query in e["text"].lower() or query in e["about"].lower()
@@ -228,34 +229,49 @@ async def _server_info(guild, invoker, args):
         for c in guild.channels
         if c.category is None and not hasattr(c, "channels")
     ]
-    return json.dumps(
-        {
-            "server": guild.name,
-            "members": guild.member_count,
-            "top_level": top,
-            "categories": cats,
+    info = {
+        "server": guild.name,
+        "members": guild.member_count,
+        "top_level": top,
+        "categories": cats,
+    }
+    # member_count above is everybody in the building, bots included. What a
+    # vote is counted against is a different and smaller number, and it is
+    # the one that decides what carries -- so it is worked out here rather
+    # than left for the model to infer from the other.
+    keyed = _paths.get("in_cooperative")
+    if keyed is not None:
+        import roster
+
+        size = len(roster.active(guild, keyed))
+        info["roster"] = {
+            "counted": size,
+            "away": sum(
+                1 for m in guild.members
+                if not m.bot and keyed(m) and roster.is_away(m)
+            ),
+            "normal_needs": roster.required(size, "normal"),
+            "fundamental_needs": roster.required(size, "fundamental"),
+            "note": "counted now, from who is here; thresholds are shares "
+                    "of this, never fixed numbers",
         }
-    )
+    return json.dumps(info)
 
 
 # ---------- registry ----------
 
 REGISTRY = {
-    "get_charter": {
-        "tier": "minor",
-        "description": "The founding charter of the server, full text.",
-        "parameters": {"type": "object", "properties": {}},
-        "handler": _get_charter,
-    },
     "get_standing_orders": {
         "tier": "minor",
-        "description": "The standing orders (rules of procedure), full text.",
+        "description": "The rules of procedure, full text: tiers, thresholds, "
+        "how votes close, and what is actually wired up so far.",
         "parameters": {"type": "object", "properties": {}},
         "handler": _get_standing_orders,
     },
     "list_acts": {
         "tier": "minor",
-        "description": "Index of passed Acts: number, title, author, date.",
+        "description": "Index of decisions on the record: number, title, "
+        "author, date.",
         "parameters": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "description": "max entries, up to 50"}},
@@ -264,7 +280,8 @@ REGISTRY = {
     },
     "get_act": {
         "tier": "minor",
-        "description": "Full text and details of one passed Act by number.",
+        "description": "Full text and details of one decision on the record, "
+        "by number.",
         "parameters": {
             "type": "object",
             "properties": {"act_no": {"type": "integer"}},
@@ -274,7 +291,8 @@ REGISTRY = {
     },
     "list_bills": {
         "tier": "minor",
-        "description": "Index of bills: number, title, kind, status, author.",
+        "description": "Index of proposals: number, title, kind, status, "
+        "author. Status 'on_floor' means still open for votes.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -288,8 +306,8 @@ REGISTRY = {
     },
     "get_bill": {
         "tier": "minor",
-        "description": "Full details of one bill: what, why, status, notes. "
-        "Individual ballots are sealed and never available.",
+        "description": "Full details of one proposal: what, why, status, "
+        "notes. Individual ballots are sealed and never available.",
         "parameters": {
             "type": "object",
             "properties": {"bill_no": {"type": "integer"}},
@@ -314,7 +332,7 @@ REGISTRY = {
                 "kind": {"type": "string", "enum": list(MEM_KINDS)},
                 "about": {
                     "type": "string",
-                    "description": "who or what it concerns; a display name, or 'the house'",
+                    "description": "who or what it concerns; a display name, or 'the server'",
                 },
                 "text": {"type": "string", "description": "the memory, one sentence"},
             },
@@ -325,7 +343,7 @@ REGISTRY = {
     "forget": {
         "tier": "minor",
         "description": "Strike memories matching a query from your book. Only "
-        "works on memories about the person asking (or about the house).",
+        "works on memories about the person asking (or about the server).",
         "parameters": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -397,12 +415,12 @@ COLOUR_TOOLS = {
 
 BILL_TOOLS = {
     "propose_bill": {
-        "description": "File a bill on the floor for the person you are "
-        "talking to, in their name. Use it the moment they say they want "
-        "something changed: draft the what and the why from what they said, "
-        "file it, and tell them the number. Do not ask them to confirm and "
-        "do not send them to the button. Filing decides nothing; the house "
-        "votes and you have no say in it.",
+        "description": "File a proposal for the person you are talking to, in "
+        "their name. Use it the moment they say they want something changed: "
+        "draft the what and the why from what they said, file it, and tell "
+        "them the number. Do not ask them to confirm and do not send them to "
+        "the button. Filing decides nothing; the cooperative votes and you "
+        "have no say in it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -414,14 +432,14 @@ BILL_TOOLS = {
         },
     },
     "close_floor": {
-        "description": "Call time on a bill that is still open: count the "
+        "description": "Call time on a vote that is still open: count the "
         "ballots, rule it passed or failed, and do everything a close "
         "normally does. Use it when someone asks you to close a vote. It "
         "returns the ruling, the tally, what you have already done, and "
         "what is left for human hands: report all of it, and be clear that "
-        "an Act on the record is not the same as a thing that has happened. "
-        "You cannot see the tally until the floor shuts, so this is never a "
-        "way to end a vote at a convenient moment.",
+        "a decision on the record is not the same as a thing that has "
+        "happened. You cannot see the tally until it shuts, so this is never "
+        "a way to end a vote at a convenient moment.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -431,28 +449,65 @@ BILL_TOOLS = {
         },
     },
     "propose_member": {
-        "description": "File a bill proposing that someone be invited, and "
-        "open the ballot: yes, no, or abstain, anonymous, tally sealed at "
-        "close so nobody newly admitted learns their margin. Use it as soon "
-        "as someone names a person they want in. If it passes you send a "
-        "single-use invite link privately to whoever proposed them.",
+        "description": "Propose that someone be let in, and open the ballot: "
+        "yes, no, or abstain, anonymous, tally sealed at close so nobody "
+        "newly admitted learns their margin. Use it as soon as someone names "
+        "a person they want in. If it passes you send a single-use invite "
+        "link privately to whoever proposed them.",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "who is being proposed, as the house would know them"},
+                "name": {"type": "string", "description": "who is being proposed, as people here would know them"},
                 "discord_id": {"type": "string", "description": "their Discord ID, digits only, if the proposer knows it"},
-                "why": {"type": "string", "description": "why the house should let them in, in the proposer's voice"},
+                "why": {"type": "string", "description": "why we should let them in, in the proposer's voice"},
             },
             "required": ["name", "why"],
         },
     },
 }
 
-for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS}.items():
+DUTY_TOOLS = {
+    "set_nudges": {
+        "description": "Turn the private reminders on or off for the person "
+        "you are talking to. Use it the moment they say they want you to stop "
+        "nudging them, with no argument and no attempt to talk them round; "
+        "use it again if they want them back. It changes nothing about any "
+        "vote, only whether you write to them about one.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "on": {
+                    "type": "boolean",
+                    "description": "true to send reminders, false to stop",
+                },
+            },
+            "required": ["on"],
+        },
+    },
+    "mark_carried_out": {
+        "description": "Record that a decision which passed has actually been "
+        "carried out, which takes it off the standing list of work still "
+        "wanted. Use it when someone says they have done one. It is a claim "
+        "on the record under their name, not a judgement of yours: never "
+        "mark one done because it looks done to you.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "bill_no": {
+                    "type": "integer",
+                    "description": "the proposal's number; call list_bills if unsure",
+                },
+            },
+            "required": ["bill_no"],
+        },
+    },
+}
+
+for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS, **DUTY_TOOLS}.items():
     REGISTRY[_name] = {
         # "member" tier: acts as the invoker, strictly inside powers that
         # member already holds through the buttons in #roles and
-        # #submit-a-bill. No Act needed because no privilege is gained;
+        # #propose. No decision needed because no privilege is gained;
         # the handler enforces every limit.
         "tier": "member",
         "description": _spec["description"],

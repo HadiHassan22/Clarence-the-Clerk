@@ -1,4 +1,9 @@
 discord.py>=2.4
 python-dotenv>=1.0
 PyYAML>=6.0
+aiohttp>=3.9
+# Only needed by servers whose brain speaks through Gemini or Claude;
+# Grok goes over plain HTTP. Both are imported lazily, so a host may drop
+# whichever annex it does not use.
 google-genai>=1.0
+anthropic>=0.116
