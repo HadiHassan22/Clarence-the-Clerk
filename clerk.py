@@ -65,8 +65,35 @@ import warden
 
 HERE = Path(__file__).parent
 load_dotenv(HERE / ".env")
-TOKEN = os.environ["DISCORD_TOKEN"]
-GUILD_ID = int(os.environ["GUILD_ID"])
+
+# Both at once, and said in words. A KeyError out of the top of the file is
+# a true answer to a question nobody asked: the host gets a traceback about
+# os.environ, a restart policy obligingly produces ten more of it, and
+# nothing anywhere says which variable, what goes in it, or where it is
+# set. It costs four lines to say that instead.
+_MISSING = [n for n in ("DISCORD_TOKEN", "GUILD_ID")
+            if not (os.environ.get(n) or "").strip()]
+if _MISSING:
+    raise SystemExit(
+        f"Eugene cannot start: {' and '.join(_MISSING)} "
+        f"{'is' if len(_MISSING) == 1 else 'are'} not set.\n"
+        f"On a host these are the service's environment variables; on a "
+        f"laptop they live in a .env file next to clerk.py, and "
+        f"`python install.py` writes one for you.\n"
+        f"DISCORD_TOKEN is the bot token from the Discord developer portal. "
+        f"GUILD_ID is the id of the server he keeps -- turn on Developer "
+        f"Mode, right-click the server icon, Copy Server ID."
+    )
+TOKEN = os.environ["DISCORD_TOKEN"].strip()
+try:
+    GUILD_ID = int(os.environ["GUILD_ID"].strip())
+except ValueError:
+    raise SystemExit(
+        f"Eugene cannot start: GUILD_ID is "
+        f"{os.environ['GUILD_ID'].strip()!r}, which is not a server id. It "
+        f"is the long number Copy Server ID gives you, digits only -- not "
+        f"the server's name and not an invite link."
+    )
 
 CONFIG = yaml.safe_load((HERE / "server_config.yaml").read_text())
 # The one governance number that predates the settings store. It stays
