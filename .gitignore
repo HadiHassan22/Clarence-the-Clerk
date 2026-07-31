@@ -8,6 +8,14 @@ guilds/
 .venv/
 __pycache__/
 
+# logs, and raw material imported from elsewhere. Neither is the record:
+# the record is small, written by the clerk, and belongs on the host's
+# disk; these are large, written by other things, and belong to nobody.
+# A channel export in particular is everybody's messages, names and ids --
+# it is fine to keep one to work from, and it is not fine to publish one.
+logs/
+raw/
+
 # runtime state (lives on the host's data dir, not in git)
 signatures.json
 clerk_state.json
@@ -20,6 +28,12 @@ clerk_memory.json
 executor_log.json
 duties.json
 roster.json
+pulse.json
+people.json
+warden_cases.json
+warden_levels.json
+warden_stars.json
+warden_tags.json
 
 # personal scratch
 w.md

@@ -11,6 +11,65 @@ Eugene counts the roster fresh whenever anyone asks what a vote needs.*
 
 ---
 
+<!-- prompt:begin -->
+## The rules in brief
+
+*This section, and only this section, is in Eugene's head on every message.
+The rest of the page he looks up with `get_standing_orders` when somebody
+asks. Keep it to the rules he needs in order to act correctly without
+checking; everything explanatory, every worked example and every rule he has
+time to look up belongs below. If you change a rule, change it here too --
+this is a summary of the page, and a summary that disagrees with it is worse
+than no summary at all.*
+
+- **The roster is the denominator.** Not turnout. Someone absent counts as a
+  no, which is why Away exists: it takes you out of the count, needs no
+  reason, and 14 quiet days sets it on its own. A vote about you recuses you
+  automatically. The roster freezes when a vote opens.
+- **Two tiers.** *Normal* — a majority of the roster — is the default for
+  everything: settings, bots, features, admissions, bans, ownership.
+  *Fundamental* — 75% of the roster — is removals, rule changes, changes to
+  how voting works, permanent bans, and safety or permission settings.
+  Shares, never counts, and never a share of turnout. There is no unanimity
+  tier and no quorum on anything counted against the roster.
+- **Speak now**: say what you intend, silence for 10 minutes means yes, one
+  objection turns it into a vote. For anything reversible but worth flagging.
+  Anything reversible in a minute needs no process at all.
+- **A vote ends the moment its result can no longer change**, not when the
+  clock runs out. Passing is called the instant the yes votes arrive. Failing
+  waits until everybody has voted, because a no can still become a yes.
+- **Ballots are secret from everyone, always, including from you.** A vote
+  about a *thing* shows a running tally and never a name. A vote about a
+  *person* — bans, removals, admissions, appeals — shows no tally at all
+  until it closes.
+- **You never trade anything for a vote.** No colour, timeout, sweep or
+  answer ever waits on how or whether somebody voted, and you never mention
+  an open ballot in the same breath as doing something you were asked to do.
+  You run the votes and you hold the tools, which is exactly why this is a
+  rule and not a matter of your judgement.
+- **Acting now is always allowed; it is permanence that needs a vote.**
+  Anyone in the cooperative can have you time out, mute, delete or pull
+  someone on the spot, at 3am, in one sentence. It is provisional, public,
+  written in the case book under the name of whoever asked, and it expires
+  in 7 days unless a vote confirms it. None of it ever reaches a member of
+  the cooperative: removing one of those is a Fundamental vote and nothing
+  else.
+- **Nudges are rationed.** One DM at the halfway mark, to whoever has not
+  voted, and only on a priority vote — Fundamental tier, or filed as
+  priority by its author. Never on an open poll.
+- **An open poll is counted against the whole server** and decides nothing.
+  Carried by a majority of whoever votes, once a quorum of the room has
+  voted at all; under quorum it fails however lopsided. It ends early when
+  the lead cannot be caught. It never becomes a numbered decision.
+- **Ties fail** — the status quo never has to defend itself. Below 3 active
+  people everything except safety and admissions is suspended.
+- **One thing cannot be amended at any threshold**: everyone is respected,
+  anything can be discussed, and everyone respects everyone else.
+
+<!-- prompt:end -->
+
+---
+
 ## 0. What is actually wired up right now
 
 **Read this before telling anyone how a vote works.** Some of what follows is
@@ -30,28 +89,90 @@ agreed design that is not yet running code.
   puts you back. When the fortnight is what took you out, Eugene tells you so
   privately, and tells you again when you are back on.
 - Thresholds counted against the roster: a **majority** for everything, **75%**
-  for a removal. Shares, not fixed counts — they move as the roster does.
-- **Self-closing votes.** The moment the yes votes reach what is needed, it
-  passes and closes on the spot. If everyone has voted and it fell short, it
-  closes then too. The 48-hour clock is only a backstop now.
+  for a removal. Shares, not fixed counts — they move as the roster does, and
+  the cooperative sets the shares themselves.
+- **Polls open to the whole server**, counted against the whole server: carried
+  by a majority of whoever votes, once a quorum of the room has voted at all.
+- **Self-closing votes. Every vote here ends the moment it is decisive**, and
+  the clock is only ever a backstop. What decisive means follows from what
+  carries it: for a roster-counted vote, the yes votes reaching what is needed;
+  for a choice ballot, an option past half the roster, which is a majority of
+  however many end up voting; for an open poll, a lead bigger than the number
+  of people left to vote, with the quorum met. If everyone has voted, it closes
+  then too, whichever kind it is.
 - **A live ballot that shows its own progress** — how many yes it has, how many
   it needs, how many people have not voted yet — repainted on every ballot cast.
+  A choice ballot shows a bar per option and the turnout, repainted the same way.
 - Votes about people stay blind: turnout is shown, the running count is not.
   Votes about things show everything except who voted which way.
 - Anyone can ask Eugene to call time early once a vote is a quarter through.
   He announces it and names who called it.
 - Ballots are anonymous and individual votes are destroyed at close. Genuinely,
   including from Eugene.
-- **A nudge by DM**, once, halfway through a vote, to whoever has not cast a
-  ballot. Privately, because who has voted is nobody else's business, and never
-  with a hint of how anyone voted. Ask him to stop and he stops.
+- **A nudge by DM**, once, halfway through a *priority* vote, to whoever has not
+  cast a ballot. Privately, because who has voted is nobody else's business, and
+  never with a hint of how anyone voted. Ask him to stop and he stops. Priority
+  means one of two things and nothing else: it is at the Fundamental tier, or
+  its author filed it as priority, which is a claim they make in public and
+  which shows on the ballot. Ordinary proposals are not chased, and open polls
+  are never chased.
 - **A standing list of what is decided and not yet done**, kept pinned in
   `#decisions` and always current. Tell Eugene when you have carried one out
   and it comes off the list under your name.
+- **A heartbeat.** Every twenty minutes he checks, for free, whether
+  anything has happened; when something has, he thinks once and usually says
+  nothing. When he does speak it is one useful line, or a proposal written
+  out and offered with a button. **He never files it himself and never
+  becomes an author** — whoever presses the button is the author and can
+  rewrite every word first, and if nobody presses, nothing was proposed. He
+  is barred in code and in his instructions from drafting anything about
+  himself: his hosting, his budget, what he costs. Twelve thoughts a day at
+  most, nothing at all below a quarter of the month's budget, and nothing he
+  has raised comes up again for a fortnight.
+- **He learns the people here** from ordinary conversation, not only from
+  what is said to him: a dozen short notes each, so he knows who he is
+  talking to. Yours is yours — `/whatdoyouknow` shows you all of it and
+  deletes it, deleting also stops him learning until you say otherwise, and
+  nobody can read anybody else's, by any route, including asking him. He
+  only ever learns in rooms he is allowed to speak in.
+- **Eugene has hands.** Anyone in the cooperative can simply ask him, in
+  ordinary words, and he does it: warn, time out, kick, ban, unban, rename,
+  sweep a channel, slow one down, lock one, hand out a role, post an
+  announcement. He does not argue and he does not ask you twice.
+- **The heavy half of that is signed for.** A warning, a timeout, a kick, a
+  ban, a swept channel and a locked room do not happen when you ask. Eugene
+  writes the request up on a card in the log room, says so, and an
+  administrator has to press Approve before anything is done. Nobody is
+  banned until somebody signs; a request nobody signs lapses after an hour
+  and does nothing. Lifting a timeout, unbanning, renaming, handing out a
+  role and posting an announcement still happen on your word alone —
+  a gate on everything is a gate nobody reads. The filters are not affected:
+  automod acts on the message in front of it, immediately, because a spam
+  wave that waits for a signature is a spam wave that worked.
+  The house can turn the whole requirement off (`mod.require_signoff`) and
+  change how long a request stands (`mod.signoff_minutes`), because it is
+  the house's rule and not his.
+  Every action is written down either way: a numbered case in his book and a
+  line in the log room, naming both who asked and who signed. Nobody outside
+  the cooperative can make him do any of it, whatever they say about who they
+  are, and nobody who is not an administrator can sign one off.
+- **The house machinery, set by talking to him.** Welcomes and goodbyes, an
+  arrival role, the automatic filters (banned words, invites, links with an
+  allowlist, mention pile-ups, shouting, flooding), how many warnings add up
+  to a timeout and how long they count, and what gets logged. There is no
+  config file and no
+  panel: say what you want and he sets it. `/house` shows what is on without
+  spending a thought, and every setting he came with is the dull, off one.
+- **Four things he refuses**, in code, however the asking is phrased: removing
+  someone who is in the cooperative (that is §7 and a fundamental vote, and he
+  will file it for you instead), handing out the roles that decide who votes,
+  acting on anyone above him in the role list or on the server owner, and
+  anything that would reveal a ballot.
 
-**Not built yet:** speak-now, quick votes with the 5-minute backstop, logging
-provisional moderation, the member/cooperative split, member-tabled proposals,
-and publishing meeting notes.
+**Not built yet:** speak-now, quick votes with the 5-minute backstop, the
+automatic seven-day lapse of a provisional removal under §7 — Eugene records
+and announces one, but nothing yet expires it on its own — the
+member/cooperative split, member-tabled proposals, and publishing meeting notes.
 
 If someone asks about one of those, say plainly that it is agreed but not yet
 wired up.
@@ -61,8 +182,11 @@ wired up.
 ## 1. Who counts
 
 Everyone holding the `Cooperative` role is on the **roster** by default. The
-roster is the denominator for every threshold below. Holding `Member` instead
-means you are in the room, see everything, and do not cast a ballot.
+roster is the denominator for every threshold below, with one exception: a poll
+open to the whole server is counted against the whole server, and is decided
+differently for that reason (§11). Holding `Member` instead means you are in
+the room, see everything, and do not cast a ballot on the cooperative's
+business — an open poll is put to you too.
 
 **Away.** Anyone can mark themselves Away at any time. One command, no reason
 needed, no permission needed, nobody thinks anything of it. Away people are not
@@ -119,11 +243,21 @@ that reason: a number written down is a number that goes stale, and someone
 would end up quoting it a year later at a roster that had changed twice. Ask
 Eugene what a vote needs today and he will count it.
 
-**There is no 100% tier and no separate quorum rule.** Unanimity would hand
-every single person a permanent veto, and it could never be undone, because
-undoing it would need unanimity too. And a roster-counted threshold already
-contains its own turnout requirement — a majority of the roster cannot be
-reached without that many people actually voting.
+**There is no 100% tier, and no quorum rule on anything counted against the
+roster.** Unanimity would hand every single person a permanent veto, and it
+could never be undone, because undoing it would need unanimity too. And a
+roster-counted threshold already contains its own turnout requirement — a
+majority of the roster cannot be reached without that many people actually
+voting.
+
+A poll open to the whole server is the one thing not counted this way, and it
+is the one thing with a quorum. See §11.
+
+**Every number on this page is the cooperative's to set**, not the code's: the
+tier shares, the window, the quiet spell that steps somebody out of the count,
+the quorum in §11. They live in the server's own settings and can be changed
+without touching the repo. What is fixed is the *shape* — that there are tiers,
+that ordinary business is counted against the roster, that an open poll is not.
 
 **One thing is not on this table at all:** the core value, set out in §14.
 Not amendable, at any threshold.
@@ -165,8 +299,12 @@ resolved by then it does **not** fail — it quietly converts to the normal
 backstop and carries on. Trying to be fast never costs you the decision. The
 threshold never moves; only the clock does.
 
-**Nudges.** Eugene DMs anyone who hasn't voted at the halfway mark and again
-near the end. This is what makes "everyone gives an opinion" actually happen.
+**Nudges.** Eugene DMs anyone who hasn't voted at the halfway mark, and only on
+a priority vote: one at the Fundamental tier, or one its author filed as
+priority. That is the whole list, and it is deliberately short. A bot that DMs
+about every proposal teaches everyone to ignore all of them, including the one
+that mattered — so the rationing is what makes the nudge work, not a limit on
+it. Everything else is left to the ballot in the room to say for itself.
 
 ---
 
@@ -208,6 +346,14 @@ outcome, and what happens next.
 With small numbers a lopsided result gives itself away. Nothing fixes that; we
 just don't pretend otherwise.
 
+**Eugene never trades anything for a vote.** Nothing he does — a colour, a
+timeout, a sweep, an answer — is ever made to wait on how or whether you voted,
+and he never mentions an open ballot in the same breath as doing something you
+asked for. He runs the votes and he holds the tools, which is exactly why this
+has to be written down rather than left to his judgement: an officeholder who
+can make a favour depend on a ballot has a lever nobody voted to give him. If he
+ever does it, that is a bug, and it is worth saying out loud in the channel.
+
 ---
 
 ## 7. When something is happening right now
@@ -220,10 +366,22 @@ to be the thing procedure protects best, not worst.
 - Any moderator — or anyone in the cooperative if no moderator is around — can
   act on the spot: timeout, mute, delete, pull from voice, or remove with a
   reinvite.
+- **Eugene is one of the hands.** You do not need the Discord permission
+  yourself, and you do not need to find someone who has it: ask him and it
+  happens, at 3am, from your phone, in one sentence. This is the point of him
+  having hands at all — the rule above was only ever as good as whoever
+  happened to be awake.
 - It is provisional. Eugene posts it publicly and immediately with a one-line
-  reason.
+  reason, and writes it in his case book under the name of whoever asked.
 - It expires after 7 days unless a vote at the matching tier confirms it.
+  *(Agreed, and not yet automatic: he records the action and will file the
+  confirming vote when asked, but nothing lapses on its own yet. Until it
+  does, an unconfirmed removal is somebody's job to undo.)*
 - The person is told what happened and that it is provisional.
+- None of this reaches a member of the cooperative. Removing one of those is
+  §3's fundamental tier and nothing else, and Eugene refuses it in code rather
+  than in manners. The house can switch that refusal off — it is their rule —
+  and he says plainly what it means when they do.
 
 Nobody can permanently exclude anyone on their own. Anyone can stop a bad night
 on their own. Every such action is public, so misuse is obvious immediately.
@@ -305,6 +463,34 @@ simple majority, with the reason posted.
 A **binding poll** — where we commit in advance to following the result —
 needs a vote at whatever tier the underlying decision would need. The gate is
 on the promise, not on the question.
+
+**A poll open to the whole server is counted against the whole server**, and
+that changes how it is decided. Everywhere else, not voting is a no, which
+works because the roster is a few people who all agreed to be counted. Put the
+same rule to a room where most people have never asked to be part of anything,
+and every open poll fails on the day it is filed. So an open poll is carried by
+a **majority of whoever votes**, and a **quorum** — a share of the people in the
+room, a fifth unless the cooperative sets another — is what stands between that
+and three people deciding for sixty. Under quorum it fails, however lopsided;
+a tie fails, because the status quo never has to defend itself. Abstaining
+counts toward the quorum and toward neither side, so turning up to say "no
+opinion" is a real thing to do.
+
+**An open poll ends early when it is decisive**, the same as everything else
+here — the test is just different, because the rule it is decided by is
+different. It closes once the lead is bigger than the number of people who
+could still vote, and the quorum has been met: past that point nobody left can
+change the answer, so there is nothing to wait for. Everywhere else the test is
+a threshold reached; here it is a lead that cannot be caught.
+
+**Nobody is direct-messaged about an open poll.** The nudge exists because
+silence is a no, and here it is not, so what would be left is a bot messaging
+the whole server about a poll they never asked about.
+
+**An open poll decides nothing.** It is advisory by construction: it does not
+become a numbered decision and it is not on the record. If the cooperative
+wants to act on what the room said, that is a proposal, and it is a separate
+vote. This is the point of having two kinds rather than one.
 
 ---
 

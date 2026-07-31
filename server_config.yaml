@@ -1,48 +1,44 @@
-# Server layout: the minimal set of channels that are absolutely needed.
-# A channel not on this list is one passed proposal away from existing;
-# that is the system working, not a gap.
+# The hangout, and nothing else.
+#
+# What Eugene needs -- somewhere to propose, somewhere to vote, somewhere to
+# publish the result, the archive -- is no longer described here. It is
+# generated from the features a server has switched on, in `modules.py`, and
+# both routes into a server read that same plan: `/setup` inside Discord and
+# `build_server.py` at a terminal. There used to be a description in each
+# place, and a server set up both ways ended up with two of every governance
+# room.
+#
+# What is left is a starting point for an EMPTY server and a description of
+# no particular one. It is never built unless somebody asks for it by name:
+#
+#     .venv/bin/python build_server.py --full-layout
+#
+# Adding channels to a server that did not ask for them is how the first
+# install went wrong.
 #
 # Naming style: emoji + "・" separator for text, emoji + space for voice.
-# Terminology: anyone can make a proposal; proposals are debated and voted
-# on; a passed proposal becomes a decision; decisions are published to the
-# permanent record.
-#
-# Permission model: two roles. Cooperative holds a vote; Member is in the
-# room without one. Neither is a rank and neither sees more than the other
-# -- everything except an individual ballot is public to everyone inside.
-# Right now everybody is in the cooperative, so Member sits unused.
-#
-# `former:` on a channel lists names it used to go by, so a rename adopts
-# the existing channel and keeps its history instead of archiving it and
-# starting an empty one.
 # visibility levels:
 #   gate     - visible to everyone in the server, role or no role
 #   members  - visible to anyone inside (the default for everything)
-#   cooperative - the cooperative only; members are outside it
-#   owner    - visible to the server owner alone (the archive)
-# read_only: true means only the bot (the executive) can post there;
-# members can react.
+# read_only: true means only the bot can post there; members can react.
 #
-# This file is a starting layout for an EMPTY server, not a description of
-# any particular one. Eugene finds his rooms through `/setup rooms`, which
-# binds them by id; nothing here has to match a server that already exists.
-#
-# `governance: true` on a category marks it as one Eugene actually needs.
-# That is the default install: a server that already has its own rooms
-# gets the governance ones and nothing else. The rest of this file is the
-# hangout, and it is only built when somebody asks for it in as many words
-# (`build_server.py --full-layout`). Adding channels to a server that did
-# not ask for them is how the first install went wrong.
+# `former:` on a channel lists names it used to go by, so a rename adopts the
+# existing channel and keeps its history instead of archiving it and starting
+# an empty one.
 
-# The backstop only: a vote now ends as soon as its result is settled,
-# so this is the deadline for one nobody finishes.
+# The backstop only: a vote now ends as soon as its result is settled, so this
+# is the deadline for one nobody finishes. It stays here because CONTRIBUTING
+# tells people to wind it down to seconds for a sandbox run, and that has to
+# work before a server has been configured at all. It is a default, not the
+# rule: a house that sets its own window in `/setup` outranks it.
 voting:
   floor_hours: 48
 
 categories:
   # No door. Roles are given by people, not earned at a button, so there is
   # nothing to sign and nowhere to queue. This channel is only somewhere an
-  # invite link can point and new arrivals can be greeted.
+  # invite link can point and new arrivals can be greeted -- the arrivals
+  # feature will adopt it if it is bound, and never makes one itself.
   - name: ""
     channels:
       - name: "🛎️・welcome"
@@ -66,9 +62,6 @@ categories:
         topic: "Things you made. Skill optional."
       - name: "🖥️・tech"
         topic: "Setups, gadgets, code, and strong opinions about all three."
-      - name: "🎭・roles"
-        read_only: true
-        topic: "Make yourself a color. Wear up to five, yours or anyone's."
       # Voice inside hangout so it sits under the texts, above gaming.
       - name: "🛋️ General"
         type: voice
@@ -103,43 +96,3 @@ categories:
       - name: "🎮 Trio B"
         type: voice
         user_limit: 3
-
-  # The cooperative's own rooms. Members are not in here: this is where the
-  # chores get argued over. What comes out of it is published to everyone
-  # next door, which is the part that stays open.
-  - name: governance
-    governance: true
-    visibility: cooperative
-    channels:
-      - name: "🖋️・propose"
-        former: ["submit-a-bill"]
-        read_only: true
-        topic: "Click the button, say what should change and why. Eugene handles the rest."
-      - name: "🗳️・votes"
-        former: ["the-floor"]
-        read_only: true
-        topic: "Proposals up for a vote. Notes in threads, ballots by button, always anonymous."
-
-  # Open to everyone in the room, members included.
-  - name: commons
-    governance: true
-    channels:
-      - name: "🏛️・decisions"
-        former: ["gazette"]
-        read_only: true
-        topic: "Every decision ever made, numbered. The permanent record."
-      - name: "📊・polls"
-        read_only: true
-        topic: "Polls open to everyone. Advisory: they tell us what the room thinks."
-      - name: "🩺・bot-health"
-        read_only: true
-        visibility: nerds
-        topic: "Eugene's vitals. Opt in or out with Nerd mode in the roles channel."
-
-  # Closed debate chambers land here: text channels locked and moved by
-  # Eugene when a proposal's vote closes. Visible to the server owner
-  # only (standing-orders wording amendment pending). Starts empty.
-  - name: "🗄️ archive"
-    governance: true
-    visibility: owner
-    channels: []

@@ -17,8 +17,10 @@ rebuilt-from-neutral copy loses the signature.
 
 Prices below are dollars per million tokens, and they are estimates for
 each provider's cheap fast model. They exist to keep the monthly budget
-honest, not to be an invoice. A server on a costlier model should set
-price_in_per_m and price_out_per_m for itself.
+honest, not to be an invoice. An annex that has named its models one by
+one (`model_prices`) is billed at whichever one answered; anywhere else,
+a server on a costlier model should set price_in_per_m and
+price_out_per_m for itself.
 """
 
 import json
@@ -116,6 +118,10 @@ class Gemini:
     label = "Gemini"
     key_hint = "Google AI Studio → Get API key"
     default_model = os.environ.get("CLERK_GEMINI_MODEL", "gemini-3.1-flash-lite")
+    # The one for the long look. Never used for chat: a clerk who answers
+    # in a sentence does not need it, and the bill for having it answer
+    # every "morning" is not one anybody agreed to.
+    deep_model = os.environ.get("CLERK_GEMINI_DEEP", "gemini-3.1-pro")
     price_in = 0.25
     price_out = 1.50
     # Gemini caches long repeated prefixes by itself, with nothing to ask
@@ -235,6 +241,7 @@ class Grok:
     key_hint = "console.x.ai → API keys"
     base = os.environ.get("CLERK_GROK_BASE", "https://api.x.ai/v1").rstrip("/")
     default_model = os.environ.get("CLERK_GROK_MODEL", "grok-4-fast")
+    deep_model = os.environ.get("CLERK_GROK_DEEP", "grok-4")
     price_in = 0.20
     price_out = 0.50
     # Like Gemini, cached automatically and for free; only the discount on
@@ -408,7 +415,7 @@ def _cached_system_blocks(system):
     The annex reads tools first, then the system prompt, then the
     conversation, and caches everything up to the mark. One mark at the end
     of the stable half therefore carries the tool declarations with it for
-    free, and leaves the memory book and today's date -- which move --
+    free, and leaves what he remembers and today's date -- which move --
     outside it, where they belong.
 
     A caller who hands over one undivided string gets no mark at all. That
@@ -456,13 +463,32 @@ class Claude:
     # Haiku, deliberately: the clerk answers in a sentence or two out of a
     # 400 token ceiling, and a frontier model is five times the price for a
     # job this size. A house that wants one types it into the model field in
-    # `/setup brain`, or sets CLERK_CLAUDE_MODEL.
+    # `/setup`, or sets CLERK_CLAUDE_MODEL.
     default_model = os.environ.get("CLERK_CLAUDE_MODEL", "claude-haiku-4-5")
-    # Haiku 4.5 rates. A house that puts a costlier model in the modal
-    # should set price_in_per_m and price_out_per_m to match, or its counter
-    # will read low.
+    deep_model = os.environ.get("CLERK_CLAUDE_DEEP", "claude-opus-5")
+    # The three rungs, named. Anthropic keeps three tiers in the field at a
+    # time, and a house choosing between them is choosing a price rather
+    # than a model id, so `/model` takes the name and looks the id up here.
+    # Cheapest first: the order is what the command offers.
+    tiers = {
+        "haiku": "claude-haiku-4-5",
+        "sonnet": "claude-sonnet-5",
+        "opus": "claude-opus-5",
+    }
+    # Haiku 4.5 rates, kept as the fallback for a model nobody listed below.
     price_in = 1.00
     price_out = 5.00
+    # Dollars per million, per model, so the counter follows the choice
+    # instead of billing an opus month at haiku rates. Without this a house
+    # that switched tiers would run five times over its budget before the
+    # ceiling noticed. Sonnet is priced at its standard rate rather than the
+    # introductory one: a budget that errs high stops the clerk early, and a
+    # budget that errs low stops it never.
+    model_prices = {
+        "claude-haiku-4-5": (1.00, 5.00),
+        "claude-sonnet-5": (3.00, 15.00),
+        "claude-opus-5": (5.00, 25.00),
+    }
     # Anthropic is the one annex that caches only when asked, and the one
     # that charges to write a cache: a tenth of the input rate to read a
     # hit, a quarter over it to lay one down. Two requests inside the
@@ -617,6 +643,15 @@ def default_model(name):
     return provider.default_model if provider else ""
 
 
+def deep_model(name):
+    """What this annex offers for the one job worth paying for. A server
+    that would rather use something else says so; a server that has said
+    nothing gets this rather than nothing, because a long look answered by
+    the cheap model is the same list with worse judgement on it."""
+    provider = PROVIDERS.get(name)
+    return getattr(provider, "deep_model", "") if provider else ""
+
+
 def build(name, api_key):
     provider = PROVIDERS.get(name)
     if provider is None:
@@ -624,9 +659,34 @@ def build(name, api_key):
     return provider(api_key)
 
 
-def prices(name):
+def prices(name, model=None):
+    """Dollars per million in and out, for this annex and -- when it has
+    said so -- for this particular model. An annex that names no per-model
+    figures, or a model it has never heard of, falls back to the annex's own
+    estimate, which is what the counter did before any of this."""
     provider = PROVIDERS.get(name)
-    return (provider.price_in, provider.price_out) if provider else (0.0, 0.0)
+    if provider is None:
+        return (0.0, 0.0)
+    listed = getattr(provider, "model_prices", None) or {}
+    return listed.get(model) or (provider.price_in, provider.price_out)
+
+
+def tiers(name):
+    """The named rungs this annex offers, cheapest first, as {name: model}.
+    Empty for an annex that has not named any, which is how a caller asks
+    whether the choice is worth offering at all."""
+    provider = PROVIDERS.get(name)
+    return dict(getattr(provider, "tiers", {})) if provider else {}
+
+
+def tier_of(name, model):
+    """Which rung a model id sits on, or None if it is not one of them --
+    a house that typed its own model into `/setup` keeps it, and gets told
+    the truth rather than the nearest label."""
+    for tier, listed in tiers(name).items():
+        if listed == model:
+            return tier
+    return None
 
 
 def cache_rates(name):

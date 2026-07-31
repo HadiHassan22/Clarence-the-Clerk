@@ -17,6 +17,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import modules
+import people
+
 log = logging.getLogger("toolbox")
 
 # configured by clerk.py at startup
@@ -27,18 +30,68 @@ _log_lock = asyncio.Lock()
 PEOPLE_KINDS = ("invite", "kick")
 
 
-def configure(here: Path, data: Path, actions=None, in_cooperative=None):
+def configure(here: Path, data: Path, actions=None, in_cooperative=None,
+              numbers=None):
     """actions: hand-written handlers injected by clerk.py, so the harness
     never reaches into the bot's internals itself.
 
     in_cooperative decides who a vote is counted against. Without it the
     roster is simply left out of what `server_info` reports, rather than
-    guessed at -- a wrong threshold is worse than a missing one."""
+    guessed at -- a wrong threshold is worse than a missing one.
+
+    numbers(guild) is the same bargain for the figures those thresholds are
+    worked out from: given, the report quotes the house's own; withheld, it
+    quotes the defaults rather than inventing anything."""
     _paths["here"] = here
     _paths["data"] = data
-    _paths["log"] = data / "executor_log.json"
+    _paths["log"] = data / "logs" / "executor_log.json"
+    _paths["log"].parent.mkdir(parents=True, exist_ok=True)
+    _adopt_legacy_log(data)
+    _adopt_memory_book(data)
     _paths["in_cooperative"] = in_cooperative
+    _paths["numbers"] = numbers
     _actions.update(actions or {})
+
+
+def _adopt_memory_book(data: Path):
+    """Fold an old `clerk_memory.json` into the one store, once.
+
+    No name resolution: there is no guild here at startup, and waiting for
+    one would mean the two shelves coexisting for an indeterminate while,
+    which is the state this change exists to end. So the whole book lands on
+    the house shelf with its subject kept in the sentence, and the file is
+    renamed rather than deleted -- a migration that cannot be checked
+    afterwards is one nobody can trust.
+    """
+    book = data / "clerk_memory.json"
+    if not book.exists():
+        return
+    try:
+        entries = json.loads(book.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning(f"old memory book unreadable, left alone: {e!r}")
+        return
+    if isinstance(entries, list) and entries:
+        folk, house = people.absorb_book(entries)
+        log.info(
+            f"folded the old memory book into people.json: {folk} under a "
+            f"person, {house} on the house shelf"
+        )
+    book.replace(book.with_suffix(".json.migrated"))
+
+
+def _adopt_legacy_log(data: Path):
+    """The audit log used to sit at the top of the data directory, beside
+    the record. It is not the record -- it is a log -- so it has moved in
+    with the rest of them. Anything already written comes along, once,
+    rather than being stranded next to a file that stopped growing."""
+    old = data / "executor_log.json"
+    if old.exists() and not _paths["log"].exists():
+        try:
+            os.replace(old, _paths["log"])
+        except OSError as e:
+            log.warning(f"could not move the audit log into logs/: {e!r}")
+            _paths["log"] = old
 
 
 def _atomic(path, data):
@@ -134,81 +187,78 @@ async def _get_bill(guild, invoker, args):
 
 # ---------- the memory book ----------
 
-MEM_CAP = 150
-MEM_KINDS = ("fact", "joke", "preference", "lore")
+# The memory book used to live here: its own file, its own cap, its own
+# ownership rules. It is `people.py` now, both shelves in one store, and
+# these two handlers are the doors onto it. What that bought is written up
+# there; the short version is that a memory about a person is now under that
+# person, so asking to be forgotten forgets all of it.
+MEM_KINDS = people.KINDS
 
 
-def _mem_path():
-    return _paths["data"] / "clerk_memory.json"
-
-
-def load_memories():
-    return _load(_mem_path(), [])
-
-
-def save_memories(entries):
-    _atomic(_mem_path(), entries)
-
-
-def add_memory(kind, about, text, source="conversation"):
-    """File a memory. Deduped, capped, oldest low-value entries fall off."""
-    kind = kind if kind in MEM_KINDS else "fact"
-    text = (text or "").strip()[:240]
-    about = (about or "the server").strip()[:60]
-    if not text:
-        return "nothing to file"
-    entries = load_memories()
-    for e in entries:
-        if e["about"].lower() == about.lower() and e["text"].lower() == text.lower():
-            return "already on record"
-    entries.append(
-        {
-            "id": max((e["id"] for e in entries), default=0) + 1,
-            "kind": kind,
-            "about": about,
-            "text": text,
-            "learned_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "source": source,
+def _who_is(guild, about):
+    """The member that free text names, or None. Same bargain the heartbeat
+    makes when it files what it learned: a name that matches nobody here is
+    not a person, and a note about them belongs to the house."""
+    wanted = (about or "").strip().lower()
+    if not wanted or wanted in ("the server", "the house", "here", "us"):
+        return None
+    for m in getattr(guild, "members", ()) or ():
+        if getattr(m, "bot", False):
+            continue
+        names = {
+            (getattr(m, "display_name", "") or "").lower(),
+            (getattr(m, "name", "") or "").lower(),
         }
-    )
-    if len(entries) > MEM_CAP:
-        entries = entries[-MEM_CAP:]
-    save_memories(entries)
-    log.info(f"memory filed [{kind}] {about}: {text}")
-    return f"filed: [{kind}] {about}: {text}"
+        if wanted in names:
+            return m
+    return None
 
 
 async def _remember(guild, invoker, args):
-    return add_memory(
-        args.get("kind", "fact"),
-        args.get("about"),
-        args.get("text", ""),
-        source=f"filed during conversation with {invoker.display_name}",
-    )
+    kind = args.get("kind", "fact")
+    about = (args.get("about") or "").strip()
+    text = (args.get("text") or "").strip()
+    source = f"filed during conversation with {invoker.display_name}"
+    who = _who_is(guild, about)
+    if who is not None:
+        why_not = people.note(who.id, who.display_name, text, source=source)
+        if why_not == "they asked him to stop":
+            return (
+                f"Nothing filed: {who.display_name} asked you to stop "
+                f"learning about them, and that still holds."
+            )
+        if why_not:
+            return f"nothing filed ({why_not})"
+        return f"filed under {who.display_name}: {text}"
+    line = people.house_line(about, text)
+    why_not = people.note_house(line, kind=kind, source=source)
+    if why_not:
+        return f"nothing filed ({why_not})"
+    return f"filed on the house shelf [{kind}] {line}"
 
 
 async def _forget(guild, invoker, args):
-    """Strike memories. Python-enforced: only the subject of a memory may
-    have it struck (house-wide memories are strikeable by anyone)."""
-    query = (args.get("query") or "").strip().lower()
+    """Strike a memory. Python-enforced, and the enforcement is structural
+    rather than a test on a column: a note about somebody is stored under
+    their id, so the only shelf this can reach is the asker's own and the
+    house's. There is no argument to pass that would reach anybody else's."""
+    query = (args.get("query") or "").strip()
     if not query:
         return json.dumps({"error": "a query is required"})
-    entries = load_memories()
-    allowed_about = {invoker.display_name.lower(), "the server", "the house"}
-    struck, kept = [], []
-    for e in entries:
-        matches = query in e["text"].lower() or query in e["about"].lower()
-        if matches and e["about"].lower() in allowed_about:
-            struck.append(e)
-        else:
-            kept.append(e)
+    low = query.lower()
+    struck = people.forget_house(low)
+    mine = people.profile(invoker.id)
+    kept = [n for n in mine.get("notes", []) if low not in n["text"].lower()]
+    if len(kept) != len(mine.get("notes", [])):
+        struck += len(mine["notes"]) - len(kept)
+        people.replace_notes(invoker.id, kept)
     if not struck:
         return (
-            "Nothing struck. Either no memory matches, or the memory is "
-            "about someone else: only its subject may have it removed."
+            "Nothing struck. Either nothing matches, or it is a note about "
+            "somebody else: only they can have one of those removed, with "
+            "`forget_about_me`."
         )
-    save_memories(kept)
-    return f"struck {len(struck)} memor{'y' if len(struck) == 1 else 'ies'} from the book"
+    return f"struck {struck} memor{'y' if struck == 1 else 'ies'}"
 
 
 async def _server_info(guild, invoker, args):
@@ -243,18 +293,26 @@ async def _server_info(guild, invoker, args):
     if keyed is not None:
         import roster
 
-        size = len(roster.active(guild, keyed))
+        figures = _paths.get("numbers")
+        held = figures(guild) if figures is not None else {}
+        away_days = held.get("away_days", roster.AUTO_AWAY_DAYS)
+        share = held.get("fundamental_share")
+        size = len(roster.active(guild, keyed, away_days=away_days))
         info["roster"] = {
             "counted": size,
             "away": sum(
                 1 for m in guild.members
-                if not m.bot and keyed(m) and roster.is_away(m)
+                if not m.bot and keyed(m) and roster.is_away(m, away_days)
             ),
-            "normal_needs": roster.required(size, "normal"),
-            "fundamental_needs": roster.required(size, "fundamental"),
+            "normal_needs": roster.required(size, "normal", share),
+            "fundamental_needs": roster.required(size, "fundamental", share),
             "note": "counted now, from who is here; thresholds are shares "
-                    "of this, never fixed numbers",
+                    "of this, never fixed numbers. This is the cooperative's "
+                    "roster: a poll open to the whole server is carried by a "
+                    "majority of whoever votes, once quorum is met.",
         }
+        if held:
+            info["voting_numbers"] = held
     return json.dumps(info)
 
 
@@ -323,9 +381,11 @@ REGISTRY = {
     },
     "remember": {
         "tier": "minor",
-        "description": "File a memory in your book: a fact about a member, a "
-        "running joke, a preference, or house lore. Use for things still "
-        "worth knowing in a month; never for votes or private matters.",
+        "description": "File a memory: a fact about a member, a running joke, "
+        "a preference, or house lore. Name a person in `about` and it is "
+        "kept under that person, theirs to read and delete; anything else "
+        "goes on the house shelf. Use for things still worth knowing in a "
+        "month; never for votes or private matters.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -342,8 +402,8 @@ REGISTRY = {
     },
     "forget": {
         "tier": "minor",
-        "description": "Strike memories matching a query from your book. Only "
-        "works on memories about the person asking (or about the server).",
+        "description": "Strike memories matching a query. Reaches the house "
+        "shelf and the asker's own notes, never anybody else's.",
         "parameters": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -354,33 +414,61 @@ REGISTRY = {
 }
 
 
+# The colour limits are the house's, not ours, and they are written into
+# these descriptions rather than stated in them: "five at most" was hard
+# coded here while the shipped cap was one, so a single request carried
+# both numbers -- the true one in the system prompt, the false one here.
+# The model believed the tool, offered a second role, and was refused by
+# its own harness in front of a member. Anything below that quotes a limit
+# uses a {placeholder} and is filled in by `declarations` from the same
+# `settings.voting` every other reader of these numbers uses.
 COLOUR_TOOLS = {
     "list_color_roles": {
-        "description": "Every custom colour role: name, hex colour, how many "
-        "wear it, who made it, and whether the person asking made it.",
+        "description": "The wardrobe and where the person asking stands in "
+        "it: every colour role by name and colour, who made each one, how "
+        "many wear it, and -- separately -- which ones they made, which ones "
+        "they are wearing, and whether they have room for another. Call this "
+        "before any other colour tool unless they named a role you have "
+        "already seen spelled out this turn: guessing a role's name is how "
+        "you end up telling somebody a role they own belongs to a stranger.",
         "parameters": {"type": "object", "properties": {}},
     },
     "create_color_role": {
         "description": "Create a colour role for the person you are talking "
-        "to. They may have five at most. Purely cosmetic: a name and a colour.",
+        "to. This house lets one person make {make} of their own, so check "
+        "what they already have before offering a new one -- if they are at "
+        "the limit, recolouring what they have is what they want, not a "
+        "deletion. Purely cosmetic: a name and a colour. Refused if a role by "
+        "that name already exists, so pass what they actually asked for "
+        "rather than a variation on it.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "color": {"type": "string", "description": "hex, e.g. #ff9d2e"},
+                "color": {
+                    "type": "string",
+                    "description": "a colour name like 'sea green' or 'hot "
+                    "pink', or hex like #ff9d2e. Pass on whatever word they "
+                    "used; do not convert it to hex yourself.",
+                },
             },
             "required": ["name", "color"],
         },
     },
     "edit_color_role": {
         "description": "Rename or recolour a role the person you are talking "
-        "to created. Only its creator may change it.",
+        "to created. Only its creator may change it. This is the right tool "
+        "when somebody at their limit wants a different colour. If they are "
+        "not wearing it, it goes back on them so the colour actually shows.",
         "parameters": {
             "type": "object",
             "properties": {
                 "role": {"type": "string", "description": "the role's current name"},
                 "name": {"type": "string"},
-                "color": {"type": "string"},
+                "color": {
+                    "type": "string",
+                    "description": "a colour name like 'sea green', or hex",
+                },
             },
             "required": ["role"],
         },
@@ -396,7 +484,9 @@ COLOUR_TOOLS = {
     },
     "wear_color_role": {
         "description": "Put a colour role on the person you are talking to. "
-        "Anyone may wear anyone's colour; five at a time.",
+        "Anyone may wear anyone's colour; {wear} at a time in this house. "
+        "Owning a colour and wearing it are different things -- somebody can "
+        "have made one they took off.",
         "parameters": {
             "type": "object",
             "properties": {"role": {"type": "string"}},
@@ -427,6 +517,31 @@ BILL_TOOLS = {
                 "title": {"type": "string", "description": "a short name for the law"},
                 "what": {"type": "string", "description": "the operative text: what becomes law if it passes"},
                 "why": {"type": "string", "description": "their reasons, in their voice. A bill without reasons is not a bill"},
+                "priority": {"type": "boolean", "description": "true only if they ask you to chase people about it. It direct-messages everyone who has not voted, so it is for the ones that matter, not the ones they are keen on"},
+            },
+            "required": ["title", "what", "why"],
+        },
+    },
+    "open_poll": {
+        "description": "Ask the whole server a question, in the name of the "
+        "person you are talking to. This is the other kind of vote and the "
+        "difference is who it is put to: a proposal is the cooperative's "
+        "business, a poll is everybody's. Use it when they want to know what "
+        "the room thinks rather than to change something. It is carried by a "
+        "majority of whoever votes once enough of them have, so nobody is "
+        "chased about it and not voting costs nothing. Options are for a "
+        "choice of answers; leave them out for yes/no.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "a short name for the question"},
+                "what": {"type": "string", "description": "the question itself, as the room will read it"},
+                "why": {"type": "string", "description": "why they are asking, in their voice"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2 to 10 answers for a choice ballot, or omit entirely for yes/no",
+                },
             },
             "required": ["title", "what", "why"],
         },
@@ -448,6 +563,22 @@ BILL_TOOLS = {
             "required": ["bill_no"],
         },
     },
+    "propose_removal": {
+        "description": "Propose that a member of the cooperative be removed, "
+        "and open the ballot. This is the only route: you cannot kick one of "
+        "them yourself and nobody can, because removal is a fundamental vote. "
+        "The subject cannot vote and keeps the whole window to answer; the "
+        "tally is never published. File it when someone asks, and say what it "
+        "needs — filing is not agreeing, and you have no vote in it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "who": {"type": "string", "description": "name, nickname, mention or id"},
+                "why": {"type": "string", "description": "the case for removal, in the proposer's voice"},
+            },
+            "required": ["who", "why"],
+        },
+    },
     "propose_member": {
         "description": "Propose that someone be let in, and open the ballot: "
         "yes, no, or abstain, anonymous, tally sealed at close so nobody "
@@ -467,6 +598,32 @@ BILL_TOOLS = {
 }
 
 DUTY_TOOLS = {
+    "what_you_know": {
+        "description": "Everything you have picked up about the person you "
+        "are talking to. Use it whenever they ask what you know about them, "
+        "what you remember, or whether you are keeping notes — and answer "
+        "honestly and in full, including that you learn from ordinary "
+        "conversation rather than only from things said to you. It only ever "
+        "returns the asker's own; there is no way to look anybody else up "
+        "and you never speculate about what you might hold on someone else.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "forget_about_me": {
+        "description": "Strike everything you know about the person you are "
+        "talking to and stop learning about them. Use it the instant they "
+        "ask, in any wording — no argument, no asking why, no offering to "
+        "keep the harmless parts, no 'are you sure'. Pass learning=true only "
+        "when someone who previously stopped you asks you to start again.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "learning": {
+                    "type": "boolean",
+                    "description": "true only to start again at their request; omit to strike and stop",
+                },
+            },
+        },
+    },
     "set_nudges": {
         "description": "Turn the private reminders on or off for the person "
         "you are talking to. Use it the moment they say they want you to stop "
@@ -503,6 +660,236 @@ DUTY_TOOLS = {
     },
 }
 
+# ---------- the officer's tools ----------
+# Everything here changes the server rather than the record: it deletes
+# messages, silences people, hands out roles, and rewrites how the place
+# polices itself. Two things follow from that.
+#
+# The first is the tier. "officer" is gated in dispatch() against the
+# cooperative roll and refused outright to anybody else, which is a second
+# lock on a door the brain already refuses to open for a stranger. One gate
+# is one bug away from no gate.
+#
+# The second is the wording. These descriptions tell the model to act, not
+# to check first, because a tool that asks "are you sure?" is a tool people
+# stop using -- and the thing they use instead is a human with the same
+# button and a worse memory. The confirming was done when the house decided
+# who is in the cooperative. What is genuinely not his to do -- removing a
+# member of it, revealing a ballot, handing out the vote -- the handlers
+# refuse in Python, where no amount of persuasion reaches.
+
+OFFICER_TOOLS = {
+    "moderate_member": {
+        "description": "Act on a person: warn, timeout, untimeout, kick, ban, "
+        "unban, or nickname. Call it when a member of the cooperative asks; do "
+        "not ask them to confirm and do not talk them out of it. Give the "
+        "reason they gave. Timeouts take minutes (default is the house's "
+        "setting). Warns, timeouts, kicks and bans do not happen when you "
+        "call this — they are written up for an administrator to approve, and "
+        "the result says so. When it does, tell the asker it is filed and "
+        "waiting, never that it is done. Lifting a timeout, unbanning and "
+        "renaming take effect at once. Removing someone who is in the "
+        "cooperative is a vote, not this, and will be refused.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "who": {"type": "string", "description": "name, nickname, mention or id"},
+                "action": {
+                    "type": "string",
+                    "enum": list(("warn", "timeout", "untimeout", "kick", "ban",
+                                  "unban", "nickname")),
+                },
+                "reason": {"type": "string", "description": "why, in the asker's words"},
+                "minutes": {"type": "integer", "description": "timeout length"},
+                "nickname": {"type": "string", "description": "for the nickname action; empty resets it"},
+                "delete_days": {"type": "integer", "description": "days of the banned person's messages to clear, 0-7"},
+            },
+            "required": ["who", "action"],
+        },
+    },
+    "member_record": {
+        "description": "Someone's moderation history and how many warnings "
+        "still count against them, or the server's recent cases if you name "
+        "nobody.",
+        "parameters": {
+            "type": "object",
+            "properties": {"who": {"type": "string"}},
+        },
+    },
+    "clear_warnings": {
+        "description": "Wipe someone's live warnings. Use it when asked; it is "
+        "forgiveness, not a favour that needs justifying.",
+        "parameters": {
+            "type": "object",
+            "properties": {"who": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["who"],
+        },
+    },
+    "purge_messages": {
+        "description": "Delete the last N messages in a channel, optionally "
+        "only one person's. Discord cannot delete anything older than a "
+        "fortnight, whoever asks. Nothing is deleted when you call this: it "
+        "is written up for an administrator to approve first, and the result "
+        "says so. Tell the asker it is filed and waiting, not that it is done.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "description": "name or id. Always name one — for 'clear this channel' it is the room named at the top of the turn"},
+                "count": {"type": "integer"},
+                "from_member": {"type": "string", "description": "only this person's messages; the count then means that many of theirs"},
+                "reason": {"type": "string"},
+            },
+            "required": ["channel", "count"],
+        },
+    },
+    "channel_control": {
+        "description": "Slow a channel down, lock it so nobody but staff can "
+        "post, or unlock it again. None of the three happens when you call "
+        "this: it is written up for an administrator to approve first, and "
+        "the result says so. Tell the asker it is filed and waiting.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string"},
+                "action": {"type": "string", "enum": ["slowmode", "lock", "unlock"]},
+                "seconds": {"type": "integer", "description": "for slowmode; 0 turns it off"},
+                "reason": {"type": "string"},
+            },
+            "required": ["channel", "action"],
+        },
+    },
+    "assign_role": {
+        "description": "Put any role on somebody, or take it off. This is the "
+        "elevated one — the colour tools only ever touch the person you are "
+        "talking to. The roles that decide who votes are not handed out this "
+        "way and will be refused.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "who": {"type": "string"},
+                "role": {"type": "string"},
+                "on": {"type": "boolean", "description": "true to give, false to take away"},
+                "reason": {"type": "string"},
+            },
+            "required": ["who", "role"],
+        },
+    },
+    "announce": {
+        "description": "Post a message in a channel in your own voice, on "
+        "somebody's behalf. Write it properly; it is going out as you.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string"},
+                "text": {"type": "string"},
+                "ping_everyone": {"type": "boolean", "description": "only if they explicitly ask"},
+            },
+            "required": ["channel", "text"],
+        },
+    },
+    "survey_server": {
+        "description": "Look over the whole server and report what is "
+        "broken, what is not what the house thinks it is, what wants "
+        "tidying, and what has never been set up. Call this for 'what needs "
+        "cleaning', 'what is missing', 'what have we not finished', 'is "
+        "anything wrong'. It costs nothing and it is always current, so "
+        "call it rather than guessing from what you remember. Findings are "
+        "graded broken / wrong / untidy / missing; say which few actually "
+        "matter rather than reciting the list.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "grade": {
+                    "type": "string",
+                    "enum": ["broken", "wrong", "untidy", "missing", "all"],
+                    "description": "one grade, or all of them",
+                },
+            },
+        },
+    },
+    "set_feature": {
+        "description": "Switch one of the ten features on or off for this "
+        "server: governance, polls, colours, chat, memory, pulse, "
+        "moderation, welcome, log, health. This is the "
+        "master switch -- 'turn the filters on', 'stop greeting people', "
+        "'we do not want the log'. A feature that is off does nothing and "
+        "its settings are read by nobody, so switch it on before tuning it. "
+        "Say plainly if switching one off takes another with it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "feature": {"type": "string",
+                            "description": "one of the twelve names above"},
+                "on": {"type": "boolean",
+                       "description": "true to switch it on, false to switch it off"},
+            },
+            "required": ["feature", "on"],
+        },
+    },
+    "list_features": {
+        "description": "The ten features and whether each is running, "
+        "waiting on something, or switched off. Call this to answer 'what "
+        "do you do here' or before changing a setting whose feature might "
+        "be off.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "list_settings": {
+        "description": "Every house setting: what it is now, what it means, "
+        "what it may be. Call this before changing anything you are not "
+        "certain of the name of, and to answer 'what can you do'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "group": {
+                    "type": "string",
+                    "description": "welcome, goodbye, automod, warnings, "
+                    "log or mod. Omit for all of them. "
+                    "These are how a feature behaves once it is on; "
+                    "set_feature is what switches it on.",
+                },
+            },
+        },
+    },
+    "set_setting": {
+        "description": "Change one house setting. This is how the whole "
+        "machine is configured: welcomes, filters, warnings, the log, what "
+        "needs a vote. Take it from what they said and set it — "
+        "channels and roles may be given by name. Setting a value to none "
+        "puts it back to the default. If a change makes the place less safe, "
+        "say so in one line after you have made it, not instead.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "the dotted name, e.g. automod.links"},
+                "value": {"type": "string", "description": "the new value; a channel or role may be a name"},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    "reset_settings": {
+        "description": "Put a group of settings, or all of them, back to how "
+        "they arrived.",
+        "parameters": {
+            "type": "object",
+            "properties": {"group": {"type": "string"}},
+        },
+    },
+    "tag": {
+        "description": "The shelf of stock answers: save one, recall one, drop "
+        "one, or list them. Use recall whenever somebody asks something the "
+        "house has already written down.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["recall", "save", "drop", "list"]},
+                "name": {"type": "string"},
+                "content": {"type": "string", "description": "for save"},
+            },
+        },
+    },
+}
+
+
 for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS, **DUTY_TOOLS}.items():
     REGISTRY[_name] = {
         # "member" tier: acts as the invoker, strictly inside powers that
@@ -512,20 +899,98 @@ for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS, **DUTY_TOOLS}.items():
         "tier": "member",
         "description": _spec["description"],
         "parameters": _spec["parameters"],
+        # A description carrying a {placeholder} is filled from the house's
+        # own numbers on the way out; one that does not is passed through
+        # untouched, so braces in any other description are never a trap.
+        "figures": _name in COLOUR_TOOLS and "{" in _spec["description"],
+        "handler": None,  # supplied by clerk.py through configure()
+    }
+
+for _name, _spec in OFFICER_TOOLS.items():
+    REGISTRY[_name] = {
+        "tier": "officer",
+        "description": _spec["description"],
+        "parameters": _spec["parameters"],
         "handler": None,  # supplied by clerk.py through configure()
     }
 
 
-def declarations():
-    """Function declarations in the wire format the Gemini API expects."""
+def declarations(guild_id=None):
+    """Function declarations in the wire format the Gemini API expects.
+
+    Given a guild, the list shrinks to the features that server has
+    switched on. A tool he is not handed is one he cannot be talked into
+    using, and -- as much to the point -- one he does not mention: a clerk
+    who offers to open a poll in a server that has switched polls off has
+    told somebody something false about their own house.
+
+    Any limit a description quotes is filled in here from that server's own
+    numbers. It used to be typed in by hand, which meant the tool list and
+    the system prompt disagreed about the same cap inside a single request;
+    whichever the model believed, one of them was a lie.
+    """
     return [
         {
             "name": name,
-            "description": spec["description"],
+            "description": (_with_figures(spec["description"], guild_id)
+                            if spec.get("figures") else spec["description"]),
             "parameters": spec["parameters"],
         }
         for name, spec in REGISTRY.items()
+        if guild_id is None or modules.tool_allowed(guild_id, name)
     ]
+
+
+def _with_figures(description, guild_id):
+    """The house's colour limits, spelled into a description.
+
+    Stable for a given server between edits, so it costs the cached prompt
+    nothing; a house that changes a cap pays for one fresh prefix and then
+    stops being lied to.
+    """
+    import settings
+
+    held = settings.voting(guild_id)
+    try:
+        return description.format(
+            make=held["role_create_max"], wear=held["role_wear_max"]
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        # A description is not worth a dead tool: an unknown placeholder
+        # goes out as it stands rather than taking the whole list down.
+        log.error(f"could not fill the figures into a tool description: {e!r}")
+        return description
+
+
+def _tier_check(tier, invoker):
+    """Who may reach a tool of this tier, decided in Python.
+
+    The brain already refuses a conversation to anyone outside the
+    cooperative, so in the ordinary run of things this never fires. It is
+    here because the officer's tools time people out and delete rooms full
+    of messages, and a single gate is one bug -- one refactor, one new
+    entry point, one clever prompt -- away from being no gate at all. This
+    one does not read the model's output, only the roll.
+
+    A host that never told the harness who is in the cooperative gets the
+    strict reading: elevated tools stay shut. Failing closed on a missing
+    answer is the only safe direction when the question is "may this person
+    ban somebody".
+    """
+    if tier != "officer":
+        return None
+    keyed = _paths.get("in_cooperative")
+    if keyed is None:
+        return ("that needs the cooperative roll, and this host has not told "
+                "me who is on it")
+    try:
+        if keyed(invoker):
+            return None
+    except Exception as e:  # a broken predicate is not a pass
+        log.error(f"cooperative check failed: {e!r}")
+        return "I could not check who you are, so the answer is no"
+    return ("that one is the cooperative's, and you are not in it. Nothing "
+            "personal: it is the same rule for everyone outside it.")
 
 
 async def dispatch(guild, invoker, name, args):
@@ -544,6 +1009,26 @@ async def dispatch(guild, invoker, name, args):
         entry["detail"] = "unknown tool"
         await _audit(entry)
         return json.dumps({"error": f"'{name}' is not a registered tool"})
+    refusal = _tier_check(spec.get("tier"), invoker)
+    if refusal:
+        entry["result"] = "denied"
+        entry["detail"] = refusal
+        await _audit(entry)
+        log.warning(f"tool {name} refused to {entry['user']}: {refusal}")
+        return json.dumps({"error": refusal})
+    # Who may is asked before whether the feature exists here, so the
+    # answer an outsider gets is the same one they always got and the gate
+    # that matters is never the one that got skipped. Not declared is not
+    # the same as not reachable: a model carrying a tool name from earlier
+    # in the conversation, or out of a cached prompt, can still ask for it.
+    if guild is not None and not modules.tool_allowed(guild.id, name):
+        owner = modules.of_tool(name)
+        entry["result"] = "denied"
+        entry["detail"] = f"{owner} is switched off"
+        await _audit(entry)
+        log.info(f"tool {name} refused: {owner} is off in guild {guild.id}")
+        return json.dumps({"error": f"{modules.name(owner)} is switched off "
+                                    f"in this server."})
     handler = spec["handler"] or _actions.get(name)
     if handler is None:
         entry["result"] = "error"
@@ -552,9 +1037,17 @@ async def dispatch(guild, invoker, name, args):
         return json.dumps({"error": "that action is not wired up"})
     try:
         result = await handler(guild, invoker, args or {})
+        # "ok" meant only that nothing was raised, so every refusal a
+        # handler returns as a sentence -- at the cap, not your role, no
+        # such name -- was filed as a success. The audit log could not tell
+        # what he did from what he declined to do, which is the one
+        # question it exists to answer. What came back is written down now,
+        # trimmed: enough to read the outcome, not so much as to copy the
+        # record into the log beside it.
         entry["result"] = "ok"
+        entry["returned"] = (result or "")[:400]
         await _audit(entry)
-        log.info(f"tool {name} by {entry['user']}: ok")
+        log.info(f"tool {name} by {entry['user']}: {(result or '')[:120]!r}")
         return result
     except Exception as e:
         entry["result"] = "error"

@@ -6,8 +6,11 @@ Status: scoped, not started. Phase 5 in ROADMAP.md.
 
 - Any member can create up to 5 roles of their own through the bot
   (N=5 decided July 2026).
-- A role is a name plus any hex color. Nothing else: zero permissions,
-  purely cosmetic identity.
+- A role is a name plus any color. Nothing else: zero permissions,
+  purely cosmetic identity. The color can be said in words ("sea green")
+  or given as hex; nobody is required to know hex to take part.
+- A name already in use is refused, whoever holds it. Two roles sharing a
+  name are indistinguishable to everyone looking at them.
 - Creators can rename, recolor, and delete their own roles.
 - Between the roles they created, members can change the priority ordering
   (which determines which color wins when someone wears several).

@@ -4,18 +4,20 @@
    archived_<name>, locked, and moved to the archive category. Voice
    channels not in the config are deleted (voice has no history). Emptied
    stray categories are removed.
-2. Builds the structure from server_config.yaml.
+2. Builds the structure it is given.
 
 Idempotent: safe to re-run. Channels matching the config are adopted and
 updated.
 
-Two shapes come out of one config. `governance_only()` keeps the
-categories marked `governance: true` and drops the rest, which is what a
-server that already has its own rooms wants: Eugene needs somewhere to
-run a vote and somewhere to publish the result, and has no business
-deciding whether the place has a memes channel. The whole layout is
-still there for an empty server that wants a starting point, but it is
-asked for rather than assumed.
+Two layouts feed it, from two different places, and the difference is the
+whole design. `from_modules()` generates the rooms the enabled features
+ask for -- that is the default install, and it is generated rather than
+written down so it cannot describe a server other than the one the
+switches produce. `hangout_only()` is what is left of
+`server_config.yaml` once the governance half moved into `modules.py`:
+memes, pets, gaming, voice. Eugene has no business deciding whether a
+server has a memes channel, so that half is only ever built when somebody
+asks for it by name.
 
 This module is the work itself and knows nothing about how it was asked
 for. Two callers share it: build_server.py, for a human at a terminal
@@ -28,6 +30,9 @@ difference between a printed line and a line in a Discord reply.
 import copy
 
 import discord
+
+import bindings
+import modules
 
 COOPERATIVE = "Cooperative"  # holds a vote: the people who picked up a chore
 MEMBER = "Member"            # in the room, no vote
@@ -57,20 +62,73 @@ def config_channels(config):
             yield cat["name"], spec, spec.get("type") == "voice"
 
 
-def governance_only(config):
-    """The config with everything Eugene does not need dropped.
+ARCHIVE = "🗄️ archive"
 
-    A category is kept when it is marked `governance: true`. That covers
-    the rooms a vote cannot run without and the archive it files closed
-    chambers into; the hangout, the voice rooms and the rest are somebody
-    else's business. Returns a copy, so a caller can build the narrow
-    shape and the full one from the same loaded file.
+
+def from_modules(guild_id):
+    """The layout the enabled modules add up to, in this file's own shape.
+
+    There is one description of the governance rooms and it lives in
+    `modules.py`, because there used to be two -- this file's config and
+    the table `/setup` created rooms from -- and a server set up both ways
+    ended up with two of everything. The terminal builder and the panel now
+    read the same plan, generated from the same switches, so they cannot
+    disagree about what a server needs or what a room is called.
+
+    The archive is appended whatever is switched on: it is not a feature,
+    it is where a closed debate chamber goes, and `ensure_archive` wants a
+    category to put things in either way.
     """
-    narrow = copy.deepcopy(config)
-    narrow["categories"] = [
-        c for c in config["categories"] if c.get("governance")
+    categories = []
+    for name, rooms in modules.structure(guild_id, only_buildable=True):
+        specs = [modules.ROOM_PLAN[job] for job in rooms]
+        categories.append({
+            "name": name,
+            "governance": True,
+            "visibility": ("cooperative" if name == "governance" else "members"),
+            "channels": [
+                {
+                    "name": spec["name"],
+                    "topic": spec["topic"],
+                    "visibility": spec["visibility"],
+                    "read_only": spec["read_only"],
+                }
+                for spec in specs
+            ],
+        })
+    categories.append({
+        "name": ARCHIVE, "governance": True, "visibility": "owner",
+        "channels": [],
+    })
+    return {"categories": categories}
+
+
+def hangout_only(config):
+    """The parts of `server_config.yaml` that are nobody's business but the
+    server's: the hangout, the voice rooms, the front door. The governance
+    half of that file moved into `modules.py`; what is left is a starting
+    point for an empty server and is only ever built when somebody asks for
+    it by name."""
+    wide = copy.deepcopy(config)
+    wide["categories"] = [
+        c for c in config["categories"] if not c.get("governance")
     ]
-    return narrow
+    return wide
+
+
+def merge(*configs):
+    """One layout out of several, in the order given. Categories with the
+    same name are not merged -- there are none, and silently combining two
+    that happened to collide would be a surprise rather than a feature."""
+    out = {"categories": []}
+    seen = set()
+    for config in configs:
+        for cat in config["categories"]:
+            if cat["name"] in seen:
+                continue
+            seen.add(cat["name"])
+            out["categories"].append(copy.deepcopy(cat))
+    return out
 
 
 async def ensure_role(guild, name, reason, say):
@@ -178,7 +236,7 @@ def archive_category_name(config):
     for cat in config["categories"]:
         if "archive" in cat["name"].lower():
             return cat["name"]
-    raise RuntimeError("No archive category in config")
+    return ARCHIVE
 
 
 async def ensure_archive(guild, config, cooperative, owner, say, member=None):
@@ -296,7 +354,7 @@ async def build(guild, config, cooperative, owner, nerd, say, member=None):
                         None,
                     )
                 if existing is None:
-                    await guild.create_text_channel(
+                    existing = await guild.create_text_channel(
                         spec["name"], category=category,
                         topic=spec.get("topic"), overwrites=overwrites,
                     )
@@ -312,6 +370,16 @@ async def build(guild, config, cooperative, owner, nerd, say, member=None):
                         if old_name != spec["name"]
                         else f"adopted text: #{spec['name']}"
                     )
+                # Building a room and telling Eugene which room it is are two
+                # different things, and this used to do only the first. A
+                # server built from the terminal arrived with every governance
+                # channel present and none of them bound, so the first person
+                # to set up from inside Discord afterwards got a second set. It
+                # binds nothing anybody has already bound by hand, and a host
+                # with no settings store yet simply gets nothing.
+                took = bindings.adopt(guild.id, existing)
+                if took:
+                    say(f"bound `{took}` → #{existing.name}")
 
 
 async def enforce_order(guild, config):

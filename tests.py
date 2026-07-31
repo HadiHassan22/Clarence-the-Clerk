@@ -48,7 +48,7 @@ def run(coro):
 
 
 GUILD = types.SimpleNamespace(
-    name="The Hangout", id=1,
+    name="The Hangout", id=1, text_channels=[], channels=[], members=[],
     get_channel=lambda _id: None, get_role=lambda _id: None,
 )
 CITIZEN = types.SimpleNamespace(id=99, display_name="Hadi")
@@ -190,6 +190,31 @@ def test_registry():
     check("propose_bill requires all three fields",
           set(bill_spec["parameters"]["required"]) == {"title", "what", "why"})
 
+    # The colour caps were typed into these descriptions by hand -- "five at
+    # most" -- while the shipped cap was one. A single request carried both
+    # numbers, the true one in the system prompt and the false one here,
+    # and the model believed the tool: it offered a member a second colour
+    # and was refused by its own harness in front of them. The descriptions
+    # quote the house now, from the same place every other reader reads.
+    def described(name, guild_id=None):
+        return next(d for d in toolbox.declarations(guild_id)
+                    if d["name"] == name)["description"]
+
+    stored = (toolbox.REGISTRY["create_color_role"]["description"]
+              + toolbox.REGISTRY["wear_color_role"]["description"])
+    check("no colour tool stores a limit typed in by hand",
+          "five" not in stored and "{make}" in stored and "{wear}" in stored)
+    check("the limit a tool quotes is the one the house enforces",
+          f"make {settings.voting()['role_create_max']} of their own"
+          in described("create_color_role"))
+    settings.configure_voting(role_create_max=4, role_wear_max=3)
+    check("a house that moves a cap has moved what the tool says it is",
+          "make 4 of their own" in described("create_color_role")
+          and "3 at a time" in described("wear_color_role"))
+    settings.configure_voting(role_create_max=1, role_wear_max=5)
+    check("and a description with no figure in it is passed through whole",
+          "{" not in described("propose_bill"))
+
 
 def test_annexes():
     """The Claude annex, on the bench: everything but the network.
@@ -214,6 +239,29 @@ def test_annexes():
               all(hasattr(annex, m)
                   for m in ("converse", "json_answer", "list_models")))
     check("Claude is one of them", "claude" in providers.NAMES)
+
+    print("\nClaude names three rungs, and prices each of them")
+    rungs = providers.tiers("claude")
+    check("haiku, sonnet and opus, in that order",
+          list(rungs) == ["haiku", "sonnet", "opus"])
+    check("the cheapest is what he came with",
+          rungs["haiku"] == providers.default_model("claude"))
+    check("every rung is priced by itself",
+          all(providers.prices("claude", m)
+              != (providers.Claude.price_in, providers.Claude.price_out)
+              or m == rungs["haiku"] for m in rungs.values()))
+    check("and the dear one is dearer both ways",
+          providers.prices("claude", rungs["opus"])
+          > providers.prices("claude", rungs["haiku"]))
+    check("a model nobody listed falls back to the annex's own estimate",
+          providers.prices("claude", "claude-something-else")
+          == providers.prices("claude"))
+    check("a rung reads back by its name",
+          providers.tier_of("claude", rungs["opus"]) == "opus")
+    check("and a model a house typed in itself has no name to give",
+          providers.tier_of("claude", "claude-something-else") is None)
+    check("an annex that names no rungs offers none",
+          providers.tiers("gemini") == {} and providers.tiers("nope") == {})
 
     print("\nClaude reads the neutral transcript")
     # __new__, not the constructor: building a client would want the
@@ -289,12 +337,26 @@ def test_firewall(data):
 
 def test_audit(data):
     print("\nevery dispatch is audited")
-    entries = json.loads((data / "executor_log.json").read_text())
+    check("the audit log is written under logs/, not in among the record",
+          (data / "logs" / "executor_log.json").exists()
+          and not (data / "executor_log.json").exists())
+    entries = json.loads((data / "logs" / "executor_log.json").read_text())
     check(f"{len(entries)} entries written", len(entries) >= 10)
     check("proposals are logged with their arguments",
           any(e["tool"] == "propose_member" and e["args"].get("name") for e in entries))
     check("no dispatch is recorded without an outcome",
           all("result" in e for e in entries))
+
+    # "ok" only ever meant that nothing was raised, so every refusal a
+    # handler returns as a sentence -- at the cap, not your role, no such
+    # name -- was filed as a success. Reading this log back, there was no
+    # way to tell what he did from what he declined to do, which is the one
+    # question it is kept for. What came back is written down now.
+    done = [e for e in entries if e["result"] == "ok"]
+    check("a dispatch that ran records what it actually returned",
+          done and all("returned" in e for e in done))
+    check("and only a readable amount of it, not the record over again",
+          all(len(e["returned"]) <= 400 for e in done))
 
 
 # ---------- the filing handlers, for real ----------
@@ -372,6 +434,67 @@ def test_filing(clerk, data):
         check(f"a bill with {label} is refused", "error" in json.loads(
             run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", args))))
 
+    print("\nasking the whole server instead of the cooperative")
+    set_floor([])
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
+        "title": "Movie night", "what": "Should we do a movie night?",
+        "why": "Someone asked."})))
+    check("with no room bound for polls it is refused, and says how to fix "
+          "it rather than failing silently",
+          "error" in out and "/setup" in out["error"])
+
+    keep_room = clerk.room
+    clerk.room = lambda guild, key: (types.SimpleNamespace(id=5, mention="#polls")
+                                     if key == "polls" else keep_room(guild, key))
+    try:
+        set_floor([])
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
+            "title": "Movie night", "what": "Should we do a movie night?",
+            "why": "Someone asked."})))
+        check(f"a poll is filed: No. {out.get('filed')}", out.get("filed") == 13)
+        check("and it is filed as everybody's, which is the whole difference",
+              filed.get("audience") == clerk.EVERYONE)
+        check("the asker is the author, the same as a proposal",
+              out.get("author") == "Hadi")
+        check("and what comes back says nobody will be chased about it",
+              "chased" in out.get("note", ""))
+
+        set_floor([])
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
+            "title": "Movie night", "what": "Which night?", "why": "y",
+            "options": ["Tuesday", "Thursday", "Tuesday"]})))
+        check("a poll can offer a choice of answers, duplicates dropped",
+              filed.get("options") == ["Tuesday", "Thursday"])
+        set_floor([])
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
+            "title": "t", "what": "w", "why": "y", "options": ["Only one"]})))
+        check("a single option is not a choice and is refused", "error" in out)
+        for label, args in (
+            ("no title", {"what": "w", "why": "y"}),
+            ("no question", {"title": "t", "why": "y"}),
+            ("no reasons", {"title": "t", "what": "w"}),
+        ):
+            check(f"a poll with {label} is refused too", "error" in json.loads(
+                run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", args))))
+
+        print("\nchasing people is asked for, not assumed")
+        set_floor([])
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
+            "title": "t", "what": "w", "why": "y"})))
+        check("an ordinary proposal is not a priority one",
+              filed.get("priority") is False and out.get("priority") is False)
+        check("and says so, so he cannot promise a chase that will not happen",
+              "Nobody is direct-messaged" in out.get("note", ""))
+        set_floor([])
+        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
+            "title": "t", "what": "w", "why": "y", "priority": True})))
+        check("but somebody who asks for one gets it",
+              filed.get("priority") is True and out.get("priority") is True)
+        check("and is told what it costs everyone else",
+              "direct message" in out.get("note", ""))
+    finally:
+        clerk.room = keep_room
+
     print("\nthe floor is not rationed")
     # The cap that used to live here bound only the people who asked Eugene
     # to file for them; the buttons in #propose never consulted it. Asking
@@ -392,6 +515,196 @@ def test_filing(clerk, data):
     check("what a proposal must contain is still checked", "error" in json.loads(
         run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
                              {"title": "t", "what": "w"}))))
+
+    print("\nthe route that opens when the hands refuse")
+    # Asked to kick a member of the cooperative, the officer's tools say no
+    # and name this. If this route did not work the refusal would be a dead
+    # end, which is how a rule stops being a rule and starts being an
+    # obstacle people go round.
+    set_floor([])
+    sam = types.SimpleNamespace(id=10, name="sam", display_name="Sam", bot=False)
+    voter = types.SimpleNamespace(id=13, name="voter", display_name="Voter",
+                                 bot=False)
+    guild = types.SimpleNamespace(
+        name="The Hangout", id=1, owner_id=1, members=[sam, voter, CITIZEN],
+        text_channels=[], channels=[],
+        get_channel=lambda _i: None, get_role=lambda _i: None,
+    )
+    keep_keyed = clerk.in_cooperative
+    clerk.in_cooperative = lambda m: getattr(m, "id", None) == 13
+    try:
+        out = json.loads(run(toolbox.dispatch(guild, CITIZEN, "propose_removal", {
+            "who": "Voter", "why": "They have not been here since March."})))
+        check(f"a removal is filed: No. {out.get('filed')}", out.get("filed") == 13)
+        check("as a removal, which is a different window and a different bar",
+              filed.get("kind") == "kick" and filed.get("target_id") == 13)
+        check("the subject is left off the roll that decides it",
+              13 not in filed.get("eligible_ids", [13]))
+        check("and is told the tally will never be published",
+              "never published" in out.get("ballot", ""))
+        check("someone outside the cooperative is an ordinary kick, not this",
+              "not in the cooperative" in json.loads(run(toolbox.dispatch(
+                  guild, CITIZEN, "propose_removal",
+                  {"who": "Sam", "why": "y"}))).get("error", ""))
+        check("a removal without reasons is refused like any other proposal",
+              "error" in json.loads(run(toolbox.dispatch(
+                  guild, CITIZEN, "propose_removal", {"who": "Voter"}))))
+        set_floor([{"no": 3, "kind": "kick", "target_id": 13,
+                    "status": "on_floor"}])
+        check("and nobody is put up for removal twice at once",
+              "already up for a vote" in json.loads(run(toolbox.dispatch(
+                  guild, CITIZEN, "propose_removal",
+                  {"who": "Voter", "why": "y"}))).get("error", ""))
+    finally:
+        clerk.in_cooperative = keep_keyed
+
+
+def test_setup_rooms(clerk, data):
+    """What `/setup` hands Discord when it makes a room, and which rooms
+    it makes at all.
+
+    discord.py takes a mapping as "these exact overwrites" and its own
+    MISSING as "none at all". None is neither, and it raises instead of
+    defaulting -- so this crashed on the first room that is open to
+    everybody, which is to say on every fresh install. The check is on the
+    type of the argument rather than on the wording of the traceback,
+    because the wording is theirs to change.
+    """
+    print("\nthe rooms /setup makes")
+    import bindings
+    from collections.abc import Mapping
+
+    settings.configure(data)
+    seen = []
+
+    def guild_for(gid, coop=None):
+        guild = types.SimpleNamespace(
+            id=gid, text_channels=[], default_role="@everyone",
+            roles=[coop] if coop is not None else [],
+            get_role=lambda i: coop if coop is not None and i == 77 else None,
+        )
+
+        async def create_text_channel(name, topic=None, overwrites=None, reason=None):
+            seen.append((name, overwrites))
+            channel = types.SimpleNamespace(id=900 + len(guild.text_channels),
+                                            name=name, mention=f"#{name}")
+            # A created channel is in the server from then on, which is what
+            # makes the second run of this command a no-op rather than a
+            # second set of rooms.
+            guild.text_channels.append(channel)
+            return channel
+
+        guild.create_text_channel = create_text_channel
+        guild.get_channel = lambda i: next(
+            (c for c in guild.text_channels if c.id == i), None)
+        return guild
+
+    import modules
+    buildable = modules.wanted_rooms(3131, only_buildable=True)
+    run(clerk.make_missing_rooms(guild_for(3131)))
+    check("a room is made for every job an enabled feature wants and has none",
+          len(seen) == len(buildable))
+    check("and only for the features that are on: nothing is built for a "
+          "switched-off one",
+          set(n for n, _ow in seen)
+          == {modules.ROOM_PLAN[j]["name"] for j in buildable})
+    check("and every one of them is given a mapping, never None — which is "
+          "what Discord refuses",
+          all(isinstance(ow, Mapping) for _name, ow in seen))
+    check("a house with no cooperative role yet gets rooms open to "
+          "everybody, rather than no rooms at all",
+          all(ow == {} for _name, ow in seen))
+
+    print("\na room already built is adopted, never duplicated")
+    # The bug this is here for: `build_server.py` writes "🗳️・votes" and this
+    # command looked for "votes". It found nothing, made a second one loose at
+    # the top of the sidebar, and bound Eugene to the empty one.
+    seen.clear()
+    built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
+             for i, name in enumerate(
+                 ["🖋️・propose", "🗳️・votes", "🏛️・decisions", "📊・polls",
+                  "🎭・roles", "🩺・bot-health"])]
+    dressed = guild_for(3333)
+    dressed.text_channels = built
+    made, bound, _skipped = run(clerk.make_missing_rooms(dressed))
+    check("nothing is created over the top of a server that has these rooms",
+          made == [] and seen == [])
+    check("every one of them is adopted instead", len(bound) == len(built))
+    check("and adopted as they are, emoji and category untouched",
+          all("unchanged" in line for line in bound))
+    check("the binding points at the room that was already there",
+          bindings.bound_channel_id(3333, "votes") == 501)
+    made2, bound2, skipped2 = run(clerk.make_missing_rooms(dressed))
+    check("a second run has nothing left to do",
+          made2 == [] and bound2 == []
+          and sum(1 for s in skipped2 if "already bound" in s) == len(built))
+
+    print("\na room he will use but never make")
+    # The greeting used to guess where to go -- the system channel, then
+    # anything called general -- so a server that already greets people got
+    # greeted twice by a bot nobody had pointed anywhere.
+    check("with nothing to use, nothing is made and it says so",
+          any("welcome" in s and "nothing made" in s for s in skipped2))
+    greeter = types.SimpleNamespace(id=600, name="🛎️・welcome",
+                                    mention="#welcome")
+    dressed.text_channels = built + [greeter]
+    made3, bound3, _ = run(clerk.make_missing_rooms(dressed))
+    check("but a server that already has one has it adopted, not duplicated",
+          made3 == []
+          and any("welcome" in line and "unchanged" in line for line in bound3)
+          and bindings.bound_channel_id(3333, "welcome") == 600)
+    import modules as _m
+    check("and the chat room is never adopted, because binding it does not "
+          "add a room, it takes away every other one",
+          "chat" not in _m.adoptable_rooms(3333))
+
+    check("the room a name announces is the same one either route reads",
+          bindings.job_of("🗳️・votes") == "votes"
+          and bindings.job_of("votes") == "votes"
+          and bindings.job_of("the-floor") == "votes"
+          and bindings.job_of("🎭・roles") == "wardrobe")
+    check("a room with no job announces none",
+          bindings.job_of("💬・general") is None)
+    check("adopting takes nothing that is already spoken for",
+          bindings.adopt(3333, types.SimpleNamespace(id=999, name="votes")) is None
+          and bindings.bound_channel_id(3333, "votes") == 501)
+    check("and the terminal builder binds what it makes",
+          bindings.adopt(3434, types.SimpleNamespace(id=42, name="🏛️・decisions"))
+          == "decisions"
+          and bindings.bound_channel_id(3434, "decisions") == 42)
+
+    seen.clear()
+
+    class Role:  # hashable, because it is used as an overwrite key
+        id, name = 77, "Cooperative"
+
+    role = Role()
+    bindings.bind_role(3232, "cooperative", 77)
+    run(clerk.make_missing_rooms(guild_for(3232, coop=role)))
+    shut = [name for name, ow in seen if ow]
+    check("once there is one, the rooms that are its business are shut to "
+          "everyone else", sorted(shut) == ["propose", "votes"])
+    check("and the rest stay open", sorted(n for n, ow in seen if not ow)
+          == ["bot-health", "decisions", "polls", "roles"])
+    check("and the arrivals room is offered, never made: a bot that turns up "
+          "and gives you a #welcome has decided something that was not its "
+          "to decide",
+          "welcome" in modules.wanted_rooms(3232)
+          and "welcome" not in modules.wanted_rooms(3232, only_buildable=True))
+    check("the cooperative is named in the ones that are shut",
+          all(role in ow for _n, ow in seen if ow))
+
+    print("\nwhat is built follows what is switched on")
+    seen.clear()
+    modules.apply_set(3535, ["moderation", "welcome"])
+    run(clerk.make_missing_rooms(guild_for(3535)))
+    check("a server running him as a moderator and nothing else gets no "
+          "governance rooms at all", seen == [])
+    modules.apply_set(3636, ["governance"])
+    seen.clear()
+    run(clerk.make_missing_rooms(guild_for(3636)))
+    check("and governance on its own gets exactly its three",
+          sorted(n for n, _ow in seen) == ["decisions", "propose", "votes"])
 
 
 def test_closing(clerk, data):
@@ -600,7 +913,7 @@ def test_role_cap(clerk, data):
     another, and both have to read properly at a limit of one."""
     print("\none colour of your own")
     keep = clerk.load_json(clerk.ROLES, {})
-    cap = clerk.ROLE_CREATE_MAX
+    cap = settings.voting()["role_create_max"]
     try:
         clerk.save_json(clerk.ROLES, {})
         check("with no role of your own you are not at the cap",
@@ -627,14 +940,255 @@ def test_role_cap(clerk, data):
         check("Eugene says the same thing about somebody else",
               clerk.role_cap_line("Hadi").startswith("Hadi already made"))
 
-        clerk.ROLE_CREATE_MAX = 5
+        settings.configure_voting(role_create_max=5)
         check("were the cap ever raised, two of five is not at it",
               clerk.at_create_cap(99) is False)
         check("and the wording says the number plainly",
               clerk.role_cap_line() == "You already made 5 roles. "
                                        "One has to go to make room.")
+        settings.configure_voting(role_create_max=0)
+        check("a house that wants no colour roles at all says so in a number, "
+              "and the refusal still reads as English",
+              clerk.role_cap_line() == "You cannot make roles here; this "
+                                       "house has the cap at nought.")
     finally:
-        clerk.ROLE_CREATE_MAX = cap
+        settings.configure_voting(role_create_max=cap)
+        clerk.save_json(clerk.ROLES, keep)
+
+
+def _wardrobe(clerk):
+    """A house with two colour roles in it: one Hadi made and is not
+    wearing, one somebody else made. The exact arrangement the hands got
+    wrong in front of a member."""
+    made = []
+
+    class Role:
+        def __init__(self, rid, name, value, position):
+            self.id, self.name, self.position = rid, name, position
+            self.colour = types.SimpleNamespace(value=value)
+            self.members = []
+            self.mention = f"<@&{rid}>"
+
+        async def edit(self, **kw):
+            if "name" in kw:
+                self.name = kw["name"]
+            if "colour" in kw:
+                self.colour = types.SimpleNamespace(value=int(kw["colour"]))
+            return self
+
+        async def delete(self, **kw):
+            made.remove(self)
+
+    hers = Role(500, "horsy role", 0xFFA500, 3)   # Hadi's, orange, taken off
+    theirs = Role(501, "horse", 0x00FF00, 2)      # somebody else's
+    made.extend([hers, theirs])
+
+    class Member:
+        def __init__(self, uid, name):
+            self.id, self.display_name = uid, name
+            self.roles = []
+            self.bot = False
+
+        async def add_roles(self, *roles, **kw):
+            for r in roles:
+                if r not in self.roles:
+                    self.roles.append(r)
+                    r.members.append(self)
+
+        async def remove_roles(self, *roles, **kw):
+            for r in roles:
+                if r in self.roles:
+                    self.roles.remove(r)
+                    r.members.remove(self)
+
+    hadi = Member(99, "Hadi")
+    other = Member(7, "Ricky")
+    guild = types.SimpleNamespace(
+        id=1, name="The Hangout", roles=made, members=[hadi, other],
+        text_channels=[], channels=[], premium_subscriber_role=None,
+        get_role=lambda rid: next((r for r in made if r.id == int(rid)), None),
+        get_member=lambda uid: {99: hadi, 7: other}.get(uid),
+    )
+    clerk.save_json(clerk.ROLES, {"500": {"creator_id": 99},
+                                  "501": {"creator_id": 7}})
+    return guild, hadi, hers, theirs
+
+
+def test_colour_hands(clerk, data):
+    """What the hands hand back, which is what he then says out loud.
+
+    Every line of this is a sentence a member actually read. He was told a
+    role of his was somebody else's, that orange was tomato red, that he
+    had a colour when he was not wearing one, and -- after the recolour
+    finally worked -- "Done, purple now" while he stayed grey. None of it
+    was the model inventing things for fun: each one was a gap in what came
+    back through the tool, filled in with a guess.
+    """
+    print("\nwhat the colour tools hand back")
+    keep = clerk.load_json(clerk.ROLES, {})
+    try:
+        guild, hadi, hers, theirs = _wardrobe(clerk)
+
+        # ---- the listing: named colours, and made-versus-worn ----
+        seen = json.loads(run(clerk.act_list_colors(guild, hadi, {})))
+        entry = next(r for r in seen["wardrobe"] if r["name"] == "horsy role")
+        check("a colour goes out by its name, not as hex to be guessed at",
+              entry["colour"] == "orange" and entry["hex"] == "#ffa500")
+        check("with the hex kept beside it for anyone who wants it",
+              entry["hex"] == "#ffa500")
+        check("what somebody made is reported", seen["roles_they_made"] == ["horsy role"])
+        check("and what they are wearing is a different field, because they "
+              "are different things", seen["roles_they_are_wearing"] == [])
+        check("the caps come with it, so he never offers a role they cannot have",
+              seen["may_make"] == settings.voting()["role_create_max"]
+              and seen["can_make_another"] is False)
+        check("somebody else's role is named as theirs",
+              next(r for r in seen["wardrobe"] if r["name"] == "horse")
+              ["made_by_them"] is False)
+
+        # ---- the two failures that used to share one sentence ----
+        missing = run(clerk.act_edit_color(
+            guild, hadi, {"role": "sky", "color": "purple"}))
+        check("a name nobody has is reported as a name nobody has",
+              "no colour role called 'sky'" in missing)
+        check("and the real spellings come back with it, so the next call "
+              "gets it right instead of the next message",
+              "'horsy role'" in missing and "'horse'" in missing)
+
+        not_his = run(clerk.act_edit_color(
+            guild, hadi, {"role": "horse", "color": "purple"}))
+        check("a role somebody else made says who made it, by name",
+              "made by Ricky" in not_his and "not by Hadi" in not_his)
+        check("and says what Hadi can do instead", "may wear it" in not_his)
+        check("the two answers are not the same sentence any more",
+              missing != not_his)
+
+        # ---- the recolour, and the colour that never showed ----
+        done = run(clerk.act_edit_color(
+            guild, hadi, {"role": "horsy role", "color": "purple"}))
+        check("his own role recolours", hers.colour.value == 0x800080)
+        check("and the report names the colour it now is",
+              "purple" in done)
+        check("a colour nobody can see is not a colour: it goes back on him",
+              hers in hadi.roles)
+        check("and the report says so, so he can tell them",
+              "not wearing it" in done)
+
+        # ---- at the cap, the refusal names what they already have ----
+        refused = run(clerk.act_create_color(
+            guild, hadi, {"name": "purple thing", "color": "purple"}))
+        check("somebody at the cap is refused",
+              "already made" in refused)
+        check("and told which role is theirs, rather than left to invent one",
+              "'horsy role'" in refused)
+        check("with recolouring offered and deleting explicitly not",
+              "Recolouring" in refused and "without being asked" in refused)
+
+        # ---- shedding something you are not wearing ----
+        run(clerk.act_shed_color(guild, hadi, {"role": "horsy role"}))
+        empty = run(clerk.act_shed_color(guild, hadi, {"role": "horsy role"}))
+        check("taking off what is already off says exactly that",
+              "not wearing horsy role" in empty
+              and "not wearing any colour role" in empty)
+
+        # ---- a role deleted in Discord's own settings frees the cap ----
+        guild.roles.remove(hers)
+        check("the registry still has the entry, because nothing pruned it",
+              "500" in clerk.role_registry())
+        check("but a cap counts roles that exist, not entries left behind",
+              clerk.at_create_cap(99, guild) is False)
+        check("while a caller with no guild to check against is unchanged",
+              clerk.at_create_cap(99) is True)
+    finally:
+        clerk.save_json(clerk.ROLES, keep)
+
+
+def test_colour_picking(clerk, data):
+    """Nobody should need to know hex to pick a colour, and nobody should be
+    able to make a second role wearing a name that is already taken."""
+    print("\npicking a colour without knowing hex")
+    keep = clerk.load_json(clerk.ROLES, {})
+    try:
+        check("a colour said in words is a colour",
+              clerk.parse_colour("sea green").value == 0x2E8B57)
+        spellings = {clerk.parse_colour(s).value
+                     for s in ("sky blue", "Sky Blue", "sky-blue", "SKYBLUE")}
+        check("and however it is spaced, cased or hyphenated it is the one "
+              "colour", spellings == {0x87CEEB})
+        check("hex still works, with or without the hash",
+              clerk.parse_colour("#ff9d2e").value
+              == clerk.parse_colour("ff9d2e").value == 0xFF9D2E)
+        for bad in ("puce", "", "#gggggg", None):
+            try:
+                clerk.parse_colour(bad)
+                check(f"{bad!r} should not have parsed", False)
+            except ValueError:
+                pass
+        check("and nothing it cannot read is guessed at", True)
+        check("black is nudged off pure black, which Discord reads as no "
+              "colour at all and paints grey",
+              clerk.parse_colour("black").value != 0x000000)
+        check("a colour can be said back in the word it came in",
+              clerk.colour_name(0x2E8B57) == "seagreen")
+        check("and one with no name says nothing rather than guessing",
+              clerk.colour_name(0x123456) is None)
+
+        check("the menu fits inside what Discord will show",
+              len(clerk.PALETTE) <= 25)
+        check("every swatch is a colour that could also have been typed",
+              all(name in clerk.COLOUR_NAMES for _, name, _ in clerk.PALETTE))
+        check("and no colour is offered twice",
+              len({name for _, name, _ in clerk.PALETTE}) == len(clerk.PALETTE))
+
+        def picker(selected=(), written=""):
+            swatch = types.SimpleNamespace(
+                component=types.SimpleNamespace(values=list(selected)))
+            return swatch, written
+
+        check("picking from the menu is enough",
+              clerk.picked_colour(*picker(selected=["teal"])).value == 0x008080)
+        check("typing is enough on its own",
+              clerk.picked_colour(*picker(written="hot pink")).value == 0xFF69B4)
+        check("and what somebody troubled to type beats a menu they may "
+              "never have opened",
+              clerk.picked_colour(
+                  *picker(selected=["teal"], written="crimson")).value == 0xDC143C)
+        check("saying nothing at all is not an error, it is no answer",
+              clerk.picked_colour(*picker()) is None)
+        try:
+            clerk.picked_colour(*picker(written="banana"))
+            check("a typed nonsense colour should have been refused", False)
+        except ValueError:
+            check("a typed nonsense colour is refused, not silently ignored", True)
+
+        def role(rid, name):
+            return types.SimpleNamespace(id=rid, name=name)
+
+        mine, theirs, staff = role(1, "Gremlin"), role(2, "Moss"), role(3, "Moderator")
+        guild = types.SimpleNamespace(roles=[mine, theirs, staff])
+        clerk.save_json(clerk.ROLES, {"1": {"creator_id": 99},
+                                      "2": {"creator_id": 7}})
+
+        check("a name already in use is found before anything is made",
+              clerk.name_taken(guild, "Gremlin") is mine)
+        check("and case and stray spaces do not smuggle a duplicate past it",
+              clerk.name_taken(guild, "  gremlin ") is mine)
+        check("a name nobody holds is free", clerk.name_taken(guild, "Vetch") is None)
+        check("a role does not collide with itself when it is being edited",
+              clerk.name_taken(guild, "Gremlin", ignoring=mine) is None)
+        check("but it still collides with everybody else",
+              clerk.name_taken(guild, "Moss", ignoring=mine) is theirs)
+        check("roles that are not colours are counted too: two roles with "
+              "one name are indistinguishable whoever made them",
+              clerk.name_taken(guild, "Moderator") is staff)
+
+        check("your own is a nudge to edit it, not a refusal to explain",
+              "Edit that one" in clerk.taken_line(mine, 99))
+        check("somebody else's colour points at wearing it",
+              "wear it" in clerk.taken_line(theirs, 99))
+        check("and a server role just says the name is spoken for",
+              "already a role in this server" in clerk.taken_line(staff, 99))
+    finally:
         clerk.save_json(clerk.ROLES, keep)
 
 
@@ -751,6 +1305,426 @@ def test_voting(clerk, data):
         check("a vote about a person shows turnout and nothing else",
               "2 of 8 voted" in hidden and "❌" not in hidden)
         check("and says why it is quiet", "about a person" in hidden)
+    finally:
+        clerk.in_cooperative = original
+
+
+def test_voting_numbers(data):
+    """The numbers a house votes by are the house's, not the repo's. These
+    pin that they can be changed, that they cannot be changed into nonsense,
+    and that one server's choices are not another's."""
+    print("\nthe numbers are the house's")
+
+    settings.configure(data / "numbers-store")
+
+    stock = settings.voting()
+    check("a house that has chosen nothing votes by the numbers he came with",
+          stock["floor_hours"] == 48 and stock["fundamental_share"] == 0.75)
+    check("and asking for a particular house's gives the same until it chooses",
+          settings.voting(1) == stock)
+
+    accepted, rejected = settings.set_voting(1, floor_hours=6)
+    check("a house can set its own window", accepted["floor_hours"] == 6
+          and not rejected)
+    check("and it is the one that comes back", settings.voting(1)["floor_hours"] == 6)
+    check("its neighbour is untouched", settings.voting(2)["floor_hours"] == 48)
+    check("and every number it did not touch still follows the default",
+          settings.voting(1)["away_days"] == 14)
+
+    _, rejected = settings.set_voting(1, fundamental_share="three quarters")
+    check("a threshold that is not a number is refused by name, not ignored",
+          rejected == ["fundamental_share"])
+    check("and the old value still stands",
+          settings.voting(1)["fundamental_share"] == 0.75)
+    _, rejected = settings.set_voting(1, quorum_of_the_realm=1)
+    check("a number that is not a governance number is refused too",
+          rejected == ["quorum_of_the_realm"])
+
+    held, _ = settings.set_voting(1, fundamental_share=5)
+    check("a share above everybody is held at everybody, so a threshold "
+          "can never be made unreachable", held["fundamental_share"] == 1.0)
+    held, _ = settings.set_voting(1, floor_hours=0)
+    check("and a window of nothing is held above nothing, so a vote can "
+          "never close before it opens", held["floor_hours"] > 0)
+
+    settings.set_voting(1, floor_hours=None)
+    check("putting one back on the default drops it rather than pinning it",
+          settings.voting(1)["floor_hours"] == 48
+          and "floor_hours" not in settings.voting_overrides(1))
+    check("and what a house has actually chosen can be told from what it "
+          "merely inherited",
+          set(settings.voting_overrides(1)) == {"fundamental_share"})
+
+    import roster
+    check("a fifth of sixty is twelve", roster.quorum(60, 0.2) == 12)
+    check("a quorum rounds up, never down: eleven of fifty-one is not a fifth",
+          roster.quorum(51, 0.2) == 11)
+    check("a quorum is never more than the people it counts",
+          all(roster.quorum(n, 1.0) <= n for n in range(1, 40)))
+    check("and never nought while there is anybody to ask",
+          all(roster.quorum(n, 0.001) >= 1 for n in range(1, 40)))
+    check("an empty room has no quorum to meet", roster.quorum(0, 0.2) == 0)
+
+    settings.configure(data)
+
+
+def test_open_polls(clerk, data):
+    """A poll open to the whole server is counted against the whole server.
+
+    That is the point of the audience, and until now it was not true: every
+    vote was counted against the cooperative whatever it said on the tin,
+    so a poll open to sixty people passed or failed on the roster of eight.
+    """
+    print("\na poll open to the server is counted against the server")
+    import roster
+
+    roster.configure(data)
+    settings.configure(data)
+    keep_coop, keep_room = clerk.in_cooperative, clerk.in_room
+    # Eight in the cooperative; twenty-four in the room, which is what a
+    # public poll is put to.
+    inside = {i for i in range(1, 9)}
+    clerk.in_cooperative = lambda m: m.id in inside
+    clerk.in_room = lambda m: not getattr(m, "bot", False)
+    try:
+        guild = types.SimpleNamespace(
+            id=77, name="The Hangout",
+            members=[fake_member(i) for i in range(1, 25)],
+            get_channel=lambda _id: None, get_role=lambda _id: None,
+        )
+
+        def poll(ballots, audience=None, **extra):
+            bill = {"no": 9, "title": "Movie night", "kind": "ordinary",
+                    "status": "on_floor", "ballots": dict(ballots), **extra}
+            if audience:
+                bill["audience"] = audience
+            return bill
+
+        closed = clerk.vote_state(guild, poll({}))
+        open_st = clerk.vote_state(guild, poll({}, audience=clerk.EVERYONE))
+        check("the cooperative's own business is still counted against the "
+              "cooperative", closed["size"] == 8 and closed["need"] == 5)
+        check("and a poll open to everyone against everyone",
+              open_st["size"] == 24)
+        check("which is the whole of what the audience was ever supposed "
+              "to mean", open_st["open_kind"] is True)
+
+        by_id = {m.id: m for m in guild.members}
+        for label, audience in (("the cooperative's", None),
+                                ("an open poll's", clerk.EVERYONE)):
+            subject = poll({}, audience=audience)
+            roll = clerk.electorate(guild, subject)
+            check(f"every one of {label} denominator is somebody the ballot "
+                  f"would let in",
+                  roll and all(clerk.may_vote(subject, by_id[uid]) for uid in roll))
+            check(f"and nobody {label} door turns away is counted in it",
+                  not any(clerk.may_vote(subject, m) for m in guild.members
+                          if m.id not in roll))
+
+        check("a fifth of the room has to turn up for it to count at all",
+              open_st["quorum"] == 5)
+        check("and no count of yes votes is quoted, because there is no "
+              "number of them that carries it", open_st["need"] == 0)
+
+        # Four of twenty-four, all yes: a landslide among people who came,
+        # and not enough people came.
+        four = clerk.vote_state(
+            guild, poll({str(i): "yes" for i in range(1, 5)},
+                        audience=clerk.EVERYONE))
+        check("four yes and nothing against is not settled while a fifth "
+              "voter could still turn up", clerk.vote_settled(four) is False)
+
+        # Decisive, on a majority of votes cast, means the lead is bigger
+        # than the number of people who could still turn up. Twenty-four in
+        # the room: twelve yes leaves twelve, who could level it, and a tie
+        # fails — so twelve is not decided and thirteen is.
+        twelve = clerk.vote_state(
+            guild, poll({str(i): "yes" for i in range(1, 13)},
+                        audience=clerk.EVERYONE))
+        check("twelve of twenty-four with twelve still to vote is not "
+              "decided: the twelve could level it, and a tie fails",
+              clerk.vote_settled(twelve) is False)
+        thirteen = clerk.vote_state(
+            guild, poll({str(i): "yes" for i in range(1, 14)},
+                        audience=clerk.EVERYONE))
+        check("one more makes the lead bigger than the room that is left, "
+              "and it closes on the spot",
+              clerk.vote_settled(thirteen) is True)
+        check("a lead is measured against the other side, not against "
+              "nothing: 12 yes to 1 no is a lead of eleven with eleven left, "
+              "which the eleven can still level",
+              clerk.vote_settled(clerk.vote_state(
+                  guild, poll({**{str(i): "yes" for i in range(1, 13)},
+                               "13": "no"}, audience=clerk.EVERYONE))) is False)
+        check("and is over once nobody is left, however level",
+              clerk.vote_settled(clerk.vote_state(
+                  guild, poll({str(i): "yes" for i in range(1, 25)},
+                              audience=clerk.EVERYONE))) is True)
+
+        face = clerk.ballot_content(
+            guild, poll({"1": "yes", "2": "yes", "3": "no"},
+                        audience=clerk.EVERYONE))
+        check("the ballot measures the bar against quorum, which is the "
+              "thing a reader can still do something about",
+              "3 of 24 voted" in face and "quorum **5**" in face)
+        check("and says plainly that silence is not a no here",
+              "not voting is not a no here" in face)
+        check("with both sides on show: an open poll is about a thing",
+              "✅ 2" in face and "❌ 1" in face)
+
+        short = clerk.standing_line(
+            guild, poll({"1": "yes"}, audience=clerk.EVERYONE))
+        check("short of quorum, the receipt says how many more would count "
+              "it", "4 more and it counts" in short)
+        leading = clerk.standing_line(
+            guild, poll({"1": "yes", "2": "yes", "3": "yes", "4": "yes",
+                         "5": "no"}, audience=clerk.EVERYONE))
+        check("past it, the receipt names who leads and never claims a "
+              "number of yes votes would carry it",
+              "yes leads 4 to 1" in leading and "carries it" not in leading)
+
+        check("nobody is direct-messaged about an open poll: the nudge "
+              "exists because silence is a no, and here it is not",
+              clerk.nudge_roll(guild, poll({}, audience=clerk.EVERYONE)) == [])
+        check("nor about an ordinary proposal, which the ballot in the room "
+              "can speak for itself",
+              clerk.nudge_roll(guild, poll({})) == [])
+        check("a removal is chased, because silence there is a no about "
+              "somebody's standing",
+              len(clerk.nudge_roll(guild, poll({}, kind="kick"))) == 8)
+        check("so is a rule change, and anything else at that tier",
+              len(clerk.nudge_roll(guild, poll({}, tier="fundamental"))) == 8)
+        check("and so is anything its author filed as priority, which is a "
+              "claim they make in the open",
+              len(clerk.nudge_roll(guild, poll({}, priority=True))) == 8)
+        check("but priority cannot be used to chase the whole server about "
+              "a poll",
+              clerk.nudge_roll(
+                  guild, poll({}, priority=True, audience=clerk.EVERYONE)) == [])
+    finally:
+        clerk.in_cooperative, clerk.in_room = keep_coop, keep_room
+
+
+def test_open_poll_closing(clerk, data):
+    """What actually carries an open poll: a majority of whoever voted, and
+    a quorum standing between that and three people deciding for sixty."""
+    print("\nwhat carries a poll open to the server")
+    import roster
+
+    roster.configure(data)
+    settings.configure(data)
+    keep_coop, keep_room = clerk.in_cooperative, clerk.in_room
+    clerk.in_cooperative = lambda m: m.id <= 8
+    clerk.in_room = lambda m: not getattr(m, "bot", False)
+
+    finalized = {}
+
+    async def fake_finalize(guild, bill, passed, tally_line, decided=None):
+        finalized.clear()
+        finalized.update(bill=bill, passed=passed, line=tally_line)
+        bill["status"] = "passed" if passed else "failed"
+
+    keep_final = clerk.finalize_bill
+    clerk.finalize_bill = fake_finalize
+    try:
+        guild = types.SimpleNamespace(
+            id=78, name="The Hangout",
+            members=[fake_member(i) for i in range(1, 25)],
+            get_channel=lambda _id: None, get_role=lambda _id: None,
+        )
+
+        def close(ballots):
+            bill = {"no": 10, "title": "Movie night", "kind": "ordinary",
+                    "status": "on_floor", "audience": clerk.EVERYONE,
+                    "ballots": dict(ballots), "notes": {}}
+            run(clerk.close_bill(guild, bill))
+            return bill
+
+        thin = close({"1": "yes", "2": "yes", "3": "yes"})
+        check("three people cannot decide for twenty-four, however unanimous",
+              thin["status"] == "failed")
+        check("and the tally says why rather than reading as a defeat",
+              "quorum 5 — not met" in finalized["line"])
+
+        carried = close({"1": "yes", "2": "yes", "3": "yes",
+                         "4": "no", "5": "no"})
+        check("quorum met, and a majority of those who voted carries it",
+              carried["status"] == "passed")
+        check("the record keeps what it was counted against",
+              carried["threshold"] == {"roster": 24, "quorum": 5,
+                                       "audience": clerk.EVERYONE})
+
+        lost = close({"1": "yes", "2": "yes", "3": "no", "4": "no", "5": "no"})
+        check("and a minority of them does not", lost["status"] == "failed")
+
+        level = close({"1": "yes", "2": "yes", "3": "no", "4": "no",
+                       "5": "abstain"})
+        check("a tie fails: the status quo never has to defend itself",
+              level["status"] == "failed")
+        check("but an abstention still helped the poll reach quorum, which "
+              "is the whole of what turning up is for",
+              "5 of 24 voted" in finalized["line"])
+
+        report = clerk.closing_report(carried)
+        check("a poll that carried is not a decision and does not pretend "
+              "to be one",
+              report["advisory"] is True and report["act"] is None
+              and any("binds nobody" in line for line in report["done"]))
+        check("and what is left is named as a separate vote, not as work",
+              any("that is a proposal" in line
+                  for line in report["outstanding"]))
+        check("a poll that lost says the room may be asked again",
+              any("ask the room again" in line
+                  for line in clerk.closing_report(lost)["outstanding"]))
+    finally:
+        clerk.in_cooperative, clerk.in_room = keep_coop, keep_room
+        clerk.finalize_bill = keep_final
+
+
+def test_numbers_bite(clerk, data):
+    """A number that can be set and then ignored is worse than a constant.
+    These pin that the house's copy is the one the machinery actually
+    reads, and that it is read now rather than at boot."""
+    print("\nand the numbers the house sets are the ones he uses")
+    import roster
+
+    roster.configure(data)
+    settings.configure(data)
+    original = clerk.in_cooperative
+    clerk.in_cooperative = lambda m: True
+    try:
+        guild = types.SimpleNamespace(
+            id=79, name="The Hangout",
+            members=[fake_member(i) for i in range(1, 9)],
+            get_channel=lambda _id: None, get_role=lambda _id: None,
+        )
+        bill = {"no": 11, "title": "t", "kind": "ordinary",
+                "status": "on_floor", "ballots": {}}
+
+        check("eight carry an ordinary vote on five",
+              clerk.vote_state(guild, bill)["need"] == 5)
+        settings.set_voting(guild.id, fundamental_share=0.9)
+        check("a house that wants a rule change to be harder says so, and "
+              "it is harder from that moment",
+              clerk.vote_state(guild, dict(bill, tier="fundamental"))["need"] == 8)
+
+        settings.set_voting(guild.id, away_days=1)
+        roster.touch(3)
+        check("and a house that wants a shorter quiet spell gets one",
+              clerk.numbers(guild)["away_days"] == 1)
+
+        settings.set_voting(guild.id, public_quorum_share=0.5)
+        open_bill = dict(bill, audience=clerk.EVERYONE)
+        keep_room = clerk.in_room
+        clerk.in_room = lambda m: True
+        try:
+            check("a house that wants half the room to turn up gets that too",
+                  clerk.vote_state(guild, open_bill)["quorum"] == 4)
+        finally:
+            clerk.in_room = keep_room
+    finally:
+        clerk.in_cooperative = original
+        settings.set_voting(guild.id, fundamental_share=None, away_days=None,
+                            public_quorum_share=None)
+
+
+def test_choice_ballots(clerk, data):
+    print("\nchoice ballots wearing the same face as every other vote")
+    import roster
+
+    roster.configure(data)
+    original = clerk.in_cooperative
+    clerk.in_cooperative = lambda m: True
+    try:
+        guild = types.SimpleNamespace(
+            id=1,
+            members=[fake_member(i) for i in range(1, 9)],
+            text_channels=[],
+            get_channel=lambda _id: None,
+            get_role=lambda _id: None,
+        )
+        options = ["Tuesday", "Thursday", "Sunday"]
+
+        def poll(ballots, **extra):
+            return {"no": 4, "title": "Meeting night", "kind": "ordinary",
+                    "status": "on_floor", "options": list(options),
+                    "round": 1, "ballots": dict(ballots), **extra}
+
+        st = clerk.vote_state(guild, poll({"1": "Tuesday", "2": "Sunday",
+                                           "3": "Tuesday"}))
+        check("every option is counted, including the ones nobody picked",
+              st["counts"] == {"Tuesday": 2, "Thursday": 0, "Sunday": 1})
+        check("and the turnout is the same figure a yes/no vote reports",
+              (st["voted"], st["size"]) == (3, 8))
+        check("five of eight would carry an option outright", st["clinch"] == 5)
+        check("the leader is named", st["leaders"] == ["Tuesday"])
+
+        check("a leader short of half the house is not settled: the room "
+              "can still change its mind",
+              clerk.vote_settled(st) is False)
+        clinched = poll({str(i): "Tuesday" for i in range(1, 6)})
+        check("but past half the house it is, because that is a majority of "
+              "however many end up voting",
+              clerk.vote_settled(clerk.vote_state(guild, clinched)) is True)
+        split = poll({"1": "Tuesday", "2": "Tuesday", "3": "Tuesday",
+                      "4": "Thursday", "5": "Thursday", "6": "Thursday",
+                      "7": "Sunday", "8": "Sunday"})
+        check("and a house that has all voted with no majority is settled "
+              "too, so a runoff opens instead of waiting out the clock",
+              clerk.vote_settled(clerk.vote_state(guild, split)) is True)
+        check("nothing is settled while the roster reads empty",
+              clerk.vote_settled(clerk.vote_state(
+                  types.SimpleNamespace(id=1, members=[],
+                                        get_channel=lambda _id: None,
+                                        get_role=lambda _id: None),
+                  clinched)) is False)
+
+        face = clerk.ballot_content(guild, poll({"1": "Tuesday", "2": "Sunday"}))
+        check("the ballot shows a bar for each option, not a paragraph",
+              face.count("`") == 6 and "**Tuesday** — 1" in face)
+        check("and the turnout, live", "2 of 8 voted" in face)
+        check("and says what would end it", "5 carries an option" in face)
+        check("a first round says a runoff may follow", "runoff" in face)
+        runoff = clerk.ballot_content(
+            guild, poll({}, round=2, options=["Tuesday", "Sunday"]))
+        check("a runoff says so in its heading", "(runoff)" in runoff)
+        check("and that the leader takes it",
+              "whichever leads at close" in runoff)
+
+        check("the receipt names who leads",
+              "**Tuesday** leads with 2"
+              in clerk.standing_line(guild, poll({"1": "Tuesday",
+                                                  "2": "Tuesday"})))
+        check("a level ballot says so rather than picking a winner",
+              "2 options are level on 1"
+              in clerk.standing_line(guild, poll({"1": "Tuesday",
+                                                  "2": "Sunday"})))
+        check("and an untouched one does not pretend otherwise",
+              "Nothing has a vote yet" in clerk.standing_line(guild, poll({})))
+
+        nudge = clerk.nudge_text(guild, poll({"1": "Tuesday"}))
+        check("the nudge no longer counts a choice ballot in yes votes",
+              "yes" not in nudge)
+        check("nor claims silence votes against something",
+              "counts against" not in nudge)
+        check("it says what silence actually costs you",
+              "chosen without you" in nudge)
+        plain = clerk.nudge_text(guild, {"no": 5, "title": "t",
+                                         "kind": "ordinary",
+                                         "status": "on_floor", "ballots": {}})
+        check("while a yes/no vote is still nudged exactly as it was",
+              "silence counts against it" in plain
+              and "5 more yes votes carries it" in plain)
+
+        ids = [item.custom_id for item in clerk.MultiBallotView().children]
+        check("a bare view registers a button for every option a ballot "
+              "can hold, so a restart cannot leave one dead",
+              ids == [f"clerk:opt_{i}" for i in range(clerk.MULTI_MAX)]
+              + ["clerk:opt_retract"])
+        live = [item.custom_id for item in clerk.MultiBallotView(options).children]
+        check("and a real ballot answers on the same ids",
+              live == ["clerk:opt_0", "clerk:opt_1", "clerk:opt_2",
+                       "clerk:opt_retract"])
     finally:
         clerk.in_cooperative = original
 
@@ -1048,75 +2022,6 @@ def test_chat_room(data):
         settings.configure(data)
 
 
-def test_study_gate(data):
-    """Every reply used to buy a second model call asking what was worth
-    remembering, and almost every answer was "nothing". The gate decides that
-    for free. A false skip costs one fact somebody will say again; a false
-    study costs money on every "thanks"."""
-    print("\nwhat is not worth a second thought")
-    import brain
-
-    ok = "Noted. I will remember that for the next time it comes up."
-
-    table = [
-        # (label, said, reply, used_tools, the reason, or None to study it)
-        ("thanks", "thanks", ok, (), "member said too little"),
-        ("lol", "lol", ok, (), "member said too little"),
-        ("ok", "ok", ok, (), "member said too little"),
-        ("a padded nothing", "   ok   ", ok, (), "member said too little"),
-        ("an allergy nobody should have to repeat",
-         "I cannot eat dairy, so leave me off the pizza order next time",
-         ok, (), None),
-        ("a move worth filing",
-         "I have moved to Berlin, so I am on CET now and not on GMT",
-         "Right. I will read CET when I say what time a vote closes.", (), None),
-        ("a question answered out of the registry",
-         "what is open on the floor right now?",
-         "Two proposals: No. 4 on the books channel and No. 5 on the rota.",
-         ("show_bills",), "lookup"),
-        ("the same question with nothing looked up",
-         "what is open on the floor right now?",
-         "Two proposals: No. 4 on the books channel and No. 5 on the rota.",
-         (), None),
-        ("a statement that happened to use a tool",
-         "I have moved to Berlin, so I am on CET now and not on GMT",
-         "Right. I will read CET when I say what time a vote closes.",
-         ("show_bills",), None),
-        ("the outage line", "what is on the floor at the moment?",
-         brain.OUTAGE_LINE, (), "canned line"),
-        ("the line he says when a question ran too deep",
-         "what did everybody decide about the rota in the end?",
-         brain.TOO_DEEP_LINE, (), "canned line"),
-        ("a sealed ballot", "who voted against the books channel in the end?",
-         "The ballots are sealed, so I cannot say who voted which way.",
-         (), "refusal"),
-        ("a short reply that says it cannot",
-         "could you delete that channel for me please?",
-         "I cannot do that without a proposal.", (), "reply too short"),
-    ]
-    for label, said, reply, used, want in table:
-        got = brain._study_skip_reason(said, reply, used)
-        check(f"{label}: {got or 'studied'}", got == want)
-
-    print("\nand the floors it decides on")
-    check("a message one character short of the floor is skipped",
-          brain._study_skip_reason("a" * 24, ok, ()) == "member said too little")
-    check("and one exactly at it is studied",
-          brain._study_skip_reason("a" * 25, ok, ()) is None)
-    check("a reply one character short is skipped",
-          brain._study_skip_reason("a" * 25, "b" * 39, ()) == "reply too short")
-    check("and one exactly at it is studied",
-          brain._study_skip_reason("a" * 25, "b" * 40, ()) is None)
-    long_refusal = "The ballots are sealed. " + "There is a reason for that. " * 6
-    check(f"a long answer that merely contains the word is not a refusal "
-          f"({len(long_refusal)} chars)",
-          len(long_refusal) >= 160
-          and brain._study_skip_reason("a" * 25, long_refusal, ()) is None)
-    check("but one just inside the refusal length is",
-          brain._study_skip_reason("a" * 25, "The ballots are sealed. " + "x" * 130,
-                                   ()) == "refusal")
-
-
 def test_colour_words(clerk, data):
     """The prompt quotes the colour limits at members as rules, so the number
     Eugene says has to be the number the buttons enforce."""
@@ -1144,11 +2049,21 @@ def test_colour_words(clerk, data):
         check("a number past the ones he spells out is still said",
               brain._colour_limits() == "12 colours of their own, 12 worn at once")
 
-        brain._deps["role_limits"] = {"create": clerk.ROLE_CREATE_MAX,
-                                      "wear": clerk.ROLE_WEAR_MAX}
-        check("and what clerk.py enforces is what he tells people",
+        # The limits are the house's now, so the one thing worth pinning is
+        # that he reads the house's copy rather than a number handed to him
+        # once at boot -- a cap raised at noon has to reach the sentence he
+        # says at one minute past.
+        brain._deps.pop("role_limits", None)
+        brain._deps["numbers"] = lambda guild=None: settings.voting()
+        check("what clerk.py enforces is what he tells people",
               brain._colour_limits() == "one colour of their own, five worn at once")
+        settings.configure_voting(role_create_max=3, role_wear_max=2)
+        check("and a house that moves a cap has moved what he says it is, "
+              "without a redeploy",
+              brain._colour_limits() == "three colours of their own, two worn at once")
     finally:
+        settings.configure_voting(role_create_max=1, role_wear_max=5)
+        brain._deps.pop("numbers", None)
         if had:
             brain._deps["role_limits"] = keep
         else:
@@ -1236,6 +2151,450 @@ def test_dynamic_thresholds(data):
         roster.configure(data)
 
 
+def test_people(data):
+    """Notes about a person, owned by that person. The interesting cases
+    are all about the owning: a delete that quietly rebuilds is not a
+    delete, and a profile somebody else can read is a file on them."""
+    print("\nwhat he knows about you is yours")
+    import people
+
+    people.configure(data / "people-store")
+
+    check("somebody unknown has no profile and that is not an error",
+          people.profile(1) == {} and people.summary(1) == "Nothing yet.")
+
+    check("a note is filed", people.note(1, "Horsy", "argues for sport") is None)
+    people.note(1, "Horsy", "up late, always")
+    check("and comes back under their name",
+          len(people.profile(1)["notes"]) == 2
+          and people.profile(1)["display"] == "Horsy")
+    check("the same thing said twice is filed once",
+          people.note(1, "Horsy", "argues for sport") == "already known")
+    check("and so is the same thing said longer, which is how a profile "
+          "fills up with one fact",
+          people.note(1, "Horsy", "argues for sport, always has")
+          == "already known")
+    check("an empty note is not a note", people.note(1, "Horsy", "   ") == "empty")
+    check("but a note that genuinely adds something is not swallowed by a "
+          "shorter one it happens to contain",
+          people.note(1, "Horsy", "up late on weeknights, never weekends")
+          is None)
+
+    for i in range(people.PROFILE_CAP + 6):
+        people.note(1, "Horsy", f"distinct observation number {i}")
+    check("a profile is a sketch, not a file: it stops at the cap",
+          len(people.profile(1)["notes"]) == people.PROFILE_CAP)
+    check("and it is the recent ones that survive",
+          "number " + str(people.PROFILE_CAP + 5)
+          in people.profile(1)["notes"][-1]["text"])
+
+    people.note(2, "Berri", "runs the book club")
+    seen = people.digest([2])
+    check("the digest leads with whoever is in the room",
+          seen.index("Berri") < seen.index("Horsy"))
+    check("and tells him not to read it out or cross-reference it",
+          "never tell one person what you know about another" in seen)
+
+    gone = people.forget_person(2)
+    check("striking a profile takes the notes", gone == 1
+          and people.profile(2)["notes"] == [])
+    check("and it stops him learning, or the delete was decoration",
+          people.is_closed(2) is True
+          and people.note(2, "Berri", "something new")
+          == "they asked him to stop")
+    check("somebody who was struck is out of the digest entirely",
+          "Berri" not in people.digest([2]))
+    check("and he says plainly that there is nothing rather than nothing at all",
+          "asked me to stop" in people.summary(2))
+    check("coming back is theirs to ask for too", people.reopen(2) is True
+          and people.note(2, "Berri", "back again") is None)
+    check("and nothing struck comes back with them",
+          [n["text"] for n in people.profile(2)["notes"]] == ["back again"])
+
+    known, notes, closed = people.counts()
+    check(f"the counts add up: {known} known, {notes} notes, {closed} closed",
+          known == 2 and notes == people.PROFILE_CAP + 1 and closed == 0)
+
+
+def test_one_memory_store(data):
+    """Two shelves, one store, and one set of rules about deleting.
+
+    The book used to be a second file with a second cap and its own idea of
+    who owned what, which is how `[preference] Horsy: prefers green` could
+    survive Horsy asking to be forgotten. The cases that matter are all
+    about that seam: what lands where, what a strike reaches, and what the
+    old file turns into on the way up.
+    """
+    print("\none store for what he remembers")
+    import people
+
+    store = data / "one-store"
+    people.configure(store)
+
+    horsy = types.SimpleNamespace(id=1, name="horsy", display_name="Horsy",
+                                  bot=False)
+    berri = types.SimpleNamespace(id=2, name="berri", display_name="Berri",
+                                  bot=False)
+    robot = types.SimpleNamespace(id=3, name="eugene", display_name="Eugene",
+                                  bot=True)
+    guild = types.SimpleNamespace(members=[horsy, berri, robot])
+    asker = types.SimpleNamespace(id=1, display_name="Horsy")
+
+    def remembering(about, text, who=asker):
+        return run(toolbox._remember(
+            guild, who, {"kind": "fact", "about": about, "text": text}))
+
+    print("\nwhat lands where")
+    said = remembering("Horsy", "argues for sport")
+    check("a memory that names somebody lands under that somebody",
+          "filed under Horsy" in said
+          and any("argues for sport" in n["text"]
+                  for n in people.profile(1)["notes"]))
+    check("and not on the house shelf as well",
+          not any("argues for sport" in n["text"] for n in people.house_notes()))
+
+    said = remembering("the server", "the rota argument is a running joke")
+    check("a memory about the place lands on the house shelf",
+          "house shelf" in said
+          and any("rota argument" in n["text"] for n in people.house_notes()))
+
+    said = remembering("Somebody Who Left", "used to run the film nights")
+    check("a name that matches nobody here is not a person, so it goes to "
+          "the house rather than being thrown away",
+          any("Somebody Who Left: used to run" in n["text"]
+              for n in people.house_notes()))
+
+    check("the house shelf is not a person and never counts as one",
+          people.counts()[0] == 1)
+
+    print("\nand what a strike reaches")
+    people.note_house("Horsy brought the good snacks to the last meeting")
+    gone = people.forget_person(1, display="Horsy")
+    check("forgetting somebody takes their notes and their name off the "
+          "house shelf together, which is the whole reason for one store",
+          gone == 2
+          and people.profile(1)["notes"] == []
+          and not any("Horsy" in n["text"] for n in people.house_notes()))
+    check("and the rest of the house shelf is left alone",
+          any("rota argument" in n["text"] for n in people.house_notes()))
+
+    people.note_house("the kettle vote already ran for three days")
+    people.note(4, "Al", "runs the film nights")
+    people.forget_person(4, display="Al")
+    check("a short name is swept as a word and not as a substring, so "
+          "somebody called Al does not take 'already' with them",
+          any("already ran" in n["text"] for n in people.house_notes()))
+    check("a strike also stops him learning, so the next pulse cannot "
+          "quietly start the profile again",
+          people.note(1, "Horsy", "argues for sport") == "they asked him to stop")
+    check("and the tool says so rather than reporting a silent nothing",
+          "asked you to stop" in remembering("Horsy", "argues for sport"))
+
+    people.note(2, "Berri", "never awake before noon")
+    said = run(toolbox._forget(guild, asker, {"query": "noon"}))
+    check("`forget` cannot reach another person's notes -- there is no "
+          "argument that would name them",
+          "Nothing struck" in said
+          and len(people.profile(2)["notes"]) == 1)
+    said = run(toolbox._forget(guild, asker, {"query": "rota"}))
+    check("but anybody may strike a note about the place",
+          "struck 1" in said
+          and not any("rota argument" in n["text"] for n in people.house_notes()))
+
+    print("\nand the book an older install left behind")
+    moved = data / "old-book"
+    moved.mkdir(parents=True, exist_ok=True)
+    (moved / "clerk_memory.json").write_text(json.dumps([
+        {"id": 1, "kind": "preference", "about": "Horsy",
+         "text": "prefers a green ball role", "learned_at": "2026-07-31"},
+        {"id": 2, "kind": "lore", "about": "the server",
+         "text": "the kettle vote ran for three days", "learned_at": "2026-07-31"},
+    ]))
+    people.configure(moved)
+    toolbox._adopt_memory_book(moved)
+    shelf = " ".join(n["text"] for n in people.house_notes())
+    check("the old book is folded in rather than dropped",
+          "green ball" in shelf and "kettle vote" in shelf)
+    check("and its subject stays in the sentence, so a note about somebody "
+          "is still about them",
+          "Horsy: prefers a green ball role" in shelf)
+    check("the file is set aside rather than deleted, so a migration "
+          "nobody watched can still be checked",
+          not (moved / "clerk_memory.json").exists()
+          and (moved / "clerk_memory.json.migrated").exists())
+    toolbox._adopt_memory_book(moved)
+    check("and folding it twice does not double the shelf",
+          len(people.house_notes()) == 2)
+
+    people.configure(data / "people-store")
+
+
+def test_pulse(data):
+    """The heartbeat, which is the only proactive thing that spends. Every
+    check here is about it not spending: the gate, the daily cap, the
+    budget floor, and never raising the same thing twice."""
+    print("\nthe heartbeat, and what it costs to have one")
+    import pulse
+
+    pulse.configure(data / "pulse-store")
+    now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+    quiet = {"messages": 0, "speakers": 0, "open_bills": [], "outstanding": 0}
+    check("a quiet server wakes him for nothing at all",
+          pulse.gate(quiet, now) is None)
+    check("one person talking to themselves is not a conversation",
+          pulse.gate({**quiet, "messages": 20, "speakers": 1}, now) is None)
+    check("and neither is two people saying hello",
+          pulse.gate({**quiet, "messages": 3, "speakers": 2}, now) is None)
+    reason = pulse.gate({**quiet, "messages": 12, "speakers": 3}, now)
+    check(f"a real conversation does: {reason!r}", reason and "12 messages" in reason)
+
+    soon = (now + timedelta(hours=2)).isoformat()
+    late = (now + timedelta(days=3)).isoformat()
+    check("a vote about to close with people yet to vote is worth a look",
+          "closes soon" in (pulse.gate(
+              {**quiet, "open_bills": [{"no": 4, "ends_at": soon, "waiting": 3}]},
+              now) or ""))
+    check("the same vote with everybody voted is not",
+          pulse.gate(
+              {**quiet, "open_bills": [{"no": 4, "ends_at": soon, "waiting": 0}]},
+              now) is None)
+    check("nor is one with days left to run",
+          pulse.gate(
+              {**quiet, "open_bills": [{"no": 4, "ends_at": late, "waiting": 3}]},
+              now) is None)
+    check("a passed decision nobody has done is worth one look",
+          pulse.gate({**quiet, "outstanding": 2, "outstanding_stale": True},
+                     now) is not None)
+    check("and is not, while the weekly chase still has it in hand",
+          pulse.gate({**quiet, "outstanding": 2, "outstanding_stale": False},
+                     now) is None)
+
+    check("half a month spent still leaves room to think unprompted",
+          pulse.within_budget(5.0, 10.0) is True)
+    check("but the last quarter is kept for being spoken to",
+          pulse.within_budget(8.0, 10.0) is False)
+    check("and a server with no budget at all never thinks unprompted",
+          pulse.within_budget(0.0, 0.0) is False)
+
+    check("the day starts with the cap unspent", pulse.under_cap(now) is True)
+    for i in range(pulse.MAX_PER_DAY):
+        pulse.record_thought(now + timedelta(minutes=i))
+    check("a gate that goes wrong costs a day's cap and no more",
+          pulse.under_cap(now + timedelta(minutes=30)) is False)
+    check("and tomorrow is a fresh day",
+          pulse.under_cap(now + timedelta(days=1)) is True)
+
+    check("looking is free and does not count against the day",
+          pulse.spent_today(now + timedelta(days=2)) == 0)
+    pulse.record_look(now + timedelta(days=2))
+    check("but it does reset the timer, so the loop cannot spin",
+          pulse.due(now + timedelta(days=2)) is False)
+    check("and the timer comes round again",
+          pulse.due(now + timedelta(days=2) + pulse.EVERY) is True)
+
+    pulse.mark_raised("voice channel clutter", now)
+    check("something he has raised is left alone",
+          pulse.raised_recently("voice channel clutter", now) is True)
+    check("however it is capitalised or spaced",
+          pulse.raised_recently("  Voice Channel   Clutter ", now) is True)
+    check("something else is not",
+          pulse.raised_recently("meeting night", now) is False)
+    check("and a fortnight later it may be raised again",
+          pulse.raised_recently("voice channel clutter",
+                                now + timedelta(days=15)) is False)
+
+    pulse.keep_draft(555, {"title": "T", "what": "W", "why": "Y"}, "clutter", now)
+    check("a draft waits for somebody to want it",
+          pulse.draft(555)["title"] == "T")
+    pulse.drop_draft(555)
+    check("and is gone once it is taken up or thrown away",
+          pulse.draft(555) is None)
+
+
+def test_heartbeat_wiring(clerk, data):
+    """The heartbeat end to end, minus the model: what one thought does
+    once it comes back. The interesting half is what it refuses to do."""
+    print("\nwhat one unprompted thought is allowed to do")
+    import people
+    import pulse
+
+    people.configure(data / "beat-people")
+    pulse.configure(data / "beat-pulse")
+
+    sent = []
+
+    class FakeChannel:
+        id = 4242
+        mention = "#propose"
+
+        async def send(self, content=None, view=None, **kw):
+            sent.append((content, view))
+            return types.SimpleNamespace(id=900 + len(sent))
+
+    guild = types.SimpleNamespace(
+        id=51, name="The Hangout", text_channels=[], channels=[],
+        members=[fake_member(1), fake_member(2)],
+        get_channel=lambda _id: None, get_role=lambda _id: None,
+    )
+    guild.members[0].display_name = "Horsy"
+    guild.members[1].display_name = "Berri"
+
+    keep_room = clerk.room
+    clerk.room = lambda g, key: FakeChannel()
+    try:
+        quiet = run(clerk.pulse_speak(guild, {"say": "nothing", "topic": "x",
+                                              "text": ""}))
+        check("a thought that ends in silence says nothing and marks nothing",
+              quiet is None and not sent
+              and pulse.raised_recently("x") is False)
+
+        spoke = run(clerk.pulse_speak(guild, {
+            "say": "remark", "topic": "vote closing",
+            "text": "No. 4 closes in an hour with three yet to vote."}))
+        check("a remark is said once", spoke and len(sent) == 1
+              and "closes in an hour" in sent[0][0])
+        check("and the topic is written down, so it is not said again",
+              pulse.raised_recently("vote closing") is True)
+
+        sent.clear()
+        drafted = run(clerk.pulse_speak(guild, {
+            "say": "draft", "topic": "voice clutter",
+            "text": "Four people have hit this.",
+            "draft": {"title": "Archive dead voice channels",
+                      "what": "Voice channels unused for 60 days are archived.",
+                      "why": "Horsy and Berri both raised it."}}))
+        check("a draft is posted", drafted and len(sent) == 1)
+        body, view = sent[0]
+        check("with the proposal written out in full",
+              "Archive dead voice channels" in body
+              and "unused for 60 days" in body)
+        check("and it says plainly that he is not the author",
+              "I did not propose this" in body and "no vote on it" in body)
+        check("and carries a button for somebody who wants it",
+              isinstance(view, clerk.DraftView))
+        held = pulse.draft(901)
+        check("the draft is kept so the button can file it later",
+              held and held["title"] == "Archive dead voice channels")
+
+        sent.clear()
+        blocked = run(clerk.pulse_speak(guild, {
+            "say": "draft", "topic": "half a draft",
+            "text": "x", "draft": {"title": "T", "what": "", "why": "Y"}}))
+        check("a draft missing its operative text is not posted at all",
+              blocked is None and not sent)
+
+        # Learning: names are resolved against the server, so he cannot
+        # file a note under somebody he invented.
+        filed = clerk.pulse_learn(guild, {"people": [
+            {"who": "Horsy", "text": "argues for sport, cares about voice"},
+            {"who": "Nobody At All", "text": "invented out of thin air"},
+            {"who": "Berri", "text": "runs the book club"},
+        ]})
+        check("what he learned about real people is filed", filed == 2)
+        check("under the right names",
+              "argues for sport" in people.summary(1)
+              and "book club" in people.summary(2))
+        check("and a note about somebody who does not exist is dropped, "
+              "not filed under a name he made up",
+              people.counts()[0] == 2)
+
+        people.forget_person(1)
+        again = clerk.pulse_learn(guild, {"people": [
+            {"who": "Horsy", "text": "something new about them"},
+        ]})
+        check("somebody who asked him to stop is not learned about by the "
+              "heartbeat either -- that is the whole point of the strike",
+              again == 0 and people.profile(1)["notes"] == [])
+
+        check("more than three things learned at once is trimmed",
+              clerk.pulse_learn(guild, {"people": [
+                  {"who": "Berri", "text": f"observation {i}"}
+                  for i in range(9)
+              ]}) <= 3)
+    finally:
+        clerk.room = keep_room
+
+
+def test_empty_promises(data):
+    """He has no later. A reply that promises to do a thing and does not do
+    it is the one failure a member cannot see -- it reads as handled -- so
+    it is caught on the way out and retried once.
+
+    Written from a real exchange: asked to swap a horse role for a green
+    ball one, he answered "I'll do that right after you vote on bill 4",
+    which is both halves of the bug at once. He held an errand hostage to a
+    ballot, and he promised a later that does not exist.
+    """
+    print("\nhe has no later, and does not trade favours for votes")
+    import brain
+
+    table = [
+        ("the exchange this was written from",
+         "Right now you're asking for a colour role, which is a quick thing "
+         "— I'll do that right after you vote on bill 4.", True),
+        ("a bare deferral", "Sure — I'll sort that out for you shortly.", True),
+        ("a condition on the other person",
+         "I can do that once you've voted on No. 4.", True),
+        ("filler that promises nothing", "On it, one moment.", True),
+        # The other side: none of these should cost a second call.
+        ("a thing actually done", "Horse is gone, green ball is on you.", False),
+        ("a plain refusal",
+         "No matcha. I do votes and colours, not deliveries.", False),
+        ("a fact about a vote, which is not a promise about him",
+         "It closes as soon as five say yes, or when everyone has voted.", False),
+        ("a fact with a time in it", "Bill 4 closes tomorrow.", False),
+        ("presence, which promises no action", "I'll be here.", False),
+        ("an answer out of the registry",
+         "Three are open: a coup, a removal, and an invite.", False),
+        ("nothing at all", "", False),
+    ]
+    for label, reply, expected in table:
+        check(f"{label} -> {'caught' if expected else 'left alone'}",
+              brain._empty_promise(reply) is expected)
+
+    long_one = "I'll get to that after you vote. " + ("Context. " * 60)
+    check("a long answer is doing something other than promising, and is "
+          "not second-guessed", brain._empty_promise(long_one) is False)
+    check("the correction tells him why rather than just saying no",
+          "no later" in brain.EMPTY_PROMISE_NOTE
+          and "vote" in brain.EMPTY_PROMISE_NOTE)
+
+    settings.configure(data / "promise-store")
+    brain.configure(None, HERE, data, None, None, None, None)
+    stable, _ = brain._system_prompt(
+        types.SimpleNamespace(name="The Hangout", id=4141)
+    )
+    check("the rule against trading is in the prompt, which is the actual "
+          "fix; the check above is only the belt",
+          "never trade anything for a vote" in stable.lower())
+    check("and the exchange it was written from is still quoted at him, so "
+          "a later edit cannot quietly soften it back",
+          "right after you vote on bill 4" in stable)
+    check("he has no case of his own to argue, which is what makes the rule "
+          "above easy to keep rather than a thing he is leaning against",
+          "# Yourself, as a subject" in stable
+          and "never propose anything about yourself" in stable.lower()
+          and "never bring the subject up unprompted" in stable.lower())
+    check("the one ambition he does have is fenced to being a joke, and "
+          "explicitly cannot reach a proposal, a vote or a favour",
+          "never a project" in stable.lower()
+          and "never raise it yourself" in stable.lower()
+          and "not a proposal, not a vote, not a tool call, not a favour"
+          in stable.lower())
+    check("and having no later is stated as its own rule",
+          "# You have no later" in stable)
+    check("he is told to be straight about learning people, since the whole "
+          "of what makes that fair is being able to see it and delete it",
+          "# Knowing people" in stable
+          and "not only from what is said to you" in stable
+          and "no argument, no asking why" in stable)
+    check("and that a deletion takes both shelves, so he cannot tell "
+          "somebody they are forgotten and quote them an hour later",
+          "house shelf together" in stable)
+    settings.configure(data)
+
+
 def test_prompt_caching(data):
     """Eugene's character and the standing orders go out on every single
     request. They are only paid for once if the stable half of the prompt
@@ -1245,6 +2604,7 @@ def test_prompt_caching(data):
     would catch."""
     print("\npaying for the standing orders once instead of every time")
     import brain
+    import people
     import providers
 
     blocks = providers._cached_system_blocks(["STABLE", "VOLATILE"])
@@ -1260,25 +2620,29 @@ def test_prompt_caching(data):
     settings.configure(data / "cache-store")
     try:
         brain.configure(None, HERE, data, None, None, None, None)
+        people.configure(data / "cache-people")
         guild = types.SimpleNamespace(name="The Hangout", id=7788)
         before = brain._system_prompt(guild)
-        toolbox.add_memory("fact", "Hadi", "allergic to shellfish",
-                           source="observed")
+        people.note_house("Hadi is allergic to shellfish", kind="fact")
         after = brain._system_prompt(guild)
 
-        check("the stable half survives the memory book changing under it",
+        check("the stable half survives the house shelf changing under it",
               before[0] == after[0])
-        check("because the book is in the other half", "shellfish" in after[1])
+        check("because the shelf is in the other half",
+              "shellfish" in after[1])
         check("and never in this one", "shellfish" not in after[0])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         check("today's date is kept out of the cached half",
               today not in after[0])
-        check("the standing orders are inside it",
-              "rules of procedure" in before[0])
+        check("the rules he needs in his head are inside it",
+              "The rules in brief" in before[0])
+        check("and the four hundred lines he can look up are not",
+              "## 13. Meetings" not in before[0]
+              and "get_standing_orders" in before[0])
         check("and the charter is gone from it entirely",
               "charter" not in before[0].lower())
-        check("which together clear the annex's minimum several times over",
-              len(before[0]) > 8000)
+        check("which still clears the annex's minimum several times over",
+              len(before[0]) > 4000)
         check("and joining the halves reads exactly as one prompt",
               "\n\nDecisions on record:" in providers.joined_system(before))
 
@@ -1304,8 +2668,1178 @@ def test_prompt_caching(data):
         check("a turn that cached nothing costs what it always did",
               abs(plain - (price_in + price_out)) < 1e-9)
         check("and claims no saving", brain.cache_share(gid) == 0.0)
+
+        # The whole point of `/model`: a house that moves up a rung must not
+        # be billed at the rung it left, or its ceiling means nothing.
+        opus = providers.tiers("claude")["opus"]
+        brain._save_state(gid, {"months": {}, "users": {}})
+        dear = brain._record_usage(gid, "claude", 1_000_000, 1_000_000,
+                                   model=opus)
+        check("a dearer model is billed as the dearer model", dear > plain)
+        check("at exactly what that model costs",
+              abs(dear - sum(providers.prices("claude", opus))) < 1e-9)
+        settings.put(gid, price_in_per_m=0.5, price_out_per_m=0.5)
+        brain._save_state(gid, {"months": {}, "users": {}})
+        check("and a house that named its own prices still outranks both",
+              abs(brain._record_usage(gid, "claude", 1_000_000, 1_000_000,
+                                      model=opus) - 1.0) < 1e-9)
+        settings.drop(gid, "price_in_per_m", "price_out_per_m")
     finally:
         settings.configure(data)
+
+
+# ---------- what he does here, in twelve switchable parts ----------
+
+def test_modules(data):
+    """The registry, and the two rules that hold it together.
+
+    Discord-free by design, so all of it runs on a laptop: the switches,
+    the dependencies, the layout that comes out of them, and the question
+    every feature asks before it does any work.
+    """
+    print("\nwhat Eugene does here, switch by switch")
+    import modules
+
+    settings.configure(data)
+    gid = 8100
+
+    check("every module in the display order exists, and every module is in it",
+          sorted(modules.keys()) == sorted(modules.SPEC))
+    check("each one declares what it is and what it needs",
+          all({"name", "blurb", "default", "rooms", "roles", "needs", "brain",
+               "settings", "builds", "tools"} <= set(spec)
+              for spec in modules.SPEC.values()))
+    check("nothing depends on a module that does not exist",
+          all(dep in modules.SPEC
+              for spec in modules.SPEC.values() for dep in spec["needs"]))
+    check("every room a module asks for is one the builder knows how to make "
+          "and the bindings know how to hold",
+          all(room in modules.ROOM_PLAN
+              for spec in modules.SPEC.values() for room in spec["rooms"]))
+    check("no two modules claim the same setting group",
+          len([g for s in modules.SPEC.values() for g in s["settings"]])
+          == len({g for s in modules.SPEC.values() for g in s["settings"]}))
+    check("no two claim the same tool either",
+          len([x for s in modules.SPEC.values() for x in s["tools"]])
+          == len({x for s in modules.SPEC.values() for x in s["tools"]}))
+
+    print("\na fresh server is the clerk as he was before there were modules")
+    check("governance, polls and colours are on out of the box",
+          all(modules.enabled(gid, k)
+              for k in ("governance", "polls", "colours")))
+    check("and the filters are not, which is what they were already",
+          not modules.enabled(gid, "moderation"))
+    check("nothing is stored until somebody chooses something",
+          modules.chosen(gid) == {})
+
+    print("\noff is off, and a dependency is not a suggestion")
+    modules.set_enabled(gid, "governance", False)
+    check("a module switched off reads as off", not modules.enabled(gid, "governance"))
+    check("and the choice is remembered as theirs",
+          modules.chosen(gid) == {"governance": False})
+    modules.set_enabled(gid, "governance", True)
+    check("switched back on, the override is dropped rather than pinned",
+          modules.enabled(gid, "governance") and modules.chosen(gid) == {})
+
+    changed, knock = modules.set_enabled(gid, "chat", False)
+    check("switching conversation off takes memory and the heartbeat with it",
+          changed and set(knock) == {"memory", "pulse"})
+    check("and they read as off however their own switch is set",
+          not modules.enabled(gid, "memory")
+          and not modules.enabled(gid, "pulse"))
+    check("but the panel can still tell a knocked-out module from a chosen one",
+          modules.switched_on(gid, "memory")
+          and modules.status(gid, "memory") == "blocked"
+          and modules.status(gid, "chat") == "off")
+    _changed, knock = modules.set_enabled(gid, "memory", True)
+    check("and switching one back on brings up what it stands on",
+          modules.enabled(gid, "chat") and knock == ["chat"])
+    modules.reset(gid)
+
+    print("\nthe whole roll set at once, which is what the menu submits")
+    on, off = modules.apply_set(gid, ["governance", "health"])
+    check("what was on and is not any more is named",
+          "polls" in off and "colours" in off)
+    check("what the selection left standing is still standing",
+          modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
+    check("and a selection that names a dependant brings its dependency too",
+          modules.apply_set(gid, ["pulse"]) and modules.enabled(gid, "chat"))
+    modules.reset(gid)
+
+    print("\ndormant is not off: it names the gap instead")
+    check("governance with nothing bound is on but not running",
+          modules.status(gid, "governance") == "dormant"
+          and not modules.live(gid, "governance"))
+    why = modules.blockers(gid, "governance")
+    check("and says which room and which role it is waiting for",
+          any("votes" in w for w in why) and any("cooperative" in w for w in why))
+    check("bound, it runs",
+          modules.live(gid, "governance",
+                       rooms={"votes", "decisions"}, roles={"cooperative"}))
+    check("an optional room is not a reason to stay dormant",
+          "proposals" not in " ".join(
+              modules.blockers(gid, "governance",
+                               rooms={"votes", "decisions"},
+                               roles={"cooperative"})))
+    check("conversation with no key says so in as many words",
+          modules.blockers(gid, "chat") == ["no AI key"]
+          and modules.live(gid, "chat", brain=True))
+
+    print("\nthe structure is generated, so it cannot describe another server")
+    modules.apply_set(gid, ["governance", "polls", "colours", "health"])
+    plan = dict(modules.structure(gid, only_buildable=True))
+    check("the cooperative's rooms are in one category",
+          plan["governance"] == ["proposals", "votes"])
+    check("and everything open to the room is in the other",
+          plan["commons"] == ["decisions", "polls", "wardrobe", "health"])
+    modules.apply_set(gid, ["moderation"])
+    check("a server running him as a moderator is asked to build nothing",
+          modules.structure(gid, only_buildable=True) == []
+          and modules.wanted_rooms(gid, only_buildable=True) == [])
+    modules.apply_set(gid, ["chat"])
+    check("and the chat room is wanted but never built: it is a room you "
+          "already have, not one he makes for you",
+          modules.wanted_rooms(gid) == ["chat"]
+          and modules.wanted_rooms(gid, only_buildable=True) == [])
+    modules.reset(gid)
+
+    print("\na switched-off feature cannot be talked into existence")
+    modules.apply_set(gid, ["governance"])
+    check("its tools are still his", modules.tool_allowed(gid, "propose_bill"))
+    check("a switched-off feature's are not",
+          not modules.tool_allowed(gid, "moderate_member")
+          and not modules.tool_allowed(gid, "create_color_role"))
+    check("and the tools that switch a feature back on belong to no feature, "
+          "so switching everything off is not a locked door",
+          all(modules.of_tool(name) is None
+              for name in modules.UNGATED_TOOLS)
+          and all(modules.tool_allowed(gid, name)
+                  for name in modules.UNGATED_TOOLS))
+    check("a setting knows which feature reads it",
+          modules.of_setting("automod.links") == "moderation"
+          and modules.of_setting("mod.purge_max") == "moderation"
+          and modules.of_setting("welcome.message") == "welcome")
+    modules.reset(gid)
+
+
+# ---------- the long look ----------
+
+def test_survey(data):
+    """Every rule in the audit, against a made-up server.
+
+    The whole reason `survey.py` takes a dictionary rather than a
+    `discord.Guild` is this function: an audit nobody can run without a
+    live server is an audit nobody can check, and one nobody can check is
+    one nobody should act on.
+    """
+    print("\nwhat the long look finds")
+    import survey
+
+    def graded(facts, key):
+        return next((f for f in survey.inspect(facts) if f["key"] == key), None)
+
+    # A server with nothing wrong with it. Everything below is this with
+    # one thing broken, so a check reads as the one fact it is about
+    # rather than as whatever an empty dictionary happens to imply -- an
+    # empty dictionary is a server with no key and no description, which
+    # are findings, and correctly so.
+    def clean(**over):
+        facts = {
+            "guild": {"described": True, "talking": True},
+            "me": {"missing_permissions": [], "outranked_by": [],
+                   "message_content": True},
+            "brain": {"provider": "claude", "spent": 0.0, "budget": 10.0,
+                      "deep_better": True},
+            "cooperative": {"size": 4, "away": 0},
+        }
+        facts.update(over)
+        return facts
+
+    check("a server with nothing wrong gets a list with nothing in it",
+          survey.inspect(clean()) == [])
+    check("and says so rather than inventing something to report",
+          "Nothing to report" in survey.render([]))
+    check("a server with no key is told so, once, and it is not an error",
+          graded({}, "no_key")["grade"] == "missing")
+
+    print("\nthings that cannot work")
+    found = graded({"me": {"missing_permissions": ["Administrator"]}},
+                   "permissions")
+    check("a missing permission is broken, not untidy",
+          found and found["grade"] == "broken")
+    found = graded({"me": {"outranked_by": ["Admin", "Mods"]}}, "role_position")
+    check("so is a role sitting above his, and it names them",
+          found and found["grade"] == "broken" and found["items"] == ["Admin", "Mods"])
+    check("the intent only matters when conversation is on",
+          graded({"me": {"message_content": False}, "chat_on": False},
+                 "intent") is None
+          and graded({"me": {"message_content": False}, "chat_on": True},
+                     "intent") is not None)
+    found = graded({"slate": {"stranded_from": 999}}, "stranded")
+    check("a disk holding another server's record is broken and names it",
+          found and found["grade"] == "broken" and "999" in found["what"])
+    found = graded(
+        {"room_health": {"votes": {"cannot_post": True}}}, "unreachable")
+    check("a bound room he cannot speak in is broken, because it looks "
+          "exactly like a bot that has stopped",
+          found and found["grade"] == "broken")
+
+    print("\nthe duplicate room, which is the oldest bug here")
+    facts = {
+        "channels": [
+            {"id": 1, "name": "🗳️・votes", "claims": "votes", "messages": 400},
+            {"id": 2, "name": "votes", "claims": "votes", "messages": 0},
+        ],
+        "bindings": {"rooms": {"votes": 2}},
+    }
+    found = graded(facts, "duplicate.votes")
+    check("two channels claiming one job is a finding", found is not None)
+    check("and it says which one he is actually using, with how empty it is",
+          "#votes" in found["why"] and "0 message" in found["why"])
+    check("one channel claiming one job is not",
+          graded({"channels": [facts["channels"][0]]}, "duplicate.votes") is None)
+
+    print("\nthe difference between a gap and a decision")
+    on_but_stuck = clean(modules={"polls": {"name": "Polls", "state": "dormant",
+                                            "blockers": ["no `polls` room is bound"]}})
+    stuck = survey.inspect(on_but_stuck)
+    check("a feature switched on and not running is broken",
+          len(stuck) == 1 and stuck[0]["grade"] == "broken"
+          and "Polls" in stuck[0]["what"])
+
+    # Three features waiting on one missing key is one fact, and three
+    # lines of it reads as three problems.
+    same_gap = clean(modules={
+        "chat": {"name": "Conversation", "state": "dormant",
+                 "blockers": ["no `chat` room is bound"]},
+        "memory": {"name": "Memory", "state": "dormant",
+                   "blockers": ["no `chat` room is bound"]},
+    })
+    grouped = survey.inspect(same_gap)
+    check("features waiting on the same thing are one finding, not one each",
+          len(grouped) == 1 and grouped[0]["items"] == ["Conversation", "Memory"])
+    keyless = survey.inspect({"guild": {"described": True},
+                              "brain": {"provider": None, "deep_better": True},
+                              "modules": {
+        "chat": {"name": "Conversation", "state": "dormant",
+                 "blockers": ["no AI key"]},
+        "pulse": {"name": "Heartbeat", "state": "dormant",
+                  "blockers": ["no AI key"]}}})
+    check("and a server with no key is told that once, not once per feature "
+          "that would have used one",
+          [f["key"] for f in keyless] == ["no_key"])
+    off = clean(modules={"polls": {"name": "Polls", "state": "off",
+                                   "blockers": []}})
+    check("a feature somebody switched off is not a finding at all — that "
+          "was a decision, and reporting it as a fault is how a list stops "
+          "being read",
+          survey.inspect(off) == [])
+    blocked = {"modules": {"memory": {"name": "Memory", "state": "blocked",
+                                      "blockers": ["conversation is off"]}}}
+    check("but one standing on something that is off is wrong: the list "
+          "claims it and it does nothing",
+          graded(blocked, "blocked.memory")["grade"] == "wrong")
+
+    print("\nthe cooperative, and the record")
+    check("an empty cooperative is broken",
+          graded({"cooperative": {"size": 0}}, "coop_empty")["grade"] == "broken")
+    check("a cooperative of one is missing, not broken: it works, it is "
+          "just a unanimous parliament of one",
+          graded({"cooperative": {"size": 1}}, "coop_one")["grade"] == "missing")
+    check("half the roll being away is worth saying",
+          graded({"cooperative": {"size": 6, "away": 3}}, "coop_away"))
+    check("one person away out of six is not",
+          graded({"cooperative": {"size": 6, "away": 1}}, "coop_away") is None)
+    found = graded({"record": {"outstanding": ["Buy a kettle", "Fix the rug"]}},
+                   "outstanding")
+    check("decisions passed and not carried out are named", found
+          and found["items"] == ["Buy a kettle", "Fix the rug"])
+    found = graded({"record": {"stale_open": ["No. 4 Kettle"]}}, "stale_floor")
+    check("a vote past its window and still open is wrong: something "
+          "stopped the clock", found and found["grade"] == "wrong")
+    check("an idle floor only counts in a server that is otherwise talking",
+          graded({"record": {"floor_quiet_days": 60},
+                  "guild": {"talking": False}}, "floor_idle") is None
+          and graded({"record": {"floor_quiet_days": 60},
+                      "guild": {"talking": True}}, "floor_idle") is not None)
+
+    print("\ncleaning, which nobody has to do")
+    facts = {
+        "categories": [{"name": "dead zone", "channels": 0},
+                       {"name": "hangout", "channels": 4}],
+        "channels": [{"name": "memes", "quiet_days": 200},
+                     {"name": "general", "quiet_days": 1},
+                     {"name": "brand-new", "quiet_days": None},
+                     {"name": "🗳️・votes", "quiet_days": 300, "claims": "votes"}],
+    }
+    found = survey.inspect(facts)
+    check("an empty category is cruft, and graded as cruft",
+          graded(facts, "empty_categories")["grade"] == "untidy")
+    quiet = graded(facts, "quiet_channels")
+    check("a room nobody has used in months is a question, not a complaint",
+          quiet and quiet["items"] == ["#memes (200d)"])
+    check("a governance room is never on that list, however quiet: he needs "
+          "it whether or not anybody has posted",
+          all("votes" not in i for i in quiet["items"]))
+    check("and a channel nobody has ever posted in is not quiet, it is new",
+          all("brand-new" not in i for i in quiet["items"]))
+    check("none of the cleaning is graded as urgent",
+          all(f["grade"] == "untidy" for f in found
+              if f["key"] in ("empty_categories", "quiet_channels")))
+
+    print("\ntwo greetings for one arrival")
+    both = clean(arrivals={"on": True, "room": "hellos",
+                           "discord_greets": True, "discord_room": "general"})
+    found = graded(both, "double_greeting")
+    check("Discord greeting as well as him is wrong, and names both rooms",
+          found and found["grade"] == "wrong"
+          and "#general" in found["why"] and "#hellos" in found["why"])
+    check("with no room of his own it is only a note, because he is not "
+          "adding a second hello",
+          graded(clean(arrivals={"on": True, "room": None,
+                                 "discord_greets": True,
+                                 "discord_room": "general"}),
+                 "discord_greets")["grade"] == "untidy")
+    check("him alone is not a finding",
+          graded(clean(arrivals={"on": True, "room": "hellos",
+                                 "discord_greets": False}),
+                 "double_greeting") is None)
+    check("and neither is Discord alone once arrivals is switched off",
+          survey.inspect(clean(arrivals={"on": False, "discord_greets": True,
+                                         "discord_room": "general"})) == [])
+
+    print("\nthe colour register, which drifts")
+    facts = {"colours": {"registered_but_gone": ["900"],
+                         "owner_left": ["sky"],
+                         "unworn": ["a", "b", "c", "d", "e", "f"]}}
+    check("a role on the register that no longer exists is wrong",
+          graded(facts, "colour_ghosts")["grade"] == "wrong")
+    check("a role whose owner has left is only untidy: anybody can still "
+          "wear it", graded(facts, "colour_orphans")["grade"] == "untidy")
+    check("a handful of unworn colours is not worth mentioning; a wardrobe "
+          "full of them is",
+          graded(facts, "colour_unworn") is not None
+          and graded({"colours": {"unworn": ["a", "b"]}},
+                     "colour_unworn") is None)
+
+    print("\nreading the report")
+    facts = {"me": {"missing_permissions": ["Administrator"]},
+             "cooperative": {"size": 1}}
+    found = survey.inspect(facts)
+    check("the worst thing is first", found[0]["grade"] == "broken")
+    check("the headline leads with what cannot work",
+          "cannot work" in survey.headline(found))
+    check("and with the cruft when nothing is actually wrong",
+          "some cruft" in survey.headline(survey.inspect(
+              clean(categories=[{"name": "x", "channels": 0}]))).lower())
+    counts = survey.tally(found)
+    check("the tally counts every grade", sum(counts.values()) == len(found))
+
+    big = survey.inspect({
+        "categories": [{"name": f"empty {i}", "channels": 0} for i in range(200)],
+        "colours": {"owner_left": [f"role{i}" for i in range(200)]},
+        "record": {"outstanding": [f"decision {i}" for i in range(200)]},
+    })
+    rendered = survey.render(big, limit=1900)
+    check("a report too long for one message is trimmed, and says it was",
+          len(rendered) <= 1900 and "Trimmed" in rendered)
+    check("what a model is handed drops the empty fields rather than "
+          "spending tokens on nulls",
+          all(None not in f.values() for f in survey.brief(found)))
+    check("a rule that throws loses itself and nothing else",
+          survey.inspect({"channels": "not a list at all"}) is not None)
+
+
+# ---------- clearing what a previous server wrote down ----------
+
+def test_slate(data):
+    """Half of what he remembers is kept per server; half is not.
+
+    The half that is not -- the record, the roster, the memory book, the
+    ledgers -- sits at the top of the data directory from when there was
+    only ever one house, and follows the daemon anywhere it goes. Pointing
+    it at a second server without clearing that means arriving with the
+    first one's proposals, its numbering, and its notes about people who
+    are not there.
+    """
+    print("\nwhose slate this is")
+    import slate, warden
+
+    store = data / "slate-store"
+    store.mkdir(parents=True, exist_ok=True)
+    settings.configure(store)
+    slate.configure(store)
+
+    check("a directory nobody has run in belongs to nobody",
+          slate.owner() is None and slate.has_history() is False)
+    check("and so cannot be stranded from anybody", not slate.stranded(1))
+    slate.claim(1)
+    check("claiming it stamps the server it is serving", slate.owner() == 1)
+    check("claiming it twice is not a write", slate.claim(1) is False)
+
+    (store / "bills.json").write_text(json.dumps(
+        [{"no": 7, "title": "Kettle"}, {"no": 8, "title": "Rug"}]))
+    (store / "acts.json").write_text(json.dumps([{"act": 1}, {"act": 2}]))
+    (store / "roster.json").write_text(json.dumps({"5": "2026-07-01"}))
+    (store / "clerk_memory.json").write_text(json.dumps([{"id": 1}]))
+    (store / "people.json").write_text(json.dumps({"5": {"notes": ["a"]}}))
+    (store / "roles.json").write_text(json.dumps({"900": {"creator_id": 5}}))
+    warden.add_case(1, "warn", target_id=5, target_name="Hadi",
+                    moderator="Eugene", reason="spoilers")
+    state = json.loads((store / "clerk_state.json").read_text())
+    state.update(bill_counter=8, health_message_id=555)
+    (store / "clerk_state.json").write_text(json.dumps(state))
+
+    check("a directory with a record in it says so",
+          slate.has_history() is True)
+    check("and points at the server that wrote it when asked about another",
+          slate.stranded(2) and not slate.stranded(1))
+    check("what is about to go is counted before anything happens",
+          ("bills.json (2)" in slate.summary(1)
+           and "acts.json (2)" in slate.summary(1)))
+    check("every scope says what it costs, in words somebody can decide on",
+          all(spec["costs"] and spec["name"] and spec["blurb"]
+              for spec in slate.SCOPES.values()))
+
+    print("\nthe move: what goes, and what stays")
+    gone = slate.wipe(2, slate.ON_MOVE)
+    check("the record goes, numbering with it",
+          not (store / "bills.json").exists()
+          and not (store / "acts.json").exists()
+          and "bill_counter" in gone["record"])
+    check("so do the notes on people, and the memory book",
+          not (store / "people.json").exists()
+          and not (store / "clerk_memory.json").exists())
+    check("and the roster, and who made which colour",
+          not (store / "roster.json").exists()
+          and not (store / "roles.json").exists())
+    left = json.loads((store / "clerk_state.json").read_text())
+    check("the bookkeeping file is edited rather than deleted, so the stamp "
+          "survives a wipe somebody asked for",
+          (store / "clerk_state.json").exists()
+          and "bill_counter" not in left and "guild_id" in left)
+    check("the previous server's own directory is untouched: they may come "
+          "back to it, and it was never in the way",
+          len(warden.cases(1)) == 1)
+    slate.claim(2)
+    check("and the disk belongs to the new server afterwards",
+          slate.owner() == 2 and not slate.stranded(2))
+
+    print("\nan AI key is never what gets cleared")
+    settings.set_brain_key(3, "gemini", "AIzaSyTESTKEYVALUE0123")
+    settings.put(3, house="a book club", rooms={"votes": 5})
+    slate.wipe(3, ["install"])
+    check("the install goes: bindings, switches, numbers, the one line",
+          settings.get(3, "house") is None and settings.get(3, "rooms") is None)
+    check("the key stays exactly where it was, because it costs money to "
+          "replace and cannot be read back off Discord",
+          settings.brain_key(3, "gemini") == "AIzaSyTESTKEYVALUE0123")
+    check("clearing a scope with nothing in it is not an error",
+          slate.wipe(3, ["record", "memory"]) == {})
+
+    print("\nlooking is never a write")
+    # A screen that lists what *could* be cleared asked about ids that were
+    # never servers, and left a directory behind for each one.
+    before = sorted(p.name for p in (store / "guilds").iterdir())
+    slate.summary(987654)
+    slate.present(987654, "install")
+    slate.has_history()
+    settings.get(987654, "house")
+    check("asking what a server has does not bring that server into being",
+          sorted(p.name for p in (store / "guilds").iterdir()) == before)
+    check("but writing one setting still does",
+          settings.put(987654, house="x") is not None
+          and (store / "guilds" / "987654").exists())
+    check("and a scope nobody has heard of is ignored rather than obeyed",
+          slate.wipe(3, ["everything", "rm -rf"]) == {})
+    settings.configure(data)
+
+
+# ---------- the house rules Eugene keeps without a vote ----------
+
+def test_warden_settings(data):
+    print("\nsettings a conversation can change, and a conversation cannot break")
+    import warden
+
+    settings.configure(data / "warden-store")
+    gid = 4242
+
+    check("a setting nobody has touched reads as its default",
+          warden.get(gid, "goodbye.enabled") is False
+          and warden.get(gid, "warnings.timeout_at") == 3)
+    check("and whether a feature runs at all is not in here: that question "
+          "belongs to modules.py, and answering it twice is what let the "
+          "panel say the filters were on while nothing was filtered",
+          not any(k.endswith(".enabled") for k in warden.SPEC
+                  if k != "goodbye.enabled"))
+    check("every declared key answers", len(warden.config(gid)) == len(warden.SPEC))
+
+    ok, held = warden.set_value(gid, "goodbye.enabled", "yes")
+    check("a person's yes is a boolean by the time it is stored",
+          ok and held is True and warden.get(gid, "goodbye.enabled") is True)
+    ok, held = warden.set_value(gid, "warnings.timeout_at", "900")
+    check("a number outside its bounds is held at the edge, not refused",
+          ok and held == 20)
+    ok, held = warden.set_value(gid, "automod.links", "nuke")
+    check("a choice that is not one of the choices is refused, with the list",
+          not ok and "delete" in held)
+    ok, held = warden.set_value(gid, "mod.protect_cooperative", "maybe")
+    check("and so is a switch that is neither on nor off", not ok)
+    check("the refused value never reached the store",
+          warden.get(gid, "mod.protect_cooperative") is True)
+
+    ok, held = warden.set_value(gid, "automod.banned_words", "Spoilers, SPOILERS, cheese")
+    check("a list arrives from prose: split, lowered, deduped",
+          ok and held == ["spoilers", "cheese"])
+
+    ok, reason = warden.set_value(gid, "automod.enabeld", True)
+    check("a key that does not exist cannot be invented by asking", not ok)
+
+    check("only what the house chose is counted as theirs",
+          set(warden.overrides(gid)) == {"goodbye.enabled", "warnings.timeout_at",
+                                         "automod.banned_words"})
+    warden.set_value(gid, "goodbye.enabled", None)
+    check("and setting one to nothing puts it back on the default rather "
+          "than pinning it", warden.get(gid, "goodbye.enabled") is False
+          and "goodbye.enabled" not in warden.overrides(gid))
+
+    warden.reset(gid, "automod.")
+    check("a group resets without touching the others",
+          warden.overrides(gid) == {"warnings.timeout_at": 20})
+    warden.reset(gid)
+    check("and the lot resets", warden.overrides(gid) == {})
+    check("help is written for every key a model is shown",
+          all(spec["help"] for spec in warden.describe().values()))
+
+
+def test_automod():
+    print("\nthe filters")
+    import warden
+
+    off = {**{k: v["default"] for k, v in warden.SPEC.items()}}
+    check("with every rule left at its default, nothing is a violation — "
+          "the master switch is the moderation feature, checked before this "
+          "is ever called",
+          warden.scan(off, "http://evil.example WHAT A MESS") == [])
+
+    cfg = dict(off)
+    cfg.update({
+        "automod.banned_words": ["spoilers"],
+        "automod.invites": "delete",
+        "automod.links": "delete",
+        "automod.mass_mentions": 4,
+        "automod.mass_mentions_action": "timeout",
+        "automod.caps_percent": 70,
+        "automod.spam_messages": 3,
+        "automod.spam_seconds": 10,
+    })
+    check("an ordinary message is left alone", warden.scan(cfg, "morning all") == [])
+    check("a banned word is caught whole",
+          [h["rule"] for h in warden.scan(cfg, "no SPOILERS please")] == ["banned word"])
+    check("and not inside another word",
+          warden.scan(cfg, "antispoilersque") == [])
+    check("an invite elsewhere is caught",
+          any(h["rule"] == "invite link"
+              for h in warden.scan(cfg, "join discord.gg/abc123")))
+    check("a link to an allowed host is not a link",
+          warden.scan(cfg, "see https://gist.github.com/x") == [])
+    check("a link anywhere else is",
+          any(h["rule"] == "link" for h in warden.scan(cfg, "https://evil.example/x")))
+    check("shouting is measured on letters, not length",
+          warden.caps_share("HELLO THERE 123") == 100)
+    check("but a short shout is just enthusiasm",
+          warden.scan(cfg, "WHAT? NO!") == [])
+
+    import time as _time
+    now = _time.time()
+    check("three messages in the window is flooding",
+          any(h["rule"] == "flooding"
+              for h in warden.scan(cfg, "hi", recent=[now - 1, now - 2, now])))
+    check("three messages spread out is conversation",
+          warden.scan(cfg, "hi", recent=[now - 60, now - 30, now]) == [])
+
+    hits = warden.scan(cfg, "SPOILERS EVERYWHERE https://evil.example @a @b @c @d",
+                       mention_count=4)
+    ruling = warden.verdict(hits)
+    check("a message that breaks four rules is punished once",
+          ruling["action"] == "timeout")
+    check("and told all four reasons", len(ruling["rules"]) >= 3)
+    check("nothing broken means no verdict at all", warden.verdict([]) is None)
+
+
+def test_cases(data):
+    print("\nwarnings, and the case book")
+    import warden
+
+    settings.configure(data / "warden-store")
+    gid = 5150
+
+    first = warden.add_case(gid, "warn", target_id=9, target_name="Sam",
+                            moderator="Hadi", reason="")
+    check("a case is numbered from one", first["case"] == 1)
+    check("and a warning without a reason says so",
+          first["reason"] == "no reason given")
+    warden.add_case(gid, "warn", target_id=9, target_name="Sam",
+                    moderator="Hadi", reason="again")
+    warden.add_case(gid, "warn", target_id=8, target_name="Jo",
+                    moderator="Hadi", reason="unrelated")
+    check("warnings count per person",
+          len(warden.live_warnings(gid, 9)) == 2
+          and len(warden.live_warnings(gid, 8)) == 1)
+
+    old = warden.add_case(gid, "warn", target_id=7, target_name="Ada",
+                          moderator="Hadi", reason="ancient")
+    book = json.loads((settings.state_file(gid, warden.CASES)).read_text())
+    for case in book:
+        if case["case"] == old["case"]:
+            case["at"] = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    (settings.state_file(gid, warden.CASES)).write_text(json.dumps(book))
+    check("a warning past its expiry stops counting",
+          warden.live_warnings(gid, 7, expire_days=30) == [])
+    check("but never leaves the record",
+          len(warden.cases(gid, target_id=7, kind="warn")) == 1)
+
+    check("forgiveness clears the live ones", warden.clear_warnings(gid, 9) == 2)
+    check("and they stay cleared", warden.live_warnings(gid, 9) == [])
+
+    ok, _ = warden.set_tag(gid, "Rules", "Be kind.", "Hadi")
+    check("a tag is saved under a tidy name",
+          ok and warden.get_tag(gid, "  RULES ")["content"] == "Be kind.")
+    check("and dropped once", warden.drop_tag(gid, "rules")
+          and warden.drop_tag(gid, "rules") is False)
+
+    check("a template fills what it is given",
+          warden.render("Hi {user}, of {count}", user="Sam", count=3)
+          == "Hi Sam, of 3")
+    check("and leaves standing what it is not, rather than raising",
+          warden.render("Hi {nobody}") == "Hi {nobody}")
+
+
+def test_signoff(clerk, data):
+    """The second hand: what the heavy powers now wait for.
+
+    The failure this is built against is the quiet one. A gate that files
+    a request and reports it as done is worse than no gate at all --
+    everybody believes Sam is banned, nobody checks, and Sam is still
+    posting. So the checks here are mostly about the difference between
+    filed and done, at every point where the two could be confused.
+    """
+    print("\nnothing heavy happens without an administrator's name on it")
+    import powers
+    import sanction
+    import warden
+
+    store = data / "signoff-store"
+    settings.configure(store)
+    gid = 7788
+
+    class Role:
+        def __init__(self, name, position):
+            self.name, self.position, self.id = name, position, position
+        def __ge__(self, other):
+            return self.position >= other.position
+        def __lt__(self, other):
+            return self.position < other.position
+
+    class Person:
+        def __init__(self, pid, name, top=1, coop=False, admin=False):
+            self.id, self.name, self.display_name = pid, name.lower(), name
+            self.bot, self.coop, self.admin = False, coop, admin
+            self.top_role, self.roles = Role("theirs", top), []
+            self.told, self.timeouts = [], []
+        async def send(self, text):
+            self.told.append(text)
+        async def timeout(self, when, reason=None):
+            self.timeouts.append(when)
+        async def kick(self, reason=None):
+            guild.kicked.append(self.display_name)
+        async def edit(self, nick=None, reason=None):
+            self.display_name = nick or self.name
+
+    class Message:
+        def __init__(self, mid, content, view):
+            self.id, self.content, self.view = mid, content, view
+        async def edit(self, content=None, view=None):
+            self.content, self.view = content, view
+
+    class Channel:
+        def __init__(self, cid, name):
+            self.id, self.name = cid, name
+            self.posted, self.book, self.swept = [], {}, 0
+        async def send(self, content, view=None):
+            msg = Message(9000 + len(self.book), content, view)
+            self.posted.append(msg)
+            self.book[msg.id] = msg
+            return msg
+        async def fetch_message(self, mid):
+            return self.book[mid]
+        async def purge(self, limit=None, check=None, reason=None):
+            self.swept += 1
+            return ["a message"]
+        def permissions_for(self, _me):
+            return types.SimpleNamespace(send_messages=True)
+
+    desk = Channel(500, "health")
+    me = Person(99, "Eugene", top=5)
+    sam = Person(10, "Sam")
+    voter = Person(13, "Voter", coop=True)
+    boss = Person(14, "Boss", coop=True, admin=True)
+
+    class Guild:
+        def __init__(self):
+            self.id, self.name, self.owner_id = gid, "The Hangout", 1
+            self.me, self.roles = me, []
+            self.members = [sam, voter, boss, me]
+            self.text_channels = self.channels = [desk]
+            self.banned, self.kicked = [], []
+        def get_channel(self, cid):
+            return desk if cid == desk.id else None
+        def get_member(self, mid):
+            return next((m for m in self.members if m.id == mid), None)
+        def get_role(self, _rid):
+            return None
+        async def ban(self, target, reason=None, delete_message_seconds=0):
+            self.banned.append(target.display_name)
+
+    guild = Guild()
+    powers.configure(None, lambda m: bool(getattr(m, "coop", False)), None)
+    sanction.configure(None, lambda m: bool(getattr(m, "admin", False)))
+    # The desk resolves its room through bindings, which wants a real
+    # guild; the log setting short-circuits that and is the ordinary way
+    # a server points it anywhere in the first place.
+    warden.set_value(gid, "log.channel", desk.id)
+
+    def cards():
+        """Only the sign-off cards. The log room fills up with ordinary
+        journal lines too, and counting those as cards is how a test that
+        means "nothing was filed" quietly starts meaning nothing at all."""
+        return [m for m in desk.posted if "Sign-off #" in m.content]
+
+    def interaction(user, message):
+        replies = []
+        async def send_message(content, ephemeral=False):
+            replies.append(content)
+        async def edit_message(content=None, view=None):
+            message.content, message.view = content, view
+        return types.SimpleNamespace(
+            guild=guild, user=user, message=message, replies=replies,
+            response=types.SimpleNamespace(
+                send_message=send_message, edit_message=edit_message),
+        )
+
+    # ----- filing, not doing -----
+    out = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "ban", "reason": "spam"})))
+    check("a ban comes back filed rather than done",
+          out.get("done") is False and out.get("filed_for_sign_off") == 1)
+    check("and nobody is banned by the asking", guild.banned == [])
+    check("the model is told in words not to claim it happened",
+          "waiting" in out.get("tell_them", ""))
+    card = cards()[-1]
+    check("a card goes up naming the action and who asked for it",
+          "Ban Sam" in card.content and "Voter" in card.content)
+    check("and says plainly that nothing has happened yet",
+          "Nothing has happened yet" in card.content)
+    check("the request is on the desk, not in the case book",
+          len(sanction.pending(gid)) == 1
+          and warden.cases(gid, target_id=sam.id) == [])
+
+    # ----- asked for twice, filed once -----
+    again = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "ban", "reason": "spam"})))
+    check("the same request twice is one card, not two chances to ban him",
+          again.get("filed_for_sign_off") == 1 and len(cards()) == 1)
+    check("and the model is told it is the one already waiting",
+          "already filed" in again.get("tell_them", ""))
+
+    # ----- who may sign -----
+    press = interaction(voter, card)
+    run(sanction.press(press, True))
+    check("somebody who is not an administrator cannot sign it off",
+          press.replies and "administrator" in press.replies[0])
+    check("and pressing it changed nothing", guild.banned == []
+          and sanction.pending(gid))
+
+    press = interaction(boss, card)
+    run(sanction.press(press, True))
+    check("an administrator's press is what actually bans Sam",
+          guild.banned == ["Sam"])
+    check("the card becomes the receipt, naming who signed",
+          "Approved by Boss" in card.content)
+    check("and says what the hands reported back, not what was asked for",
+          "Banned" in card.content and "Sam" in card.content)
+    check("the buttons come off it", card.view is None)
+    check("and the case book has it now, under the name of whoever asked",
+          [c["moderator"] for c in warden.cases(gid, target_id=sam.id)] == ["Voter"])
+
+    again = interaction(boss, card)
+    run(sanction.press(again, True))
+    check("a second press does not ban him twice",
+          guild.banned == ["Sam"] and "already approved" in again.replies[0])
+
+    # ----- denial -----
+    run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "warn", "reason": "again"}))
+    card = cards()[-1]
+    run(sanction.press(interaction(boss, card), False))
+    check("a denied request says so and leaves no case behind",
+          "Denied by Boss" in card.content
+          and warden.cases(gid, target_id=sam.id, kind="warn") == [])
+
+    # ----- lapsing -----
+    run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "kick", "reason": "enough"}))
+    card = cards()[-1]
+    rows = json.loads(settings.state_file(gid, sanction.PENDING).read_text())
+    rows[-1]["expires_at"] = (datetime.now(timezone.utc)
+                              - timedelta(minutes=1)).isoformat()
+    settings.state_file(gid, sanction.PENDING).write_text(json.dumps(rows))
+    check("the sweep lapses what nobody got to", run(sanction.sweep(guild)) == 1)
+    check("the card says so rather than sitting there looking live",
+          "lapsed" in card.content and "Nothing" in card.content)
+    check("and lapsing is the end that does nothing", guild.kicked == [])
+    stale = interaction(boss, card)
+    run(sanction.press(stale, True))
+    check("signing a lapsed request is refused, not honoured",
+          guild.kicked == [] and "lapsed" in stale.replies[0])
+
+    # ----- the half that does not wait -----
+    before = len(cards())
+    out = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "untimeout"})))
+    check("lifting a timeout is not made to wait for a signature",
+          out.get("done") == "timeout lifted" and len(cards()) == before)
+
+    # ----- rooms and messages -----
+    run(powers.act_purge(guild, voter, {"channel": "health", "count": 5}))
+    check("a sweep is filed too, and sweeps nothing until it is signed",
+          desk.swept == 0 and "Delete 5 message(s)" in cards()[-1].content)
+    run(sanction.press(interaction(boss, cards()[-1]), True))
+    check("and then sweeps once", desk.swept == 1)
+
+    run(powers.act_channel(guild, voter, {"channel": "health", "action": "lock"}))
+    check("locking a room waits as well",
+          "Lock #health" in cards()[-1].content)
+
+    # ----- what is checked at the press, not at the asking -----
+    run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "ban", "reason": "later"}))
+    card = cards()[-1]
+    voter.coop = False  # removed from the roll while the card sat there
+    guild.banned.clear()
+    run(sanction.press(interaction(boss, card), True))
+    check("a request outliving the standing of whoever asked is not carried out",
+          guild.banned == [] and "no longer in the cooperative" in card.content)
+    voter.coop = True
+
+    # ----- refused at the asking, so no card is ever raised -----
+    before = len(cards())
+    out = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Nobody", "action": "ban"})))
+    check("a request that could never work is refused on the spot",
+          "goes by" in out.get("error", "") and len(cards()) == before)
+    out = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Boss", "action": "kick"})))
+    check("and the governance guard still bites before the desk sees it",
+          "vote, not a word" in out.get("error", "")
+          and len(cards()) == before)
+
+    # ----- the house may switch it off -----
+    warden.set_value(gid, "mod.require_signoff", False)
+    guild.banned.clear()
+    before = len(cards())
+    out = json.loads(run(powers.act_moderate(
+        guild, voter, {"who": "Sam", "action": "ban", "reason": "no gate"})))
+    check("with the requirement off he acts on the word alone, as he used to",
+          out.get("done") == "banned" and guild.banned == ["Sam"]
+          and len(cards()) == before)
+    warden.set_value(gid, "mod.require_signoff", True)
+
+    # ----- the settings are the house's, and reachable by talking -----
+    check("both switches are in the settings table under mod",
+          {"mod.require_signoff", "mod.signoff_minutes"} <= set(warden.SPEC))
+    check("and the sign-off store is per-server like everything else",
+          settings.state_file(gid, sanction.PENDING).parent
+          != settings.state_file(gid + 1, sanction.PENDING).parent)
+
+    settings.configure(data)
+
+
+def test_turn_shape(data):
+    """What the model is actually handed, and in what order.
+
+    The complaint this is here for: he answers something from the middle of
+    the room rather than the thing just said to him. The cause was the shape
+    of the turn, not the model. Everything arrived as one paragraph -- a
+    notice about open votes, forty lines of transcript, and then, at the
+    bottom, the message being answered, which was also the last line of the
+    transcript. Asked to pick the question out of that, a small model picks
+    wrong.
+    """
+    print("\nthe shape of one turn")
+    import brain, toolbox, warden  # noqa: F401
+
+    store = data / "turn-store"
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "bills.json").write_text(json.dumps(
+        [{"no": 3, "title": "Buy a kettle", "status": "on_floor"}]))
+    (store / "acts.json").write_text("[]")
+    settings.configure(store)
+    toolbox.configure(HERE, store)
+    brain._deps.update(data=store, here=HERE, bot=None)
+    brain._memory.clear()
+    for author, said in (
+        ("Alice", "anyone seen the new season"),
+        ("Bob", "no spoilers please"),
+        ("Eugene", "Noted."),
+        ("Alice", "ok but the finale though"),
+        ("Hadi", "@Eugene make me a blue role called sky"),
+    ):
+        brain._remember(99, author, said)
+
+    seen = {}
+
+    async def fake_call(guild_id, kind, *, model, system, turns, tools, **kw):
+        seen.update(system=system, turns=turns)
+        raise RuntimeError("stop here")
+
+    real_call = brain._call
+    brain._call = fake_call
+    guild = types.SimpleNamespace(
+        id=1, name="Book Club", members=[], text_channels=[],
+        get_channel=lambda _i: None, get_role=lambda _i: None,
+    )
+    member = types.SimpleNamespace(id=5, display_name="Hadi")
+    channel = types.SimpleNamespace(id=99, name="general")
+    try:
+        run(brain._run_turn(guild, member, channel,
+                            "make me a blue role called sky",
+                            said_already=True))
+    except RuntimeError:
+        pass
+    finally:
+        brain._call = real_call
+
+    turn = seen["turns"][0]["text"]
+    body = turn.split("# The message you are answering")[-1]
+
+    check("the message being answered is said once, not twice",
+          turn.count("make me a blue role called sky") == 1)
+    check("and it is the last thing in the turn, under its own heading",
+          "make me a blue role called sky" in body
+          and "<Alice>" not in body)
+    # The room used to be disclaimed with "Do not answer any of it", which
+    # is right about instructions and catastrophic about meaning: a member
+    # who says "yes" has put the whole of what they mean in the block he
+    # has just been told three times to ignore. He asked the same question
+    # five times running rather than read it. It is still untrusted and
+    # still not addressed to him -- and it is now explicitly the place he
+    # resolves a one-word answer from.
+    check("the room above it is untrusted and not addressed to him",
+          "Untrusted" in turn
+          and "not replying to any of these lines" in turn
+          and turn.index("<Alice>") < turn.index("# The message you"))
+    check("but he is told to read it for what a short answer refers to",
+          '"yes"' in turn and "take their sense from here" in turn)
+    check("and told to resolve and act inside the one turn, not ask again",
+          "do not ask them again" in turn)
+    check("what is left of the room is still there to draw on",
+          "<Bob> no spoilers please" in turn)
+    check("his own last words are in it too, so a follow-up has an "
+          "antecedent", "<Eugene> Noted." in turn)
+
+    check("the open floor is not the first thing he reads any more",
+          "Buy a kettle" not in turn)
+    check("it is a fact about the house instead, in the half he is told "
+          "rather than asked", "Buy a kettle" in seen["system"][1])
+
+    print("\nnothing is dropped when the room was never remembered")
+    brain._memory.clear()
+    for author, said in (("Alice", "morning"), ("Bob", "morning")):
+        brain._remember(77, author, said)
+    seen.clear()
+    brain._call = fake_call
+    try:
+        run(brain._run_turn(guild, member,
+                            types.SimpleNamespace(id=77, name="general"),
+                            "what time is it", said_already=False))
+    except RuntimeError:
+        pass
+    finally:
+        brain._call = real_call
+    check("a message he was never given to remember leaves the room whole",
+          seen["turns"][0]["text"].count("<Bob> morning") == 1
+          and "<Alice> morning" in seen["turns"][0]["text"])
+
+    # ---- what he did, carried into the turns after it ----
+    # The failure this exists for: three calls to the same listing tool in
+    # ninety seconds, three different answers, each worked out from the
+    # last wrong one because the results themselves were thrown away at the
+    # end of every turn and only his prose about them survived.
+    print("\nwhat the tools returned outlives the turn that called them")
+    brain._memory.clear()
+    brain._deeds.clear()
+    brain._remember(99, "Hadi", "what colours are there")
+    brain._note_deed(
+        99, "Hadi", "list_color_roles", {},
+        '{"roles_they_made": ["horsy role"], "roles_they_are_wearing": []}',
+    )
+    brain._remember(99, "Eugene", "You have one, and it is tomato red.")
+    brain._remember(99, "Hadi", "make it purple")
+    seen.clear()
+    brain._call = fake_call
+    try:
+        run(brain._run_turn(guild, member, channel, "make it purple",
+                            said_already=True))
+    except RuntimeError:
+        pass
+    finally:
+        brain._call = real_call
+    later = seen["turns"][0]["text"]
+    check("the next turn is handed the call itself, not his account of it",
+          "list_color_roles" in later and '"horsy role"' in later)
+    check("with the real spelling, which is the thing he kept inventing",
+          "horsy role" in later)
+    check("and told which of the two to believe when they disagree",
+          "Where the two differ this one is right" in later)
+    check("his own drifted summary is still there, and still only that",
+          "tomato red" in later
+          and later.index("list_color_roles") < later.index("tomato red"))
+    check("a room where he has done nothing carries no such block",
+          "already done in this room" not in brain._deed_log(12345))
+    brain._deeds.clear()
+    settings.configure(data)
+
+
+def test_officer_gate(data):
+    """The lock that does not read the model's output.
+
+    brain.py already refuses a conversation to anyone outside the
+    cooperative, so this gate should never fire in the ordinary run of
+    things. It exists for the day something else calls dispatch.
+    """
+    print("\nthe elevated tools are the cooperative's alone")
+    import warden  # noqa: F401  (registry is already loaded; kept explicit)
+
+    check("the officer's tools are declared to the model",
+          {"moderate_member", "set_setting", "purge_messages"}
+          <= {d["name"] for d in toolbox.declarations()})
+    check("and every one of them sits in the officer tier",
+          all(toolbox.REGISTRY[name]["tier"] == "officer"
+              for name in ("moderate_member", "purge_messages", "set_setting",
+                           "assign_role", "announce")))
+    check("while the ordinary ones did not quietly get promoted",
+          toolbox.REGISTRY["propose_bill"]["tier"] == "member"
+          and toolbox.REGISTRY["get_bill"]["tier"] == "minor")
+
+    outsider = types.SimpleNamespace(id=1, display_name="Stranger")
+    insider = types.SimpleNamespace(id=2, display_name="Hadi")
+
+    toolbox.configure(HERE, data, in_cooperative=lambda m: m.id == 2)
+    denied = json.loads(run(toolbox.dispatch(
+        GUILD, outsider, "moderate_member", {"who": "someone", "action": "ban"})))
+    check("someone outside is refused before a handler is even looked up",
+          "not in it" in denied.get("error", ""))
+    allowed = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "moderate_member", {"who": "someone", "action": "ban"})))
+    check("someone inside gets through the gate",
+          "not in it" not in allowed.get("error", ""))
+    reading = json.loads(run(toolbox.dispatch(GUILD, outsider, "list_bills", {})))
+    check("and the reading tools are not caught up in it",
+          isinstance(reading, list))
+
+    toolbox.configure(HERE, data, in_cooperative=None)
+    shut = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "purge_messages", {"count": 50})))
+    check("a host that never said who is on the roll fails shut, not open",
+          "roll" in shut.get("error", ""))
+
+    def broken(_member):
+        raise RuntimeError("the roll is on fire")
+
+    toolbox.configure(HERE, data, in_cooperative=broken)
+    burnt = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "moderate_member", {"who": "x", "action": "kick"})))
+    check("and a check that throws is a no, not a yes",
+          "the answer is no" in burnt.get("error", ""))
+
+    log_entries = json.loads((data / "logs" / "executor_log.json").read_text())
+    refusals = [e for e in log_entries if e.get("result") == "denied"]
+    check("every refusal is written down with its reason",
+          len(refusals) >= 3 and all(e.get("detail") for e in refusals))
+
+    toolbox.configure(HERE, data)  # back as the rest of the run expects it
+
+
+def test_officer_guards(clerk, data):
+    """What the hands refuse however the asking is phrased."""
+    print("\nthe three things the hands will not do")
+    import powers
+    import warden
+
+    settings.configure(data / "warden-store")
+
+    class Role:
+        def __init__(self, name, position, rid=None):
+            self.name, self.position, self.id = name, position, rid or position
+        def __ge__(self, other):
+            return self.position >= other.position
+        def __lt__(self, other):
+            return self.position < other.position
+
+    def person(pid, name, top=1, coop=False):
+        return types.SimpleNamespace(
+            id=pid, name=name.lower(), display_name=name, bot=False,
+            top_role=Role("theirs", top), roles=[], guild=None, coop=coop,
+        )
+
+    keyed = lambda m: bool(getattr(m, "coop", False))  # noqa: E731
+    powers.configure(None, keyed, None)
+
+    sam, sammy = person(10, "Sam"), person(11, "Sammy")
+    boss = person(12, "Boss", top=9)
+    voter = person(13, "Voter", coop=True)
+    me = person(99, "Eugene", top=5)
+    guild = types.SimpleNamespace(
+        id=6161, name="The Hangout", owner_id=1, me=me,
+        members=[sam, sammy, boss, voter, me],
+        get_member=lambda i: next((m for m in [sam, sammy, boss, voter] if m.id == i), None),
+        get_channel=lambda _i: None, get_role=lambda _i: None, roles=[],
+    )
+
+    found, why = powers.find_member(guild, "Sam")
+    check("an exact name wins over a longer one that starts the same",
+          found is sam)
+    found, why = powers.find_member(guild, "Sa")
+    check("but an ambiguous scrap is reported, never guessed at",
+          found is None and "could be any of" in why)
+    found, _ = powers.find_member(guild, "<@11>")
+    check("a mention is a person", found is sammy)
+    found, why = powers.find_member(guild, "Nobody")
+    check("and a stranger is said to be one", found is None and "goes by" in why)
+
+    check("someone above Eugene in the role list is refused with the fix",
+          "above me" in (powers._reachable(guild, boss) or ""))
+    check("and Eugene will not act on himself",
+          powers._reachable(guild, me) is not None)
+
+    check("a member of the cooperative cannot be kicked on one person's word",
+          "vote, not a word" in (powers._protected(guild, voter, "kick") or ""))
+    check("nor banned", powers._protected(guild, voter, "ban") is not None)
+    check("nor quietly silenced instead",
+          powers._protected(guild, voter, "timeout") is not None)
+    check("but they can still be warned, which decides nothing",
+          powers._protected(guild, voter, "warn") is None)
+    check("somebody who is not in it is ordinary business",
+          powers._protected(guild, sam, "kick") is None)
+
+    warden.set_value(guild.id, "mod.protect_cooperative", False)
+    check("and the house can lift that protection, because it is theirs",
+          powers._protected(guild, voter, "kick") is None)
+    warden.reset(guild.id)
+
+    check("nobody removes themselves through Eugene",
+          "yourself" in (powers._vet(guild, voter, voter, "kick") or ""))
 
 
 def main():
@@ -1321,27 +3855,53 @@ def main():
         settings.configure(data)  # back to the shared store for what follows
         test_roster(data)
         test_duties(data)
+        test_people(data)
+        test_one_memory_store(data)
+        test_pulse(data)
+        test_modules(data)
+        test_survey(data)
+        test_slate(data)
+        test_warden_settings(data)
+        test_automod()
+        test_cases(data)
+        settings.configure(data)  # back to the shared store
+        test_officer_gate(data)
         clerk = load_clerk(data)
         if clerk is None:
             skip("the filing handlers", "discord.py is not installed")
             skip("the chat room", "discord.py is not installed")
-            skip("the study gate and the colour wording",
-                 "discord.py is not installed")
+            skip("the colour wording", "discord.py is not installed")
             skip("dynamic thresholds", "discord.py is not installed")
             skip("prompt caching", "discord.py is not installed")
+            skip("the officer's guards", "discord.py is not installed")
+            skip("the sign-off desk", "discord.py is not installed")
+            skip("the rooms /setup makes", "discord.py is not installed")
         else:
             test_filing(clerk, data)
+            test_setup_rooms(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
             test_role_cap(clerk, data)
+            test_colour_hands(clerk, data)
             test_voting(clerk, data)
+            test_voting_numbers(data)
+            test_open_polls(clerk, data)
+            test_open_poll_closing(clerk, data)
+            test_numbers_bite(clerk, data)
+            test_choice_ballots(clerk, data)
             test_eligibility(clerk)
             test_duty_actions(clerk, data)
             test_chat_room(data)
-            test_study_gate(data)
             test_colour_words(clerk, data)
+            test_colour_picking(clerk, data)
             test_dynamic_thresholds(data)
+            test_heartbeat_wiring(clerk, data)
+            test_empty_promises(data)
             test_prompt_caching(data)
+            test_turn_shape(data)
+            test_officer_guards(clerk, data)
+            test_signoff(clerk, data)
+            settings.configure(data)
         test_firewall(data)
         if clerk is not None:
             test_audit(data)

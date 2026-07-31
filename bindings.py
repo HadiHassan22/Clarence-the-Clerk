@@ -28,12 +28,18 @@ ROOMS = {
     "votes": "Where ballots run",
     "decisions": "The permanent record of what was decided",
     "polls": "Polls open to everyone, members included",
+    "wardrobe": "Where the colour-role buttons live",
     "health": "Eugene's own vitals",
-    "welcome": "Where new arrivals land, and where invite links point",
+    "welcome": "Where arrivals are greeted. Unset, nobody is greeted",
     "chat": "The only room Eugene talks in (unset: anywhere)",
 }
 
 # Rooms without which governance cannot run at all.
+#
+# Kept for the one question that predates modules -- can this server hold a
+# vote -- but which rooms matter now depends on what is switched on, and
+# `modules.required_rooms()` is the answer to that. A server running Eugene
+# as a moderator with governance off is not a broken server.
 ESSENTIAL_ROOMS = ("votes", "decisions")
 
 ROLES = {
@@ -47,9 +53,71 @@ CATEGORIES = {
     "archive": "Where a closed debate chamber is filed",
 }
 
+# What a room called this is for. Keyed by base name -- the channel without
+# its emoji prefix -- because the layout file writes "🗳️・votes" and a person
+# typing the same thing writes "votes", and those have to be one room.
+#
+# Former names are in here too, so a server built before a rename is adopted
+# rather than duplicated. This table exists because there were two routes into
+# a fresh server -- `build_server.py` from a terminal and `/setup` from
+# inside Discord -- and only one of them knew what the rooms were called. The
+# other matched on the bare word, found nothing, and helpfully made a second
+# #votes next to the first.
+JOBS = {
+    "propose": "proposals",
+    "submit-a-bill": "proposals",
+    "proposals": "proposals",
+    "votes": "votes",
+    "the-floor": "votes",
+    "decisions": "decisions",
+    "gazette": "decisions",
+    "polls": "polls",
+    "welcome": "welcome",
+    "reception": "welcome",
+    "bot-health": "health",
+    "health": "health",
+    "roles": "wardrobe",
+    "wardrobe": "wardrobe",
+}
+
 _ROOMS_KEY = "rooms"
 _ROLES_KEY = "roles"
 _CATS_KEY = "categories"
+
+
+def base_name(name):
+    """Channel identity ignoring the emoji prefix: '🗳️・votes' -> 'votes'."""
+    return str(name).split("・", 1)[-1].strip().lower()
+
+
+def job_of(channel_name):
+    """The job a channel's name says it does, or None."""
+    return JOBS.get(base_name(channel_name))
+
+
+def adopt(guild_id, channel):
+    """Bind a channel to the job its name announces, unless that job is
+    already spoken for. Returns the job it took, or None.
+
+    Deliberately meek: it never re-points a job somebody has already bound
+    by hand, because a name is a guess and a binding is a decision. It is
+    also entirely optional -- a caller with no settings store yet (the
+    terminal builder on a machine that has never run the bot) simply gets
+    None rather than an exception, and the rooms still get built.
+    """
+    if channel is None:
+        return None
+    key = job_of(getattr(channel, "name", ""))
+    if key is None:
+        return None
+    try:
+        if _table(guild_id, _ROOMS_KEY).get(key):
+            return None
+        bind_channel(guild_id, key, channel.id)
+    except (RuntimeError, OSError) as e:
+        log.warning(f"could not bind {key}: {e!r}")
+        return None
+    return key
 
 
 def _table(guild_id, field):
@@ -156,18 +224,28 @@ def prune(guild):
     return dropped
 
 
-def summary(guild):
-    """One line per job, for the setup screen."""
+def summary(guild, wanted=None, required=None):
+    """One line per job, for the setup screen.
+
+    `wanted` and `required` come from the modules that are switched on, so
+    the screen lists the jobs this server actually has a use for and marks
+    the ones something cannot run without. Called with neither, it falls
+    back to every job there is and the old fixed idea of what is essential
+    -- which is right for a caller that has no opinion, and wrong for a
+    server that has switched governance off and does not need a votes room.
+    """
+    rooms = list(wanted) if wanted is not None else list(ROOMS)
+    must = set(required) if required is not None else set(ESSENTIAL_ROOMS)
     lines = []
     for key, label in ROLES.items():
         got = role(guild, key)
         lines.append(f"{'✅' if got else '⬜'} **{key}** — {got.mention if got else label}")
-    for key, label in ROOMS.items():
+    for key in rooms:
         got = channel(guild, key)
-        essential = "" if key in ESSENTIAL_ROOMS else " *(optional)*"
+        optional = "" if key in must else " *(optional)*"
         lines.append(
-            f"{'✅' if got else '⬜'} **{key}**{essential} — "
-            f"{got.mention if got else label}"
+            f"{'✅' if got else '⬜'} **{key}**{optional} — "
+            f"{got.mention if got else ROOMS.get(key, '')}"
         )
     for key, label in CATEGORIES.items():
         got = category(guild, key)

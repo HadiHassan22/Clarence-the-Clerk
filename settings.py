@@ -65,7 +65,23 @@ def home(guild_id) -> Path:
 
 
 def path(guild_id) -> Path:
+    """Where a server's settings live, bringing the directory into being.
+    For writing; `where()` is the one for looking."""
     return home(guild_id) / "settings.json"
+
+
+def where(guild_id) -> Path:
+    """The same path, without creating anything.
+
+    Reading must not be a write. `load()` used to go through `home()`, so
+    merely asking whether a guild had a setting left a directory behind for
+    it -- which meant a screen that listed what *might* be cleared quietly
+    created a home for every id it asked about, including ones that were
+    never a server.
+    """
+    if _root is None:
+        raise RuntimeError("settings.configure() was never called")
+    return _root / str(guild_id) / "settings.json"
 
 
 def installed_guilds():
@@ -79,7 +95,7 @@ def installed_guilds():
 # ---------- reading and writing ----------
 
 def load(guild_id) -> dict:
-    p = path(guild_id)
+    p = where(guild_id)
     if not p.exists():
         return {}
     try:
@@ -134,6 +150,20 @@ def state_file(guild_id, name, legacy_root: Path = None) -> Path:
             except OSError:
                 return old
     return p
+
+
+def peek(guild_id, name) -> Path:
+    """Where a per-guild file would be, without bringing it into being.
+
+    `home()` creates the directory, which is right when something is about
+    to be written and wrong when something is only being looked at:
+    `slate.has_history()` asked a harmless question about guild 0 and left
+    a `guilds/0/` behind it. Returns None when there is nothing there.
+    """
+    if _root is None:
+        return None
+    found = _root / str(guild_id) / name
+    return found if found.exists() else None
 
 
 # ---------- the brains' keys ----------
@@ -201,9 +231,129 @@ def set_model(guild_id, provider_name, name):
     put(guild_id, **{model_field(provider_name): name})
 
 
+def deep_field(provider):
+    return f"{provider}_deep_model"
+
+
+def deep_model(guild_id, provider_name, default=""):
+    """The model this server wants for the long look, or the default. Kept
+    apart from the chat model on purpose: they are answering different
+    questions at different prices, and one field for both means either
+    every "morning" costs a fortune or the audit is answered by something
+    that cannot hold nineteen findings in its head at once."""
+    return get(guild_id, deep_field(provider_name)) or default
+
+
+def set_deep_model(guild_id, provider_name, name):
+    put(guild_id, **{deep_field(provider_name): name or None})
+
+
 def budget_usd(guild_id):
     value = get(guild_id, "budget_usd")
     return float(value) if value is not None else DEFAULT_BUDGET_USD
+
+
+# ---------- the numbers a house votes by ----------
+# The shape of a vote stays in code; the numbers do not. Every one of these
+# was a constant, which meant a parliament could pass a decision changing a
+# threshold and still need somebody to push a commit before it was true.
+#
+# Stored under one key, so a server's overrides read as one object and a
+# number nobody has touched keeps following the default rather than being
+# frozen at whatever it was the day they changed something else.
+VOTING = "voting"
+
+# name -> (default, low, high, cast). The bounds are not taste: each one is
+# the range in which the rest of the machinery still means what it says. A
+# share above 1 is a threshold that can never be met, a window of zero is a
+# vote that closes before anybody sees it, and a quorum of 0 makes a public
+# poll decidable by its own author alone.
+VOTING_RULES = {
+    "floor_hours":        (48.0, 0.01, 24 * 30.0, float),
+    "removal_hours":      (72.0, 0.01, 24 * 30.0, float),
+    "fundamental_share":  (0.75, 0.5, 1.0, float),
+    "public_quorum_share": (0.2, 0.01, 1.0, float),
+    "kick_min_yes":       (3, 1, 100, int),
+    "away_days":          (14, 1, 365, int),
+    "role_create_max":    (1, 0, 25, int),
+    "role_wear_max":      (5, 0, 25, int),
+}
+
+_voting_defaults = {name: rule[0] for name, rule in VOTING_RULES.items()}
+
+
+def configure_voting(**defaults):
+    """Let the host move a default before any server has an opinion. Used
+    for the one number that already had a home outside this module --
+    `floor_hours` in server_config.yaml, which CONTRIBUTING tells people to
+    wind down to seconds for a sandbox run."""
+    for name, value in defaults.items():
+        if value is None or name not in VOTING_RULES:
+            continue
+        _voting_defaults[name] = clamp_voting(name, value)
+
+
+def clamp_voting(name, value):
+    """One number, coerced and held inside its bounds. Returns None if it
+    is not a number at all, so a caller can say so rather than storing a
+    string where a threshold goes."""
+    default, low, high, cast = VOTING_RULES[name]
+    try:
+        value = cast(value)
+    except (TypeError, ValueError):
+        return None
+    return max(low, min(high, value))
+
+
+def voting(guild_id=None) -> dict:
+    """Every number this house votes by: the defaults, with whatever the
+    house has chosen laid over them. Never partial -- a caller reads a
+    complete set or none of the numbers would be safe to use."""
+    numbers = dict(_voting_defaults)
+    if guild_id is None:
+        return numbers
+    stored = get(guild_id, VOTING) or {}
+    for name, value in stored.items():
+        if name in VOTING_RULES:
+            held = clamp_voting(name, value)
+            if held is not None:
+                numbers[name] = held
+    return numbers
+
+
+def set_voting(guild_id, **values):
+    """Store one or more numbers. Returns (accepted, rejected): a name that
+    is not a governance number, or a value that is not one, comes back
+    named rather than silently ignored.
+
+    Passing None for a number puts it back on the default instead of
+    pinning it, so a house that changes its mind is not left holding a copy
+    of a value it never chose."""
+    stored = dict(get(guild_id, VOTING) or {})
+    accepted, rejected = {}, []
+    for name, value in values.items():
+        if name not in VOTING_RULES:
+            rejected.append(name)
+            continue
+        if value is None:
+            stored.pop(name, None)
+            accepted[name] = _voting_defaults[name]
+            continue
+        held = clamp_voting(name, value)
+        if held is None:
+            rejected.append(name)
+            continue
+        stored[name] = held
+        accepted[name] = held
+    put(guild_id, **{VOTING: stored or None})
+    return accepted, rejected
+
+
+def voting_overrides(guild_id) -> dict:
+    """Only what this house has actually chosen, for saying out loud which
+    numbers are theirs and which are simply the ones he came with."""
+    stored = get(guild_id, VOTING) or {}
+    return {k: v for k, v in stored.items() if k in VOTING_RULES}
 
 
 # The environment variables a pre-settings host may still be carrying,

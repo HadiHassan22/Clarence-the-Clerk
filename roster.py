@@ -9,6 +9,17 @@ It has one consequence worth being deliberate about: somebody absent counts the
 same as somebody voting no. Away is the release valve. It is meant to be
 frictionless and free of judgement -- a quiet fortnight sets it on its own, and
 nobody is ever expected to explain themselves.
+
+That rule is the cooperative's, and it only works because the cooperative is a
+few people who all signed up to be counted. A poll open to the whole server is
+counted against the whole server, where silence is the ordinary state of most
+of the room; treating it as a no there would put every public poll out of reach
+on the day it was filed. So the open kind is decided by a majority of whoever
+voted, and `quorum` is what stops that being three people. Both rules live
+here, and which one applies is decided by who the ballot let in.
+
+Every number either rule uses arrives as an argument. The house sets them; the
+defaults below are only what he came with.
 """
 
 from __future__ import annotations
@@ -69,7 +80,7 @@ def last_seen(user_id):
         return None
 
 
-def away_reason(member):
+def away_reason(member, away_days=AUTO_AWAY_DAYS):
     """Why somebody is out of the count, or None if they are still in it.
 
     Two ways in, and the difference matters to exactly one caller: `role` is a
@@ -85,25 +96,33 @@ def away_reason(member):
         # file should not quietly empty the roster and drop every threshold
         # to one; it takes a real quiet fortnight to step somebody out.
         return None
-    quiet = datetime.now(timezone.utc) - seen > timedelta(days=AUTO_AWAY_DAYS)
+    quiet = datetime.now(timezone.utc) - seen > timedelta(days=away_days)
     return "quiet" if quiet else None
 
 
-def is_away(member):
+def is_away(member, away_days=AUTO_AWAY_DAYS):
     """Away by choice (an 'away' role) or by absence. Never a judgement."""
-    return away_reason(member) is not None
+    return away_reason(member, away_days) is not None
 
 
-def active(guild, in_cooperative, exclude=()):
-    """Every id a vote is counted against, sorted so it is stable."""
+def active(guild, belongs, exclude=(), away_days=AUTO_AWAY_DAYS):
+    """Every id a vote is counted against, sorted so it is stable.
+
+    `belongs` decides who is even a candidate, and it is the caller's to
+    choose because it is not always the cooperative: a poll open to the
+    whole server is counted against the whole server. It is always the same
+    test the ballot itself admits people by, so the denominator can never
+    hold somebody the buttons would turn away.
+    """
     return sorted(
         m.id
         for m in guild.members
-        if not m.bot and in_cooperative(m) and m.id not in exclude and not is_away(m)
+        if not m.bot and belongs(m) and m.id not in exclude
+        and not is_away(m, away_days)
     )
 
 
-def required(size, tier="normal"):
+def required(size, tier="normal", fundamental_share=None):
     """How many yes votes carry a roster of this size.
 
     Never returns more than the roster holds, so a threshold can't become
@@ -114,6 +133,22 @@ def required(size, tier="normal"):
         return 1
     majority = size // 2 + 1
     share = TIERS.get(tier)
+    if tier == "fundamental" and fundamental_share is not None:
+        share = fundamental_share
     if share is None:
         return majority
     return min(size, max(math.ceil(size * share), majority))
+
+
+def quorum(size, share):
+    """How many have to vote for a poll of the open kind to mean anything.
+
+    Passage there is a majority of whoever turned up, so the quorum is the
+    whole of the protection against three people deciding something for
+    sixty. Never more than the roster holds, and never zero while there is
+    anybody at all to ask -- a poll that carries on nobody's vote is not a
+    poll.
+    """
+    if size <= 0:
+        return 0
+    return max(1, min(size, math.ceil(size * share)))
