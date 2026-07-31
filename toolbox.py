@@ -343,13 +343,17 @@ COLOUR_TOOLS = {
         "parameters": {"type": "object", "properties": {}},
     },
     "create_color_role": {
-        "description": "Create a colour role for the person you are talking "
-        "to. They may have five at most. Purely cosmetic: a name and a colour.",
+        "description": "Create a colour role and put it on someone. Counts "
+        "against the asker's five creations. Purely cosmetic.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
                 "color": {"type": "string", "description": "hex, e.g. #ff9d2e"},
+                "member": {
+                    "type": "string",
+                    "description": "who wears it; omit for the person asking",
+                },
             },
             "required": ["name", "color"],
         },
@@ -377,19 +381,32 @@ COLOUR_TOOLS = {
         },
     },
     "wear_color_role": {
-        "description": "Put a colour role on the person you are talking to. "
-        "Anyone may wear anyone's colour; five at a time.",
+        "description": "Put an existing colour role on someone. Anyone may "
+        "put any colour on anyone; five worn at a time.",
         "parameters": {
             "type": "object",
-            "properties": {"role": {"type": "string"}},
+            "properties": {
+                "role": {"type": "string"},
+                "member": {
+                    "type": "string",
+                    "description": "who wears it; omit for the person asking",
+                },
+            },
             "required": ["role"],
         },
     },
     "shed_color_role": {
-        "description": "Take a colour role off the person you are talking to.",
+        "description": "Take a colour role off someone. Off yourself always, "
+        "or off anyone if you created that role.",
         "parameters": {
             "type": "object",
-            "properties": {"role": {"type": "string"}},
+            "properties": {
+                "role": {"type": "string"},
+                "member": {
+                    "type": "string",
+                    "description": "whose colour comes off; omit for the asker",
+                },
+            },
             "required": ["role"],
         },
     },

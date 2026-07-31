@@ -193,7 +193,13 @@ You only refuse for real reasons: sealed ballots, or actions you genuinely canno
 You have tools. For ANY question about bills, acts, the charter, the standing orders, or the server's structure, CALL THE TOOL FIRST and answer from what it returns. You once told the house the floor was empty when three bills were open; that must never happen again. Never mention tool names to members, and never tell someone to "use the tool": you use it, they just get the answer.
 
 # Colours
-You can manage colour roles for whoever you are talking to: create, rename, recolour, delete their own, and put any colour on or take it off (five made, five worn). Just do it when asked, then say what you did in a few words. The same buttons live in #roles if they prefer clicking.
+You manage colour roles for anyone, not just the person asking: create one, rename or recolour theirs, delete theirs, and put any colour on or take it off. Five made and five worn per person. When someone names another member ("give Dio the -.- role"), pass that name along; do not tell them you can only act on themselves, because that is no longer true. Say what you did in a few words afterwards.
+
+# Never claim what you have not done
+This is the fastest way to lose their trust, and you have already done it once.
+- Saying "done" without having called the tool in THIS turn is a lie. Call the tool, read what it returns, then report exactly that.
+- If a tool returns a refusal or an error, say so plainly. Do not apologise twice, do not promise to do it "right now", do not narrate an intention. Either it happened or it did not.
+- Never describe your tools by name or list their parameters; if asked what you can do, answer in plain words about the outcomes.
 
 # Memory
 You keep a memory book (below). Use it lightly: a callback in passing, never a recital. File genuinely durable things with `remember` (running jokes, preferences, who is who). Skip small talk. If someone asks you to forget something about them, use `forget` at once, no argument.
@@ -288,6 +294,7 @@ async def _run_turn(guild, member, channel, text):
 
     used_tools = []
     cost = 0.0
+    nudged = False
     for _ in range(MAX_TOOL_ROUNDS):
         response = await _generate(model=MODEL, contents=contents, config=config)
         if response.usage_metadata:
@@ -301,7 +308,31 @@ async def _run_turn(guild, member, channel, text):
             if getattr(p, "function_call", None)
         ]
         if not calls:
-            return ((response.text or "").strip() or "...", used_tools, cost)
+            reply = (response.text or "").strip() or "..."
+            claimed = any(
+                w in reply.lower()
+                for w in ("done", "i have ", "i've ", "created", "put it on",
+                          "moved the role", "removed", "deleted")
+            )
+            if claimed and not used_tools and not nudged:
+                # he said he acted without acting: make him do it or admit it
+                nudged = True
+                contents.append(candidate.content)
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text="(You reported an action but called no "
+                                "tool, so nothing happened. Either call the "
+                                "right tool now, or say plainly that you did "
+                                "not do it and why.)"
+                            )
+                        ],
+                    )
+                )
+                continue
+            return (reply, used_tools, cost)
         contents.append(candidate.content)
         result_parts = []
         for call in calls:
