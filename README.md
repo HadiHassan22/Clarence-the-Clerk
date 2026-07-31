@@ -105,8 +105,10 @@ that matters — **puts you in the cooperative**. Until somebody is in it,
 Eugene refuses everyone, including whoever installed him.
 
 After that, **Roles & votes** hands the cooperative to anyone else who
-should have one. Once there are a few of you, the ordinary way in is
-`/invite`, which is a vote.
+should have one, and that is the only way onto that roll: it is a chore
+somebody passes to you, not a ballot. `/invite` is a different door
+entirely — it is a vote about somebody who is not in the server yet, and
+what it hands out is a link.
 
 **Nothing here names a server.** Eugene reads the name off Discord, so
 renaming the server is the whole of it — proposal text, his own
@@ -139,7 +141,9 @@ a conversation:
   and nobody is chased.
 - **`/poll`** — ask the whole server a question instead of the
   cooperative. Yes/no, or up to ten options.
-- **`/invite`** — propose that someone be let in.
+- **`/invite`** — propose that someone outside be invited into the server.
+  What passes is a single-use link, sent privately to whoever proposed
+  them; it is not a seat in the cooperative and not a vote.
 - **`/remove`** — propose that someone be removed. Says what the
   instrument costs before it asks who.
 - **`/close <number>`** — call time on a vote that has had its run.
@@ -185,7 +189,7 @@ either with nothing else at all.
 | Moderation | the filters, warnings, and the hands | off |
 | Arrivals | greetings, goodbyes, an arrival role | on, until pointed at a room |
 | Audit log | deletes, edits, arrivals, every moderation action | on |
-| Health card | his vitals, pinned and current | on |
+| Health card | his vitals, pinned and current; administrators only | on |
 
 ¹ *needs an AI key, so it is on and dormant until somebody sets one.*
 

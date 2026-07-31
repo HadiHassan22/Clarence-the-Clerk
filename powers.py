@@ -611,8 +611,10 @@ async def act_assign_role(guild, invoker, args):
         bound = bindings.role(guild, key)
         if bound is not None and bound.id == role.id:
             return _err(f"{role.name} decides who has a vote here, so it is "
-                        f"given by the house and not by me. That is an "
-                        f"invitation vote, or /setup for the first one")
+                        f"given by the house and not by me: somebody who "
+                        f"has it hands it over under /setup -> Roles & "
+                        f"votes. Not /invite -- that one is the door into "
+                        f"the server and ends in a link")
     me = guild.me
     if me is None or role >= me.top_role:
         return _err(f"{role.name} sits at or above my own role, so Discord "

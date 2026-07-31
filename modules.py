@@ -80,6 +80,12 @@ CATEGORIES = {
 #   gate        - visible to everyone, role or no role
 #   members     - visible to anyone inside
 #   cooperative - the cooperative only
+#   admins      - administrators and the owner, and nobody else. There is no
+#                 role for this and there must not be one: Discord's
+#                 Administrator permission bypasses channel overwrites on
+#                 its own, so denying everybody leaves exactly the people
+#                 who could already read it by hand. A named role would be
+#                 a gate whose keys can be copied by the people it gates.
 ROOM_PLAN = {
     "proposals": {
         "name": "propose", "category": "governance",
@@ -90,8 +96,13 @@ ROOM_PLAN = {
     "votes": {
         "name": "votes", "category": "governance",
         "visibility": "cooperative", "read_only": True,
-        "topic": "Proposals up for a vote. Notes in threads, ballots by "
-                 "button, always anonymous.",
+        # Only Eugene posts in the room; the argument about a proposal is a
+        # thread he opens on it, and a thread nobody may write in is not a
+        # debate. The notes thread stays a record either way -- it is locked
+        # the moment it is made, so this opens the debate and nothing else.
+        "threads": True,
+        "topic": "Proposals up for a vote. Debate and notes in threads, "
+                 "ballots by button, always anonymous.",
     },
     "decisions": {
         "name": "decisions", "category": "commons",
@@ -101,6 +112,9 @@ ROOM_PLAN = {
     "polls": {
         "name": "polls", "category": "commons",
         "visibility": "members", "read_only": True,
+        # Same reason as `votes`: the debate on a poll is a thread on the
+        # poll, and here it is open to whoever the poll is open to.
+        "threads": True,
         "topic": "Polls open to everyone. Advisory: they say what the room "
                  "thinks.",
     },
@@ -111,8 +125,16 @@ ROOM_PLAN = {
     },
     "health": {
         "name": "bot-health", "category": "commons",
-        "visibility": "members", "read_only": True,
-        "topic": "Eugene's vitals: commit, latency, spend, open votes.",
+        # Administrators only, and nobody else -- not the cooperative, not
+        # members. It carries the running commit, the month's spend, the
+        # annex he is on and every error he has hit, which is operational
+        # detail for whoever keeps him running and clutter for everybody
+        # else. It used to be behind an opt-in `nerd` role, which meant a
+        # third role in the list that was not a rank, a button to toggle
+        # it, and a room whose audience was whoever had once been curious.
+        "visibility": "admins", "read_only": True,
+        "topic": "Eugene's vitals: commit, latency, spend, open votes. "
+                 "Administrators only.",
     },
     "welcome": {
         "name": "welcome", "category": "commons",
@@ -314,7 +336,7 @@ SPEC = {
     "health": {
         "name": "Health card",
         "blurb": "His own vitals, pinned and current: commit, latency, "
-                 "spend, open votes.",
+                 "spend, open votes. Administrators only.",
         "default": True,
         "rooms": {"health": True},
         "roles": (),

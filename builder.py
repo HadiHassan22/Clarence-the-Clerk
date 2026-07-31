@@ -36,7 +36,6 @@ import modules
 
 COOPERATIVE = "Cooperative"  # holds a vote: the people who picked up a chore
 MEMBER = "Member"            # in the room, no vote
-NERD = "nerd"    # opt-in subscription to the bot-health channel, not a rank
 
 # Roles this server used to call something else. Renamed in place rather than
 # recreated, so nobody loses a role they already hold.
@@ -92,6 +91,7 @@ def from_modules(guild_id):
                     "topic": spec["topic"],
                     "visibility": spec["visibility"],
                     "read_only": spec["read_only"],
+                    "threads": spec.get("threads", False),
                 }
                 for spec in specs
             ],
@@ -163,7 +163,7 @@ async def ensure_member(guild, say):
 
 
 def overwrites_for(guild, cooperative, owner, spec, default_vis="members",
-                   nerd=None, member=None):
+                   member=None):
     """Build overwrites from visibility + read_only.
 
     Members and the cooperative see exactly the same rooms. The difference
@@ -179,7 +179,12 @@ def overwrites_for(guild, cooperative, owner, spec, default_vis="members",
         add_reactions=True,
         create_public_threads=False,
         create_private_threads=False,
-        send_messages_in_threads=False,
+        # The room stays Eugene's -- proposals, ballots and the record are
+        # posted, not chatted -- but a floor is also where the debate on a
+        # proposal happens now, and that debate is a thread he opens on it.
+        # A room that wants no talking of any kind (the record, the archive)
+        # says nothing here and keeps threads shut, which is the default.
+        send_messages_in_threads=bool(spec.get("threads")),
     )
     seen = discord.PermissionOverwrite(view_channel=True)
     hidden = discord.PermissionOverwrite(view_channel=False)
@@ -216,17 +221,19 @@ def overwrites_for(guild, cooperative, owner, spec, default_vis="members",
         ow = {guild.default_role: hidden}
         ow.update({r: hidden for r in inside})
         ow[owner] = discord.PermissionOverwrite(view_channel=True, **no_posting)
-    elif vis == "nerds":
-        if nerd is None:
-            raise ValueError("nerds visibility requires the nerd role")
-        nerd_ow = (
-            discord.PermissionOverwrite(view_channel=True, **no_posting)
-            if spec.get("read_only")
-            else discord.PermissionOverwrite(view_channel=True)
-        )
+    elif vis == "admins":
+        # Nobody is granted anything, and that is the implementation.
+        # Discord's Administrator permission bypasses channel overwrites on
+        # its own, so a room denied to everybody is a room exactly the
+        # administrators and the owner can read -- with no role to hand out
+        # and none to forget to take back. The bot is named explicitly
+        # because he is inside "everybody" unless he happens to be an
+        # administrator, and he is the one who has to post here.
         ow = {guild.default_role: hidden}
         ow.update({r: hidden for r in inside})
-        ow[nerd] = nerd_ow
+        me = getattr(guild, "me", None)
+        if me is not None:
+            ow[me] = discord.PermissionOverwrite(view_channel=True)
     else:
         raise ValueError(f"unknown visibility {vis!r}")
     return ow
@@ -300,7 +307,7 @@ async def sweep(guild, config, cooperative, owner, say, member=None):
             say(f"deleted category: {cat.name}")
 
 
-async def build(guild, config, cooperative, owner, nerd, say, member=None):
+async def build(guild, config, cooperative, owner, say, member=None):
     """Create or adopt everything in server_config.yaml, in order."""
     position = 0
     for cat_spec in config["categories"]:
@@ -308,7 +315,7 @@ async def build(guild, config, cooperative, owner, nerd, say, member=None):
         cat_vis = cat_spec.get("visibility", "members")
         if cat_spec["name"]:
             cat_ow = overwrites_for(guild, cooperative, owner,
-                                    {"visibility": cat_vis}, nerd=nerd, member=member)
+                                    {"visibility": cat_vis}, member=member)
             category = discord.utils.get(guild.categories, name=cat_spec["name"])
             if category is None:
                 category = await guild.create_category(cat_spec["name"], overwrites=cat_ow)
@@ -322,7 +329,7 @@ async def build(guild, config, cooperative, owner, nerd, say, member=None):
             is_voice = spec.get("type") == "voice"
             overwrites = overwrites_for(
                 guild, cooperative, owner, spec, default_vis=cat_vis,
-                nerd=nerd, member=member,
+                member=member,
             )
 
             if is_voice:
@@ -441,9 +448,6 @@ async def install(guild, config, say=print, sweep_existing=False):
     refuses the combination."""
     cooperative = await ensure_cooperative(guild, say)
     member = await ensure_member(guild, say)
-    nerd = await ensure_role(
-        guild, NERD, "Opt-in bot-health visibility, not a rank", say
-    )
     owner = guild.owner or await guild.fetch_member(guild.owner_id)
     if sweep_existing:
         say("-- sweep (destructive) --")
@@ -452,6 +456,6 @@ async def install(guild, config, say=print, sweep_existing=False):
         say("-- sweep skipped: nothing existing will be archived or deleted --")
         await ensure_archive(guild, config, cooperative, owner, say, member)
     say("-- build --")
-    await build(guild, config, cooperative, owner, nerd, say, member)
+    await build(guild, config, cooperative, owner, say, member)
     await enforce_order(guild, config)
     say("-- done --")

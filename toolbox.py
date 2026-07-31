@@ -604,17 +604,19 @@ BILL_TOOLS = {
         },
     },
     "propose_member": {
-        "description": "Propose that someone be let in, and open the ballot: "
-        "yes, no, or abstain, anonymous, tally sealed at close so nobody "
-        "newly admitted learns their margin. Use it as soon as someone names "
-        "a person they want in. If it passes you send a single-use invite "
-        "link privately to whoever proposed them.",
+        "description": "Propose that somebody who is not here be invited "
+        "into the server, and open the ballot: yes, no, or abstain, "
+        "anonymous, tally sealed at close so nobody newly admitted learns "
+        "their margin. Use it as soon as someone names a person they want "
+        "here. If it passes you send a single-use invite link privately to "
+        "whoever proposed them. It is the door into the server and nothing "
+        "else: it gives no vote and does not put anyone in the cooperative.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "who is being proposed, as people here would know them"},
                 "discord_id": {"type": "string", "description": "their Discord ID, digits only, if the proposer knows it"},
-                "why": {"type": "string", "description": "why we should let them in, in the proposer's voice"},
+                "why": {"type": "string", "description": "why they should be in the server, in the proposer's voice"},
             },
             "required": ["name", "why"],
         },

@@ -8,7 +8,7 @@ hardcodes a name is a bug, not a default.
 
 Roles:      given by people, not earned at a button. Eugene reads them.
 Proposing: say what should change (title/what/why), Eugene publishes it,
-            opens a debate chamber (text + voice), and runs an anonymous
+            opens a debate thread on the same floor, and runs an anonymous
             ballot.
 Voting:     thresholds count against the roster, not against turnout, so a
             vote ends the moment its result is settled rather than when the
@@ -16,9 +16,9 @@ Voting:     thresholds count against the roster, not against turnout, so a
             three quarters. voting.floor_hours is only the backstop for a
             vote nobody finishes.
 At close:   result posted, passed proposals become numbered decisions in
-            the record, final notes are preserved in a thread, the chamber
-            text channel is locked and archived, the voice channel and
-            category removed. Choice ballots (author supplies 2-10 options)
+            the record, final notes are preserved in a thread, the debate
+            thread is locked and archived where it stands. Choice ballots
+            (author supplies 2-10 options)
             need a strict majority of votes cast; otherwise a runoff opens
             with the leading options, decided by plurality. They are the
             same ballot as any other -- live face, self-closing, one gate on
@@ -130,16 +130,21 @@ log = logging.getLogger("clerk")
 COOPERATIVE = "Cooperative"  # holds a vote: whoever picked up a chore
 MEMBER = "Member"            # in the room, no vote; unused while all of
                              # us are in the cooperative
-NERD = "nerd"    # opt-in subscription to the bot-health channel, not a rank
 
 # Said to somebody who is not in the cooperative. It names the way in on
 # purpose: a refusal that only says no leaves a new arrival stuck, which is
 # exactly how the first install went -- the person who installed Eugene was
 # outside, and nothing anywhere told them how to get inside.
+#
+# It used to name `/invite`, and that was wrong twice over. `/invite` is the
+# server's door: it ends in a link to a room the person reading this is
+# already standing in. The cooperative is a different door and it has never
+# been a vote -- somebody who has it hands it over.
 NOT_INSIDE = (
-    "Only the cooperative files proposals here. Anyone already inside can "
-    "put you up with `/invite`; whoever runs the place can hand it over "
-    "with `/setup`."
+    "Only the cooperative files proposals here — whoever has picked up a "
+    "chore. Somebody who runs the place hands that over under `/setup` → "
+    "Roles & votes. (`/invite` is the door into the server, and you are "
+    "already through it.)"
 )
 ACCENT = discord.Colour(0xE0A458)
 BOOT_AT = datetime.now(timezone.utc)
@@ -281,10 +286,6 @@ def archive_category(guild):
     return next((c for c in guild.categories if "archive" in c.name.lower()), None)
 
 
-def governance_category(guild):
-    return next((c for c in guild.categories if "governance" in c.name.lower()), None)
-
-
 def health_channel(guild):
     return room(guild, "health")
 
@@ -326,7 +327,7 @@ def health_content(guild):
         # one way this whole arrangement fails quietly.
         *([f"⏳ {waiting}"] if (waiting := sanction.summary(guild.id)) else []),
         f"-# Updated <t:{int(now_utc().timestamp())}:R>. "
-        f"Opt out with Nerd mode in the roles channel.",
+        f"Administrators only.",
     ]
     return "\n".join(lines)
 
@@ -547,19 +548,37 @@ def chunk_text(text, limit=1900):
 
 # ---------- the chamber ----------
 
-def chamber_overwrites(guild):
-    return {
+def admin_only_overwrites(guild):
+    """A room only administrators and the owner can read.
+
+    There is no role in this and there must not be one. Discord's
+    Administrator permission bypasses channel overwrites by itself, so
+    denying everybody is the whole implementation: what is left is exactly
+    the set of people who could already read anything here by hand, and
+    there is nothing to hand out, forget to revoke, or copy to a friend.
+    That is the same reasoning `is_admin` is written from.
+
+    The bot is the exception, and it has to be explicit. He is the only one
+    who ever posts here, and a bot without Administrator is inside
+    "everybody" -- so a room denied to everyone is a room he cannot write
+    the health card into. Whatever the deny says, the writer is named.
+    """
+    ow = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        cooperative_role(guild): discord.PermissionOverwrite(view_channel=True),
     }
-
-
-def open_chamber_overwrites(guild):
-    """The debate room for a poll put to the whole server. Left alone --
-    whatever the server's own default is, that is who the poll is open to,
-    and inheriting it is the only way the room the ballot counts and the
-    room the ballot admits stay the same set of people."""
-    return {}
+    coop = cooperative_role(guild)
+    if coop is not None:
+        ow[coop] = discord.PermissionOverwrite(view_channel=False)
+    members = member_role(guild)
+    if members is not None:
+        ow[members] = discord.PermissionOverwrite(view_channel=False)
+    me = getattr(guild, "me", None)
+    if me is not None:
+        ow[me] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, manage_messages=True,
+            read_message_history=True,
+        )
+    return ow
 
 
 async def hidden_overwrites(guild):
@@ -581,26 +600,46 @@ def bill_name(number, title, prefix="", limit=100):
     return prefix + name
 
 
-async def open_chamber(guild, number, title, audience=COOPERATIVE_ONLY):
-    ow = (open_chamber_overwrites(guild) if audience == EVERYONE
-          else chamber_overwrites(guild))
-    position = None
-    gov = governance_category(guild)
-    if gov:
-        position = gov.position
-    category = await guild.create_category(
-        bill_name(number, title, "🗳️ "), overwrites=ow, position=position
+async def open_chamber(floor, number, title):
+    """Somewhere to argue about a proposal: a thread on the floor it was
+    filed in.
+
+    It used to be a category holding a text channel and a voice channel,
+    which meant every vote added three rooms to the sidebar and the archive
+    grew by one channel forever. A thread costs nothing, disappears when it
+    is done, and -- the part that matters -- has no permissions of its own:
+    it inherits the floor's, so who can read the debate and who can read
+    the ballot are the same question with the same answer. The
+    cooperative's floor is closed to members, so the debate on it is too,
+    and it stays that way without anyone maintaining a second set of
+    overwrites that could drift from the first.
+
+    A week, because the vote it belongs to may run for days and a thread
+    that files itself away mid-argument reads as the argument being over.
+    """
+    return await floor.create_thread(
+        name=bill_name(number, title, "💬 "),
+        type=discord.ChannelType.public_thread,
+        auto_archive_duration=10080,
+        reason=f"Debate chamber for Proposal No. {number}: {title}",
     )
-    text = await guild.create_text_channel(
-        bill_name(number, title, "💬・"),
-        category=category,
-        topic=f"Debate chamber for Proposal No. {number}: {title}",
-        overwrites=ow,
-    )
-    voice = await guild.create_voice_channel(
-        bill_name(number, title, "🔊 "), category=category, overwrites=ow
-    )
-    return category, text, voice
+
+
+def chamber_of(guild, bill):
+    """The debate room for a proposal, whatever shape it is.
+
+    Proposals filed before the chambers became threads still hold a text
+    channel, and they are still open, so both are looked up here rather
+    than at each of the four places that want to point at one.
+    """
+    if guild is None:
+        return None
+    thread_id = bill.get("chamber_thread_id")
+    if thread_id:
+        get_thread = getattr(guild, "get_thread", None)
+        thread = get_thread(thread_id) if get_thread else None
+        return thread or guild.get_channel(thread_id)
+    return guild.get_channel(bill.get("chamber_text_id"))
 
 
 # ---------- notes ----------
@@ -853,7 +892,7 @@ def ballot_content(guild, bill):
     ballot cast, so the progress toward the threshold is visible the whole
     way rather than arriving as a surprise at close."""
     st = vote_state(guild, bill)
-    chamber = guild.get_channel(bill.get("chamber_text_id")) if guild else None
+    chamber = chamber_of(guild, bill)
     where = f" · debate in {chamber.mention}" if chamber else ""
     try:
         ends = datetime.fromisoformat(bill["ends_at"])
@@ -1198,8 +1237,8 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
     where there is no interaction to reply to.
 
     `audience` decides who votes and, from that, everything else: which
-    room it is posted in, who the chamber is open to, what carries it. It
-    defaults to the closed kind, because a caller that forgets to say has
+    room it is posted in, who the debate on it is open to, what carries
+    it. It defaults to the closed kind, because a caller that forgets to say has
     said nothing, and the wrong default there is the one that puts the
     cooperative's business in front of the whole server.
     """
@@ -1212,9 +1251,7 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         hours=floor_hours or numbers(guild)["floor_hours"]
     )
 
-    category, text, voice = await open_chamber(
-        guild, number, title, audience=audience
-    )
+    chamber = await open_chamber(floor, number, title)
 
     stamp = await floor.send(
         view=Card([f"## Proposal No. {number}: {title}\nSubmitted by {author.mention}"])
@@ -1223,6 +1260,17 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         name=(bill_name(number, title) + ": notes")[:100]
     )
     notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
+    # The notes are a record, not a conversation: one named slot and one
+    # anonymous slot each, both filed through a modal and posted by Eugene.
+    # That used to be guaranteed by the floor denying everybody the right to
+    # talk in threads at all, which is no longer true now that the debate is
+    # a thread on the same floor -- so the guarantee is made here, on the one
+    # thread that wants it, rather than by a permission that would have to
+    # deny the argument as well. Locked, not archived: he still writes here.
+    try:
+        await notes_thread.edit(locked=True)
+    except discord.HTTPException as e:
+        log.warning(f"could not lock notes thread for bill {number}: {e!r}")
     for label, body in (("What", what), ("Why", why)):
         for i, piece in enumerate(chunk_text(body)):
             prefix = f"### {label}\n" if i == 0 else ""
@@ -1242,9 +1290,7 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         "message_id": stamp.id,
         "notes_message_id": notes_msg.id,
         "notes_thread_id": notes_thread.id,
-        "chamber_category_id": category.id,
-        "chamber_text_id": text.id,
-        "chamber_voice_id": voice.id,
+        "chamber_thread_id": chamber.id,
         "submitted_at": now_utc().isoformat(),
         "ends_at": ends_at.isoformat(),
         "status": "on_floor",
@@ -1285,10 +1331,10 @@ async def file_from_modal(interaction, **kwargs):
             ephemeral=True,
         )
     floor = floor_for(interaction.guild, bill)
-    chamber = interaction.guild.get_channel(bill["chamber_text_id"])
+    chamber = chamber_of(interaction.guild, bill)
+    where = f", debate in {chamber.mention}" if chamber else ""
     await interaction.followup.send(
-        f"Filed. Proposal No. {bill['no']} is open: {floor.mention}, "
-        f"debate in {chamber.mention}.",
+        f"Filed. Proposal No. {bill['no']} is open: {floor.mention}{where}.",
         ephemeral=True,
     )
     return bill
@@ -1431,6 +1477,11 @@ class PollModal(discord.ui.Modal, title="Open a public poll"):
 
 
 class InviteModal(discord.ui.Modal, title="Propose an invitation"):
+    """Somebody outside the server, proposed into it. What passes is a link
+    and a place in the room -- never a vote, and never the cooperative,
+    which is handed over under `/setup` and has no ballot at all."""
+
+
     invitee = discord.ui.TextInput(
         label="Their username",
         style=discord.TextStyle.short,
@@ -1446,7 +1497,7 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
     why = discord.ui.TextInput(
         label="Why",
         style=discord.TextStyle.paragraph,
-        placeholder="Why should we let them in?",
+        placeholder="Why should they be in the server?",
         max_length=4000,
     )
 
@@ -1457,7 +1508,9 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
         what = (
             f"{name}{id_part} shall be invited to {interaction.guild.name}. "
             f"If this passes, Eugene issues a single-use invite link, valid "
-            f"seven days, delivered privately to the proposer."
+            f"seven days, delivered privately to the proposer. It is a place "
+            f"in the room; it is not a place in the cooperative and not a "
+            f"vote."
         )
         await file_from_modal(
             interaction,
@@ -1660,9 +1713,50 @@ async def publish_act(guild, bill, decided=None):
     return f"\n-# Recorded as Decision {act_no} in the record."
 
 
+async def seal_chamber(guild, bill):
+    """Shut the debate room at close.
+
+    A thread is locked and archived where it stands: it stays attached to
+    the floor it belongs to, readable by exactly the people who could read
+    it while the vote was live, and nothing has to be moved or hidden for
+    that to be true.
+
+    Proposals filed before the chambers were threads still hold a category,
+    a text channel and a voice channel, and some of them are still open, so
+    the old close survives here for as long as they do -- text locked and
+    filed in the archive, voice deleted because voice is never recorded,
+    the empty category swept up after them.
+    """
+    thread_id = bill.get("chamber_thread_id")
+    if thread_id:
+        try:
+            thread = guild.get_thread(thread_id) or await guild.fetch_channel(thread_id)
+            await thread.send("*Vote closed. The debate is sealed with it.*")
+            await thread.edit(archived=True, locked=True)
+        except discord.HTTPException as e:
+            log.warning(f"sealing debate thread failed for bill {bill['no']}: {e!r}")
+        return
+
+    text = guild.get_channel(bill.get("chamber_text_id"))
+    archive = archive_category(guild)
+    if text and archive:
+        await text.edit(
+            name=bill_name(bill["no"], bill["title"], "archived_"),
+            category=archive,
+            sync_permissions=False,
+            overwrites=await hidden_overwrites(guild),
+        )
+    voice = guild.get_channel(bill.get("chamber_voice_id"))
+    if voice:
+        await voice.delete(reason="Vote closed; voice is never recorded")
+    category = guild.get_channel(bill.get("chamber_category_id"))
+    if category and not category.channels:
+        await category.delete(reason="Vote closed")
+
+
 async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     """Common closing: result card, published if passed, seal the notes
-    thread, close the ballot, archive the chamber."""
+    thread, close the ballot, seal the debate."""
     bill["status"] = "passed" if passed else "failed"
     bill["closed_at"] = now_utc().isoformat()
     # the tally is all the record needs from here; individual ballots are
@@ -1721,22 +1815,7 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
             except discord.HTTPException as e:
                 log.warning(f"sealing notes thread failed for bill {bill['no']}: {e!r}")
 
-    archive = archive_category(guild)
-    hidden = await hidden_overwrites(guild)
-    text = guild.get_channel(bill["chamber_text_id"])
-    if text and archive:
-        await text.edit(
-            name=bill_name(bill["no"], bill["title"], "archived_"),
-            category=archive,
-            sync_permissions=False,
-            overwrites=hidden,
-        )
-    voice = guild.get_channel(bill["chamber_voice_id"])
-    if voice:
-        await voice.delete(reason="Vote closed; voice is never recorded")
-    category = guild.get_channel(bill["chamber_category_id"])
-    if category and not category.channels:
-        await category.delete(reason="Vote closed")
+    await seal_chamber(guild, bill)
 
     await update_bill(bill)
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
@@ -1759,7 +1838,7 @@ def closing_report(bill):
 
     done = [
         "The vote is closed and the ballots are destroyed; only the tally survives.",
-        "The notes are sealed with the proposal, and the chamber is archived.",
+        "The notes and the debate are sealed with the proposal.",
     ]
     outstanding = []
 
@@ -3189,33 +3268,6 @@ class RolesHomeView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(
-        label="Nerd mode", emoji="🩺",
-        style=discord.ButtonStyle.secondary, custom_id="clerk:nerd_toggle",
-    )
-    async def nerd_mode(self, interaction, button):
-        if not in_cooperative(interaction.user):
-            return await interaction.response.send_message(
-                "That one is for people who are in.", ephemeral=True
-            )
-        role = discord.utils.get(interaction.guild.roles, name=NERD)
-        if role is None:
-            return await interaction.response.send_message(
-                "The nerd role is missing. Run build_server.py first.", ephemeral=True
-            )
-        if role in interaction.user.roles:
-            await interaction.user.remove_roles(role, reason="Nerd mode off")
-            return await interaction.response.send_message(
-                "Nerd mode off. Eugene's vitals are once again none of your business.",
-                ephemeral=True,
-            )
-        await interaction.user.add_roles(role, reason="Nerd mode on")
-        channel = health_channel(interaction.guild)
-        where = f" {channel.mention} awaits." if channel else ""
-        await interaction.response.send_message(
-            f"Nerd mode on.{where}", ephemeral=True
-        )
-
 
 # ---------- colour-role actions the clerk may perform for a member ----------
 # These act AS the invoker, inside the invoker's own powers: identical
@@ -3227,7 +3279,12 @@ BANNED_ROLE_NAMES = {"@everyone", "@here"}
 
 
 def _protected_names():
-    return BANNED_ROLE_NAMES | {COOPERATIVE.lower(), MEMBER.lower(), NERD, "clerk", "eugene"}
+    # "nerd" stays on the list although he no longer makes the role. A
+    # server that ran an older build still has one, and a colour role that
+    # collides with it would be a member quietly granting themselves
+    # whatever it still opens.
+    return BANNED_ROLE_NAMES | {COOPERATIVE.lower(), MEMBER.lower(), "nerd",
+                                "clerk", "eugene"}
 
 
 def _colour_subject(guild, member, args):
@@ -3653,7 +3710,8 @@ async def act_propose_member(guild, invoker, args):
     what = (
         f"{name}{tail} shall be invited to {guild.name}. If this passes, "
         f"Eugene issues a single-use invite link, valid seven days, "
-        f"delivered privately to the proposer."
+        f"delivered privately to the proposer. It is a place in the room; "
+        f"it is not a place in the cooperative and not a vote."
     )
     bill = await file_bill(
         guild, invoker, title=f"Invitation of {name}"[:100],
@@ -4427,12 +4485,15 @@ class RoleBindSelect(discord.ui.RoleSelect):
 
 
 class GrantSelect(discord.ui.UserSelect):
-    """The bootstrap door, and only that.
+    """The door into the cooperative. Not a shortcut around one: the only
+    one there is.
 
-    Once there is a cooperative the way in is `/invite` and a vote; this is
-    not a shortcut around it, and the screen says so. But a server with
-    nobody inside cannot hold a vote about letting somebody in, so the
-    first few are handed over by whoever runs the place.
+    This used to call itself the bootstrap door and point at `/invite` as
+    the ordinary way in, which was two different doors read as one.
+    `/invite` is the server's: it ends in a link, and what it lets somebody
+    into is the room. Picking up a chore is this, and it is handed over by
+    somebody who already has it, because a roll that only a vote can add to
+    cannot get its first name.
     """
 
     def __init__(self, row):
@@ -4467,8 +4528,9 @@ class GrantSelect(discord.ui.UserSelect):
                     " — my role has to sit above the cooperative's."
         await open_roles(
             interaction,
-            note + "\n-# This is the bootstrap door. Once there are a few of "
-                   "you, `/invite` is the ordinary way in, and it is a vote.",
+            note + "\n-# This is how the cooperative grows: somebody in it "
+                   "hands it over here. `/invite` is a different door — it "
+                   "puts a stranger in the server, not on this roll.",
         )
 
 
@@ -5409,6 +5471,7 @@ def structure_preview(guild):
                 f"　{mark} {shown} — {tail}; "
                 + {"cooperative": "the cooperative's",
                    "members": "everyone in the room",
+                   "admins": "administrators only",
                    "gate": "everyone, role or no role"}[spec["visibility"]]
                 + f" · for {', '.join(modules.name(k).lower() for k in wanted)}"
             )
@@ -5456,11 +5519,6 @@ async def ensure_categories(guild, wanted, say):
                 continue
         bindings.bind_category(guild.id, name, existing.id)
         made[name] = existing
-    # The debate chambers a vote opens want a home, and the governance
-    # category is the obvious one. Meek, like everything else here: it never
-    # re-points a key somebody has already bound by hand.
-    if "governance" in made and bindings.category(guild, "chambers") is None:
-        bindings.bind_category(guild.id, "chambers", made["governance"].id)
     return made
 
 
@@ -5502,16 +5560,17 @@ async def make_missing_rooms(guild, categories=None):
         # An empty dict, never None: discord.py reads a mapping as "these
         # exact overwrites" and MISSING as "none", but None is neither and
         # it raises rather than defaulting. `{}` is the one that means what
-        # is meant here -- inherit the category, touch nothing -- and it is
-        # what open_chamber_overwrites has always returned for the same
-        # reason. This crashed `/setup` on the first room that is open
-        # to everybody, which is to say on every fresh install.
+        # is meant here -- inherit the category, touch nothing. This crashed
+        # `/setup` on the first room that is open to everybody, which is to
+        # say on every fresh install.
         overwrites = {}
         if spec["visibility"] == "cooperative" and coop is not None:
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 coop: discord.PermissionOverwrite(view_channel=True),
             }
+        elif spec["visibility"] == "admins":
+            overwrites = admin_only_overwrites(guild)
         extra = {}
         parent = categories.get(spec["category"])
         if parent is not None:
@@ -5636,7 +5695,8 @@ async def do_apply(interaction):
                     "records and holds the door, and says nothing.")
     left.append(
         "**Roles & votes** — hand the cooperative to anyone else who should "
-        "have one. After that the ordinary way in is `/invite`, which is a vote."
+        "have one. That is the only way onto that roll; `/invite` is the "
+        "server's door and a vote, and it hands out a link, not a ballot."
     )
     if not settings.get(guild.id, "house"):
         left.append(
@@ -5757,7 +5817,9 @@ async def slash_poll(interaction: discord.Interaction):
     await interaction.response.send_modal(PollModal())
 
 
-@bot.tree.command(name="invite", description="Propose that someone be let in")
+@bot.tree.command(
+    name="invite", description="Propose that someone be invited to the server"
+)
 @app_commands.guild_only()
 async def slash_invite(interaction: discord.Interaction):
     if await refuse_unless(interaction, "governance"):
@@ -6259,7 +6321,49 @@ async def ensure_furniture(guild, restamp=False):
         await ensure_color_stack(guild)
         await update_wardrobe(guild)
     if module_live(guild, "health"):
+        await close_health_room(guild)
         await update_health(guild)
+
+
+async def close_health_room(guild):
+    """Shut the health room to everyone but administrators, once.
+
+    New servers get this from the room plan, which `/setup` reads. Servers
+    that already have the room do not: everything `/setup` does is additive
+    and it never re-permissions a channel, which is the promise that lets
+    people run it without reading the code first. So the one room that
+    changed audience is changed here instead, deliberately and by name.
+
+    Once, and tracked, because the alternative is a loop that argues. An
+    administrator who opens this room back up to the cooperative has
+    decided something, and a bot that quietly re-shuts it every five
+    minutes is overriding a person who outranks it on exactly the question
+    the room is about.
+    """
+    state = load_json(STATE, {})
+    if state.get("health_closed"):
+        return
+    channel = health_channel(guild)
+    if channel is None:
+        return
+    try:
+        await channel.edit(
+            overwrites=admin_only_overwrites(guild),
+            reason="bot-health is administrators only",
+        )
+    except discord.HTTPException as e:
+        log.warning(f"could not close the health room: {e!r}")
+        return
+    state["health_closed"] = True
+    save_json(STATE, state)
+    log.info(f"#{channel.name} is now administrators only")
+    await health_log(
+        guild,
+        "🔒 This room is administrators only now. The opt-in `nerd` role "
+        "that used to open it is gone; nothing here was ever anything but "
+        "operational detail. The `nerd` role itself is left where it is — "
+        "delete it whenever you like, it does nothing.",
+    )
 
 
 @tasks.loop(seconds=300)

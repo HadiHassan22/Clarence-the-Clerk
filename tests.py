@@ -359,6 +359,149 @@ def test_audit(data):
           all(len(e["returned"]) <= 400 for e in done))
 
 
+# ---------- the debate room ----------
+
+def test_debate_thread(clerk, data):
+    """Filing a proposal opens somewhere to argue about it, and that is a
+    thread on the floor rather than a category, a text channel and a voice
+    channel per vote.
+
+    Three things are worth holding still here. The sidebar: nothing is
+    built at guild level any more, so a busy week no longer adds rooms
+    nobody will read again. The permissions: a thread has none of its own,
+    which is the whole reason it is one -- the cooperative's floor is shut
+    to members, so the debate on it is shut to them by the same overwrite
+    that shuts the ballot. And the notes: they are a record, not a chat,
+    and they used to be silent because the floor denied everyone the right
+    to talk in threads at all. That is no longer true, so the guarantee is
+    made on the notes thread itself.
+    """
+    print("\nthe debate on a proposal is a thread on the floor")
+    import discord
+
+    settings.configure(data)
+    threads, built = [], []
+
+    class Thread:
+        def __init__(self, tid, name):
+            self.id, self.name, self.sent, self.edits = tid, name, [], {}
+            self.mention = f"<#{tid}>"
+
+        async def send(self, content=None, view=None):
+            self.sent.append(content)
+            return types.SimpleNamespace(id=self.id + len(self.sent))
+
+        async def edit(self, **kwargs):
+            self.edits.update(kwargs)
+
+    class Message:
+        def __init__(self, mid):
+            self.id = mid
+
+        async def create_thread(self, name=None, **kwargs):
+            notes = Thread(200, name)
+            threads.append(notes)
+            return notes
+
+    class Floor:
+        id, mention, said = 500, "<#500>", 0
+
+        async def send(self, content=None, view=None):
+            Floor.said += 1
+            return Message(600 + Floor.said)
+
+        async def create_thread(self, name=None, type=None,
+                                auto_archive_duration=None, reason=None):
+            debate = Thread(300, name)
+            debate.type, debate.window = type, auto_archive_duration
+            threads.append(debate)
+            return debate
+
+    async def never(*args, **kwargs):
+        built.append(args[0] if args else "?")
+
+    floor = Floor()
+    guild = types.SimpleNamespace(
+        id=4242, name="The Hangout", members=[], roles=[], categories=[],
+        get_role=lambda _id: None, get_channel=lambda _id: None,
+        get_thread=lambda _id: next((t for t in threads if t.id == _id), None),
+        create_category=never, create_text_channel=never,
+        create_voice_channel=never,
+    )
+    author = types.SimpleNamespace(id=7, display_name="Hadi", mention="@Hadi")
+
+    keep_floor, keep_content = clerk.floor_for, clerk.ballot_content
+    clerk.floor_for = lambda _guild, _bill: floor
+    clerk.ballot_content = lambda _guild, _bill: "the ballot"
+    try:
+        bill = run(clerk.file_bill(
+            guild, author, "A books channel",
+            "There shall be a books channel.", "People here read."))
+    finally:
+        clerk.floor_for, clerk.ballot_content = keep_floor, keep_content
+
+    debate = next((t for t in threads if t.id == 300), None)
+    notes = next((t for t in threads if t.id == 200), None)
+    check("nothing is built in the sidebar: no category, no text channel, "
+          "no voice channel", built == [])
+    check("what it opens instead is one thread on the floor",
+          debate is not None and debate.name.startswith("💬 Proposal-"))
+    check("and the proposal remembers it as a thread",
+          bill.get("chamber_thread_id") == 300)
+    check("the three channel ids are gone rather than left behind empty",
+          not any(k in bill for k in ("chamber_category_id", "chamber_text_id",
+                                      "chamber_voice_id")))
+    check("it is a public thread, so it inherits the floor's own "
+          "permissions and nothing has to be told who may read it",
+          debate.type == discord.ChannelType.public_thread)
+    check("and it stays open for a week, longer than a vote runs",
+          debate.window == 10080)
+    check("the notes thread is locked the moment it exists, because notes "
+          "are filed through a modal and never typed",
+          notes is not None and notes.edits.get("locked") is True)
+    check("the ballot can find the debate to point at it",
+          clerk.chamber_of(guild, bill) is debate)
+
+    run(clerk.seal_chamber(guild, bill))
+    check("at close the debate is sealed where it stands, locked and "
+          "archived rather than moved anywhere",
+          debate.edits.get("locked") is True
+          and debate.edits.get("archived") is True)
+    check("and it says so, so nobody reads a stopped argument as a live one",
+          any("sealed" in (line or "") for line in debate.sent))
+
+    print("\nproposals filed before the chambers were threads still close")
+
+    class Room:
+        def __init__(self, rid, name):
+            self.id, self.name, self.edits, self.gone = rid, name, {}, False
+            self.channels = []
+
+        async def edit(self, **kwargs):
+            self.edits.update(kwargs)
+
+        async def delete(self, reason=None):
+            self.gone = True
+
+    text, voice = Room(11, "💬・Proposal-9"), Room(12, "🔊 Proposal-9")
+    category, archive = Room(13, "🗳️ Proposal-9"), Room(14, "🗄️ archive")
+    rooms = {11: text, 12: voice, 13: category}
+    old = types.SimpleNamespace(
+        id=4242, roles=[], categories=[archive], owner=object(),
+        default_role="@everyone", get_channel=lambda _id: rooms.get(_id),
+    )
+    run(clerk.seal_chamber(old, {
+        "no": 9, "title": "An older one", "chamber_text_id": 11,
+        "chamber_voice_id": 12, "chamber_category_id": 13,
+    }))
+    check("the old text channel is still locked and filed in the archive",
+          text.edits.get("category") is archive
+          and text.edits.get("name", "").startswith("archived_"))
+    check("the voice channel is still deleted, because voice is never "
+          "recorded", voice.gone)
+    check("and the empty category with it", category.gone)
+
+
 # ---------- the filing handlers, for real ----------
 
 def test_filing(clerk, data):
@@ -399,6 +542,18 @@ def test_filing(clerk, data):
           "123456789012345678" in filed.get("what", ""))
     check("their reasons are preserved verbatim",
           "in the group chat for a year" in filed.get("why", ""))
+    # Two doors, and they were read as one for a while: an invitation is
+    # somebody let into the server, never somebody handed a vote. The bill
+    # is what a voter reads before deciding, so it has to say which.
+    check("the bill says outright that it is not a seat in the cooperative",
+          "not a place in the cooperative" in filed.get("what", ""))
+    check("and the tool that files it says the same to the model",
+          "does not put anyone in the cooperative"
+          in toolbox.BILL_TOOLS["propose_member"]["description"])
+    check("and somebody outside is sent to the door that exists",
+          "/setup" in clerk.NOT_INSIDE)
+    check("not to a vote that ends in a link to a room they are standing in",
+          "already through it" in clerk.NOT_INSIDE)
 
     set_floor([])
     run(toolbox.dispatch(GUILD, CITIZEN, "propose_member",
@@ -559,6 +714,100 @@ def test_filing(clerk, data):
         clerk.in_cooperative = keep_keyed
 
 
+def test_health_room_is_private(clerk, data):
+    """The health room is administrators only, and the two ways that goes
+    wrong are both silent.
+
+    Locking the writer out is one: the room is denied to everybody, and the
+    bot is inside everybody unless he happens to be an administrator, so a
+    room he cannot post in looks exactly like a bot with nothing to say.
+    Arguing with an administrator is the other: this shuts a room somebody
+    may deliberately open again, so it has to be a thing that happens once
+    rather than a loop that keeps winning.
+    """
+    print("\nthe health room is the administrators'")
+    import bindings
+    import discord
+
+    settings.configure(data)
+
+    class Role:  # hashable, because it is an overwrite key
+        def __init__(self, rid, name):
+            self.id, self.name = rid, name
+
+    coop, members = Role(77, "Cooperative"), Role(78, "Member")
+    me = Role(99, "Eugene")
+    guild = types.SimpleNamespace(
+        id=5151, default_role="@everyone", me=me, roles=[coop, members],
+        get_role=lambda i: {77: coop, 78: members}.get(i),
+    )
+    bindings.bind_role(5151, "cooperative", 77)
+    bindings.bind_role(5151, "member", 78)
+
+    ow = clerk.admin_only_overwrites(guild)
+    check("everybody is denied, which is the whole of the rule",
+          ow["@everyone"].view_channel is False)
+    check("the cooperative and members are denied by name, not left to "
+          "inherit it",
+          ow[coop].view_channel is False and ow[members].view_channel is False)
+    check("and nobody at all is granted a view, because administrators do "
+          "not need one -- Discord walks them past every overwrite here",
+          [k for k, v in ow.items() if v.view_channel and k is not me] == [])
+    check("the bot is the one exception, and he is named: a room denied to "
+          "everybody is a room he cannot write the health card into",
+          ow[me].view_channel is True and ow[me].send_messages is True)
+
+    guild_no_bot = types.SimpleNamespace(
+        id=5151, default_role="@everyone", roles=[],
+        get_role=lambda i: None,
+    )
+    check("a guild that cannot say who he is still shuts the room rather "
+          "than failing open",
+          clerk.admin_only_overwrites(guild_no_bot)["@everyone"]
+          .view_channel is False)
+
+    print("\nand it is shut once, not every five minutes")
+    edits = []
+
+    async def edit(overwrites=None, reason=None):
+        edits.append(overwrites)
+
+    posted = []
+
+    async def send(text, *a, **k):
+        posted.append(text)
+
+    channel = types.SimpleNamespace(
+        id=4242, name="bot-health", mention="#bot-health", edit=edit,
+        send=send,
+    )
+    guild.get_channel = lambda i: channel if i == 4242 else None
+    bindings.bind_channel(5151, "health", 4242)
+
+    state_path = clerk.STATE
+    keep = clerk.load_json(state_path, {})
+    try:
+        clerk.save_json(state_path, {})
+        run(clerk.close_health_room(guild))
+        check("the first look shuts it", len(edits) == 1)
+        check("and it is shut to exactly what the plan says",
+              edits[0]["@everyone"].view_channel is False)
+        run(clerk.close_health_room(guild))
+        run(clerk.close_health_room(guild))
+        check("and no later look touches it again, so an administrator who "
+              "opens it back up has decided something rather than started an "
+              "argument with a loop",
+              len(edits) == 1)
+        check("which is remembered on disk, not in this process, because a "
+              "restart every deploy would make once mean daily",
+              clerk.load_json(state_path, {}).get("health_closed") is True)
+        check("and the room says so once, so whoever is left reading it "
+              "knows what changed rather than noticing people missing",
+              len(posted) == 1 and "administrators only" in posted[0].lower())
+    finally:
+        clerk.save_json(state_path, keep)
+
+
 def test_setup_rooms(clerk, data):
     """What `/setup` hands Discord when it makes a room, and which rooms
     it makes at all.
@@ -611,9 +860,13 @@ def test_setup_rooms(clerk, data):
     check("and every one of them is given a mapping, never None — which is "
           "what Discord refuses",
           all(isinstance(ow, Mapping) for _name, ow in seen))
-    check("a house with no cooperative role yet gets rooms open to "
+    check("a house with no cooperative role yet gets its rooms open to "
           "everybody, rather than no rooms at all",
-          all(ow == {} for _name, ow in seen))
+          all(ow == {} for name, ow in seen if name != "bot-health"))
+    check("except the health room, which is shut before there is anybody to "
+          "shut it to: it carries the spend and the errors, and waiting for "
+          "a cooperative to exist would open it to the whole server first",
+          dict(seen).get("bot-health") not in ({}, None))
 
     print("\na room already built is adopted, never duplicated")
     # The bug this is here for: `build_server.py` writes "🗳️・votes" and this
@@ -683,16 +936,32 @@ def test_setup_rooms(clerk, data):
     run(clerk.make_missing_rooms(guild_for(3232, coop=role)))
     shut = [name for name, ow in seen if ow]
     check("once there is one, the rooms that are its business are shut to "
-          "everyone else", sorted(shut) == ["propose", "votes"])
+          "everyone else",
+          sorted(shut) == ["bot-health", "propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
-          == ["bot-health", "decisions", "polls", "roles"])
+          == ["decisions", "polls", "roles"])
+    health_ow = dict(seen)["bot-health"]
+    check("the health room grants nobody anything: administrators read it "
+          "because Discord lets them past an overwrite, so there is no role "
+          "to hand out and none to forget to take back",
+          all(getattr(o, "view_channel", None) is False
+              for o in health_ow.values()))
+    check("and the cooperative is denied it by name rather than by omission, "
+          "so a server that opens a category up does not open this with it",
+          role in health_ow
+          and health_ow[role].view_channel is False)
     check("and the arrivals room is offered, never made: a bot that turns up "
           "and gives you a #welcome has decided something that was not its "
           "to decide",
           "welcome" in modules.wanted_rooms(3232)
           and "welcome" not in modules.wanted_rooms(3232, only_buildable=True))
-    check("the cooperative is named in the ones that are shut",
+    check("the cooperative is named in every room that is shut — let in on "
+          "its own, kept out of the health room, and never merely left out",
           all(role in ow for _n, ow in seen if ow))
+    check("and let in on exactly the two that are its business",
+          [n for n, ow in seen
+           if ow and getattr(ow.get(role), "view_channel", None) is True]
+          == ["propose", "votes"])
 
     print("\nwhat is built follows what is switched on")
     seen.clear()
@@ -3921,6 +4190,7 @@ def main():
         test_officer_gate(data)
         clerk = load_clerk(data)
         if clerk is None:
+            skip("the debate thread", "discord.py is not installed")
             skip("the filing handlers", "discord.py is not installed")
             skip("the chat room", "discord.py is not installed")
             skip("the colour wording", "discord.py is not installed")
@@ -3929,9 +4199,13 @@ def main():
             skip("the officer's guards", "discord.py is not installed")
             skip("the sign-off desk", "discord.py is not installed")
             skip("the rooms /setup makes", "discord.py is not installed")
+            skip("the health room is the administrators'",
+                 "discord.py is not installed")
         else:
+            test_debate_thread(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
+            test_health_room_is_private(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
             test_role_cap(clerk, data)

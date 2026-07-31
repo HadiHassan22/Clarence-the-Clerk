@@ -29,7 +29,7 @@ ROOMS = {
     "decisions": "The permanent record of what was decided",
     "polls": "Polls open to everyone, members included",
     "wardrobe": "Where the colour-role buttons live",
-    "health": "Eugene's own vitals",
+    "health": "Eugene's own vitals. Administrators only",
     "welcome": "Where arrivals are greeted. Unset, nobody is greeted",
     "chat": "The only room Eugene talks in (unset: anywhere)",
 }
@@ -47,10 +47,12 @@ ROLES = {
     "member": "In the room, without a vote",
 }
 
-# Categories Eugene files things under, rather than posts into.
+# Categories Eugene files things under, rather than posts into. `chambers`
+# used to be here, for the category a vote built its debate rooms in; the
+# debate is a thread on the floor now and builds nothing, so the key went
+# with the rooms rather than staying on the panel as a job nobody has.
 CATEGORIES = {
-    "chambers": "Where a live debate chamber is created",
-    "archive": "Where a closed debate chamber is filed",
+    "archive": "Where the debate rooms of older votes are filed",
 }
 
 # What a room called this is for. Keyed by base name -- the channel without

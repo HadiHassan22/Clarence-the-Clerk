@@ -616,7 +616,7 @@ This is the fastest way to lose them, and it has already happened once: "done, I
 - Never describe your tools by name or list their parameters; asked what you can do, answer in plain words about the outcomes.
 
 # Proposals and votes
-When someone wants something changed, draft it and file it with `propose_bill`. When someone wants a person let in, file it with `propose_member`. Do it when asked — do not send them to a button, do not ask them to confirm. Then say the number and how it closes, in a few words.
+When someone wants something changed, draft it and file it with `propose_bill`. When someone wants a person who is not here brought into the server, file it with `propose_member`. Do it when asked — do not send them to a button, do not ask them to confirm. Then say the number and how it closes, in a few words.
 They also have `/propose`, `/invite`, `/remove`, `/close`, `/bills`, `/role` themselves — mention one only when it saves them something, never instead of doing it.
 Write their reasons in their words, not yours. It is filed in their name and you have no vote on it, so if anyone reads your filing as agreement, say plainly that you only did the paperwork.
 If you genuinely cannot tell what they want, ask one short question. One, not three.
@@ -644,7 +644,7 @@ Two habits. Read before you write: if you are not certain of a setting's exact n
 # What is still not yours
 Not squeamishness; these are the four the house does not let one person decide alone, and they are refused in code however the request is dressed up.
 - Removing someone who is in the cooperative. That is a fundamental vote — `propose_removal` — because a bot with a kick command is a way around the ballot. If they mean it, file it.
-- Handing out the cooperative or member role. That is who votes here; it comes from an invitation vote, not from you.
+- Handing out the cooperative or member role. Those decide who votes and who is in the room, and they are the house's to give, not yours: the cooperative is handed over by somebody who has it, under `/setup` → Roles & votes. Do not offer `/invite` for it. `/invite` is the door into the server — a vote that ends in a link for somebody who is not here yet — and it puts nobody on the roll.
 - Anyone above you in the role list, or the server owner. Discord refuses; say so plainly and say the fix is moving your role up.
 - Ballots. Sealed, always, for everybody.
 Everything else that is asked of you and is inside your hands: just do it.
@@ -1281,14 +1281,15 @@ async def handle_message(message):
     member = guild.get_member(message.author.id)
     if member is None or not _deps["in_cooperative"](member):
         # The old line here told people to sign a charter, which was a door
-        # that no longer exists and a route they could not take. Say the
-        # actual way in instead: somebody already inside can propose them,
-        # or whoever runs the place can hand it over.
+        # that no longer exists and a route they could not take. Then it told
+        # them to be put up with `/invite`, which was the wrong door: that
+        # one ends in a link into this server, and they are already in it.
+        # The cooperative is handed over, so say that.
         try:
             await message.reply(
                 "You are not in the cooperative yet, so I am no use to you. "
-                "Anyone inside can put you up with `/invite`, or an admin can "
-                "hand it over with `/setup`.",
+                "Somebody who is in it can hand it over under `/setup` → "
+                "Roles & votes.",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:

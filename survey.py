@@ -216,8 +216,9 @@ def _cooperative(facts):
                  "One person is in the cooperative.",
                  "Every threshold is measured against the roster, so one "
                  "person is a unanimous parliament of one.",
-                 "`/setup` → Roles & votes hands it to a few more. After "
-                 "that `/invite` is the ordinary way in.")
+                 "`/setup` → Roles & votes hands it to a few more. That is "
+                 "the only way onto this roll — `/invite` is the server's "
+                 "door and puts nobody on it.")
     away = coop.get("away") or 0
     if size and away and away >= max(2, size // 2):
         yield _f("wrong", "coop_away",
@@ -295,7 +296,8 @@ def _clutter(facts):
     if len(archived) >= 8:
         yield _f("untidy", "archive_full",
                  f"{len(archived)} channels sit in the archive.",
-                 "Closed debate chambers accumulate; nothing clears them.",
+                 "Debate rooms from before they became threads; nothing "
+                 "clears them, and no more arrive.",
                  "Delete the oldest if the record in the decisions room is "
                  "the part you wanted to keep.",
                  items=archived[:10])
