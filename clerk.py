@@ -1307,7 +1307,39 @@ class RoleCreateModal(discord.ui.Modal, title="Create a role"):
             await interaction.user.add_roles(role, reason="Creator wears their creation")
             wearing = " You are wearing it."
         await interaction.response.send_message(f"Created {role.mention}.{wearing}", ephemeral=True)
+        await ensure_color_stack(interaction.guild)
         await update_wardrobe(interaction.guild)
+
+
+async def ensure_color_stack(guild):
+    """Custom colour roles outrank the booster role, so a member's chosen
+    colour wins over Nitro pink. Requires the Clerk role to sit above
+    Server Booster; the bot cannot promote itself there."""
+    registry = role_registry()
+    customs = sorted(
+        (r for r in guild.roles if str(r.id) in registry),
+        key=lambda r: r.position,
+    )
+    if not customs:
+        return
+    booster = guild.premium_subscriber_role
+    floor_pos = booster.position if booster else 0
+    if all(r.position > floor_pos for r in customs):
+        return
+    ceiling = guild.me.top_role.position
+    if ceiling <= floor_pos + len(customs):
+        return log.warning(
+            "cannot lift colour roles above boosters: drag the Clerk role "
+            "above Server Booster in Server Settings > Roles"
+        )
+    positions = {r: floor_pos + 1 + i for i, r in enumerate(customs)}
+    try:
+        await guild.edit_role_positions(
+            positions, reason="Colour roles outrank boosts"
+        )
+        log.info(f"lifted {len(customs)} colour roles above the booster role")
+    except discord.HTTPException as e:
+        log.warning(f"colour stack lift failed: {e!r}")
 
 
 def owns_role(user_id, role):
@@ -1566,6 +1598,139 @@ class RolesHomeView(discord.ui.View):
         )
 
 
+# ---------- colour-role actions the clerk may perform for a member ----------
+# These act AS the invoker, inside the invoker's own powers: identical
+# limits to the buttons in #roles. No privilege escalation is possible,
+# so they need no Act; every rule below is enforced here in Python, never
+# by the model.
+
+BANNED_ROLE_NAMES = {"@everyone", "@here"}
+
+
+def _protected_names():
+    return BANNED_ROLE_NAMES | {CITIZEN.lower(), NERD, brain.WHISPERER, "clerk"}
+
+
+def _find_custom_role(guild, needle):
+    registry = role_registry()
+    needle = (needle or "").strip().lower()
+    for role in guild.roles:
+        if str(role.id) in registry and role.name.lower() == needle:
+            return role
+    for role in guild.roles:
+        if str(role.id) in registry and needle and needle in role.name.lower():
+            return role
+    return None
+
+
+async def act_list_colors(guild, member, args):
+    registry = role_registry()
+    out = []
+    for r in custom_stack(guild):
+        creator = guild.get_member(registry[str(r.id)]["creator_id"])
+        out.append(
+            {
+                "name": r.name,
+                "colour": f"#{r.colour.value:06x}",
+                "wearers": len([m for m in r.members if not m.bot]),
+                "made_by": creator.display_name if creator else "someone departed",
+                "yours": creator.id == member.id if creator else False,
+            }
+        )
+    return json.dumps(out)
+
+
+async def act_create_color(guild, member, args):
+    name = (args.get("name") or "").strip()[:100]
+    if not name or name.lower() in _protected_names():
+        return "That name is not available."
+    if len(created_by(member.id)) >= ROLE_CREATE_MAX:
+        return f"{member.display_name} already made {ROLE_CREATE_MAX} roles; one must go first."
+    try:
+        colour = parse_colour(args.get("color", ""))
+    except ValueError:
+        return "That is not a hex colour."
+    role = await guild.create_role(
+        name=name, colour=colour, permissions=discord.Permissions.none(),
+        mentionable=False, hoist=False,
+        reason=f"Colour role for {member.display_name}, via the clerk",
+    )
+    registry = role_registry()
+    registry[str(role.id)] = {"creator_id": member.id}
+    save_json(ROLES, registry)
+    worn = ""
+    if len(worn_custom(member)) < ROLE_WEAR_MAX:
+        await member.add_roles(role, reason="Creator wears their creation")
+        worn = " and is wearing it"
+    await ensure_color_stack(guild)
+    await update_wardrobe(guild)
+    return f"Created {role.name} ({args.get('color')}) for {member.display_name}{worn}."
+
+
+async def act_edit_color(guild, member, args):
+    role = _find_custom_role(guild, args.get("role"))
+    if not owns_role(member.id, role):
+        return "No such colour role of theirs; only the creator may change one."
+    kwargs = {}
+    new_name = (args.get("name") or "").strip()
+    if new_name and new_name.lower() not in _protected_names():
+        kwargs["name"] = new_name[:100]
+    if args.get("color"):
+        try:
+            kwargs["colour"] = parse_colour(args["color"])
+        except ValueError:
+            return "That is not a hex colour."
+    if not kwargs:
+        return "Nothing to change."
+    await role.edit(**kwargs)
+    await update_wardrobe(guild)
+    return f"Updated {role.name}."
+
+
+async def act_delete_color(guild, member, args):
+    role = _find_custom_role(guild, args.get("role"))
+    if not owns_role(member.id, role):
+        return "No such colour role of theirs; only the creator may delete one."
+    registry = role_registry()
+    registry.pop(str(role.id), None)
+    save_json(ROLES, registry)
+    name = role.name
+    await role.delete(reason=f"Deleted by creator {member.display_name}, via the clerk")
+    await update_wardrobe(guild)
+    return f"Deleted {name}."
+
+
+async def act_wear_color(guild, member, args):
+    role = _find_custom_role(guild, args.get("role"))
+    if role is None:
+        return "No colour role by that name."
+    if role in member.roles:
+        return f"{member.display_name} is already wearing {role.name}."
+    if len(worn_custom(member)) >= ROLE_WEAR_MAX:
+        return f"{member.display_name} is wearing {ROLE_WEAR_MAX} already; one must come off."
+    await member.add_roles(role, reason="Worn via the clerk")
+    await update_wardrobe(guild)
+    return f"{member.display_name} is now wearing {role.name}."
+
+
+async def act_shed_color(guild, member, args):
+    role = _find_custom_role(guild, args.get("role"))
+    if role is None or role not in member.roles:
+        return "They are not wearing that one."
+    await member.remove_roles(role, reason="Shed via the clerk")
+    await update_wardrobe(guild)
+    return f"{member.display_name} took off {role.name}."
+
+
+COLOR_ACTIONS = {
+    "list_color_roles": act_list_colors,
+    "create_color_role": act_create_color,
+    "edit_color_role": act_edit_color,
+    "delete_color_role": act_delete_color,
+    "wear_color_role": act_wear_color,
+    "shed_color_role": act_shed_color,
+}
+
 # ---------- pinned buttons ----------
 
 async def ensure_button_message(channel, state_key, content, view, restamp=False):
@@ -1631,7 +1796,7 @@ async def start_web():
 @bot.event
 async def setup_hook():
     await start_web()
-    toolbox.configure(HERE, DATA)
+    toolbox.configure(HERE, DATA, COLOR_ACTIONS)
     brain.configure(bot, HERE, DATA, has_key, health_log, chunk_text)
     bot.add_view(SignView())
     bot.add_view(SubmitBillView())
@@ -1671,6 +1836,7 @@ async def ensure_furniture(guild, restamp=False):
         RolesHomeView(),
         restamp=restamp,
     )
+    await ensure_color_stack(guild)
     await update_wardrobe(guild)
     await update_health(guild)
     # the brain's gate role: exists so it can be granted, grants nothing

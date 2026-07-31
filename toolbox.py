@@ -21,15 +21,19 @@ log = logging.getLogger("toolbox")
 
 # configured by clerk.py at startup
 _paths = {}
+_actions = {}
 _log_lock = asyncio.Lock()
 
 PEOPLE_KINDS = ("invite", "kick")
 
 
-def configure(here: Path, data: Path):
+def configure(here: Path, data: Path, actions=None):
+    """actions: hand-written handlers injected by clerk.py, so the harness
+    never reaches into the bot's internals itself."""
     _paths["here"] = here
     _paths["data"] = data
     _paths["log"] = data / "executor_log.json"
+    _actions.update(actions or {})
 
 
 def _atomic(path, data):
@@ -332,6 +336,77 @@ REGISTRY = {
 }
 
 
+COLOUR_TOOLS = {
+    "list_color_roles": {
+        "description": "Every custom colour role: name, hex colour, how many "
+        "wear it, who made it, and whether the person asking made it.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "create_color_role": {
+        "description": "Create a colour role for the person you are talking "
+        "to. They may have five at most. Purely cosmetic: a name and a colour.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "color": {"type": "string", "description": "hex, e.g. #ff9d2e"},
+            },
+            "required": ["name", "color"],
+        },
+    },
+    "edit_color_role": {
+        "description": "Rename or recolour a role the person you are talking "
+        "to created. Only its creator may change it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "description": "the role's current name"},
+                "name": {"type": "string"},
+                "color": {"type": "string"},
+            },
+            "required": ["role"],
+        },
+    },
+    "delete_color_role": {
+        "description": "Delete a colour role the person you are talking to "
+        "created. Only its creator may delete it.",
+        "parameters": {
+            "type": "object",
+            "properties": {"role": {"type": "string"}},
+            "required": ["role"],
+        },
+    },
+    "wear_color_role": {
+        "description": "Put a colour role on the person you are talking to. "
+        "Anyone may wear anyone's colour; five at a time.",
+        "parameters": {
+            "type": "object",
+            "properties": {"role": {"type": "string"}},
+            "required": ["role"],
+        },
+    },
+    "shed_color_role": {
+        "description": "Take a colour role off the person you are talking to.",
+        "parameters": {
+            "type": "object",
+            "properties": {"role": {"type": "string"}},
+            "required": ["role"],
+        },
+    },
+}
+
+for _name, _spec in COLOUR_TOOLS.items():
+    REGISTRY[_name] = {
+        # "member" tier: acts as the invoker, strictly inside powers that
+        # member already holds through the buttons in #roles. No Act needed
+        # because no privilege is gained; the handler enforces every limit.
+        "tier": "member",
+        "description": _spec["description"],
+        "parameters": _spec["parameters"],
+        "handler": None,  # supplied by clerk.py through configure()
+    }
+
+
 def declarations():
     """Function declarations in the wire format the Gemini API expects."""
     return [
@@ -360,8 +435,14 @@ async def dispatch(guild, invoker, name, args):
         entry["detail"] = "unknown tool"
         await _audit(entry)
         return json.dumps({"error": f"'{name}' is not a registered tool"})
+    handler = spec["handler"] or _actions.get(name)
+    if handler is None:
+        entry["result"] = "error"
+        entry["detail"] = "handler unavailable"
+        await _audit(entry)
+        return json.dumps({"error": "that action is not wired up"})
     try:
-        result = await spec["handler"](guild, invoker, args or {})
+        result = await handler(guild, invoker, args or {})
         entry["result"] = "ok"
         await _audit(entry)
         log.info(f"tool {name} by {entry['user']}: ok")
