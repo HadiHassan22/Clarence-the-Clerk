@@ -413,6 +413,23 @@ BILL_TOOLS = {
             "required": ["title", "what", "why"],
         },
     },
+    "close_floor": {
+        "description": "Call time on a bill that is still open: count the "
+        "ballots, rule it passed or failed, and do everything a close "
+        "normally does. Use it when someone asks you to close a vote. It "
+        "returns the ruling, the tally, what you have already done, and "
+        "what is left for human hands: report all of it, and be clear that "
+        "an Act on the record is not the same as a thing that has happened. "
+        "You cannot see the tally until the floor shuts, so this is never a "
+        "way to end a vote at a convenient moment.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "bill_no": {"type": "integer", "description": "the bill's number; call list_bills if unsure"},
+            },
+            "required": ["bill_no"],
+        },
+    },
     "propose_member": {
         "description": "File a bill proposing that someone be invited, and "
         "open the ballot: yes, no, or abstain, anonymous, tally sealed at "

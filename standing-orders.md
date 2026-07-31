@@ -67,11 +67,20 @@ A bill remains on the floor for [48 hours]. When the floor closes:
 - More yes than no: the bill passes. Ties fail. Abstention is not a veto;
   it is a delegation to those who voted.
 
+Any citizen may ask the clerk to call time early, once the bill has run a
+quarter of its window. Nobody can see how a vote stands before it shuts,
+including the clerk, so calling time is always done blind and can never be
+timed to suit anyone. The clerk announces an early close on the floor and
+names who called it.
+
 ### 5. Passage
 
 A passed bill becomes an Act. The clerk numbers it, publishes it in
-#gazette, and executes it where execution is possible. The gazette is the
-permanent record; Acts are repealed or amended only by later Acts.
+#gazette, and executes it where execution is possible. At every close he
+also posts what he has done and what he has not, because an Act on the
+record is not the same as a thing that has happened, and most of them
+still want human hands. The gazette is the permanent record; Acts are
+repealed or amended only by later Acts.
 
 ### 6. These orders
 

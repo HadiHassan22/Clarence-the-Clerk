@@ -1104,6 +1104,85 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
 
 
+# Acts whose text sounds structural: the clerk cannot build these yet, so
+# the report says so plainly rather than letting a passed Act look done.
+STRUCTURAL_WORDS = (
+    "channel", "category", "role", "permission", "rename", "topic",
+    "voice", "vc", "archive", "server_config",
+)
+
+
+def closing_report(bill):
+    """What the clerk has already done, and what is left for human hands.
+    Deterministic on purpose: Clarence relays this, he does not invent it."""
+    passed = bill["status"] == "passed"
+    kind = bill.get("kind", "ordinary")
+    sealed = kind in ("invite", "kick")
+
+    done = [
+        "The floor is closed and the ballots are destroyed; only the tally survives.",
+        "The notes are sealed with the bill, and the chamber is archived.",
+    ]
+    outstanding = []
+
+    if passed:
+        if bill.get("act"):
+            done.append(f"Published as Act {bill['act']} in the gazette.")
+        if kind == "invite":
+            done.append("A single-use invite link has gone privately to the proposer.")
+            outstanding.append(
+                "The proposer sends the link on. It is good for one use and "
+                "seven days, and nobody else can issue another without a new bill."
+            )
+        elif kind == "kick":
+            done.append("The removal is carried out and the key withdrawn.")
+        else:
+            haystack = f"{bill.get('title', '')} {bill.get('what', '')}".lower()
+            if any(word in haystack for word in STRUCTURAL_WORDS):
+                outstanding.append(
+                    "This Act changes the shape of the server, which the clerk "
+                    "cannot do himself yet. Someone edits server_config.yaml, "
+                    "runs build_server.py, and deploys."
+                )
+            else:
+                outstanding.append(
+                    "Nothing in the server has changed by itself. This Act is "
+                    "on the record and wants human hands to carry out."
+                )
+    else:
+        outstanding.append(
+            "Nothing to do. Any citizen may file it again, reworded, whenever "
+            "they like."
+        )
+
+    return {
+        "bill": bill["no"],
+        "title": bill.get("title", ""),
+        "ruling": "passed" if passed else "failed",
+        "tally": "sealed" if sealed else bill.get("tally_line", ""),
+        "act": bill.get("act"),
+        "done": done,
+        "outstanding": outstanding,
+    }
+
+
+async def post_closing_report(guild, bill):
+    """The standing item after every close, so a passed Act never looks
+    finished when it is not."""
+    floor = find_channel(guild, "the-floor")
+    if floor is None:
+        return closing_report(bill)
+    report = closing_report(bill)
+    segments = ["### Done\n" + "\n".join(f"- {line}" for line in report["done"])]
+    if report["outstanding"]:
+        segments.append(
+            "### Still wanted\n"
+            + "\n".join(f"- {line}" for line in report["outstanding"])
+        )
+    await floor.send(view=Card(segments))
+    return report
+
+
 async def execute_invite(guild, bill):
     """A passed invite bill: single-use 7-day link, DMed to the proposer."""
     reception = reception_channel(guild)
@@ -1276,6 +1355,9 @@ async def check_floor():
         if datetime.fromisoformat(bill["ends_at"]) <= now_utc():
             try:
                 await close_bill(guild, bill)
+                # a choice ballot may have opened a runoff instead of closing
+                if bill.get("status") != "on_floor":
+                    await post_closing_report(guild, bill)
             except Exception as e:
                 log.error(f"failed to close bill {bill['no']}: {e!r}")
                 await health_log(
@@ -1882,9 +1964,68 @@ async def act_propose_member(guild, invoker, args):
                        "ballot": "yes, no, or abstain; anonymous; tally sealed at close"})
 
 
+# A bill can be closed before its window runs out, but not the instant it
+# is filed: an author could otherwise file, vote for themselves, close, and
+# have an Act before anyone saw the bill exist. The floor must have run a
+# quarter of its own window first, which scales with floor_hours and so
+# stays workable on a three-minute sandbox setting.
+EARLY_CLOSE_FRACTION = 0.25
+
+
+async def act_close_floor(guild, invoker, args):
+    try:
+        bill_no = int(args.get("bill_no"))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "which bill? give the number"})
+    bill = bill_by("no", bill_no)
+    if bill is None:
+        return json.dumps({"error": f"no Bill No. {bill_no} on record"})
+    if bill.get("status") != "on_floor":
+        return json.dumps(
+            {"error": f"Bill No. {bill_no} closed already",
+             "ruling": bill.get("status"), "act": bill.get("act")}
+        )
+
+    submitted = datetime.fromisoformat(bill["submitted_at"])
+    ends = datetime.fromisoformat(bill["ends_at"])
+    window = (ends - submitted).total_seconds()
+    elapsed = (now_utc() - submitted).total_seconds()
+    if window > 0 and elapsed < window * EARLY_CLOSE_FRACTION:
+        opens = submitted + timedelta(seconds=window * EARLY_CLOSE_FRACTION)
+        return json.dumps(
+            {"error": "too early: the house has not had a fair look at this "
+                      "one yet",
+             "closable_from": opens.isoformat()}
+        )
+
+    floor = find_channel(guild, "the-floor")
+    if floor:
+        await floor.send(
+            view=Card([
+                f"### Time called on Bill No. {bill['no']}\n"
+                f"{invoker.mention} has closed the floor early. Anyone who "
+                f"had not voted no longer can."
+            ])
+        )
+    await close_bill(guild, bill)
+    if bill.get("status") == "on_floor":
+        return json.dumps(
+            {"bill": bill["no"],
+             "ruling": "runoff",
+             "note": "No option had a majority, so the floor reopened with "
+                     "the leading options instead of closing.",
+             "closes_at": bill["ends_at"]}
+        )
+    report = await post_closing_report(guild, bill)
+    report["closed_early_by"] = invoker.display_name
+    log.info(f"bill no. {bill['no']} closed early by {invoker.display_name}")
+    return json.dumps(report)
+
+
 BILL_ACTIONS = {
     "propose_bill": act_propose_bill,
     "propose_member": act_propose_member,
+    "close_floor": act_close_floor,
 }
 
 # ---------- pinned buttons ----------

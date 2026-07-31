@@ -198,6 +198,114 @@ def test_filing(clerk, data):
                              {"title": "t", "what": "w", "why": "y"}))))
 
 
+def test_closing(clerk, data):
+    """The report is deterministic and clerk.py owns it, so it can be
+    checked without touching Discord."""
+    print("\nthe closing report tells the truth about what is left")
+
+    def report(**over):
+        bill = {"no": 4, "title": "t", "what": "w", "status": "passed",
+                "kind": "ordinary", "tally_line": "✅ 3 / ❌ 1", "act": 9}
+        bill.update(over)
+        return clerk.closing_report(bill)
+
+    passed = report()
+    check("a passed bill reports its ruling and Act",
+          passed["ruling"] == "passed" and passed["act"] == 9)
+    check("the tally is quoted for an ordinary bill",
+          passed["tally"] == "✅ 3 / ❌ 1")
+    check("it always says the ballots are gone",
+          any("destroyed" in line for line in passed["done"]))
+    check("an ordinary Act is never reported as finished",
+          any("human hands" in line for line in passed["outstanding"]))
+
+    structural = report(title="A books channel", what="There shall be a books channel.")
+    check("a structural Act names the real next steps",
+          any("server_config.yaml" in line and "build_server.py" in line
+              for line in structural["outstanding"]))
+
+    invite = report(kind="invite", title="Invitation of Sam")
+    check("an invite tally stays sealed in the report", invite["tally"] == "sealed")
+    check("the issued link is reported as done",
+          any("invite link" in line for line in invite["done"]))
+    check("and passing the link on is left to the proposer",
+          any("proposer sends the link" in line for line in invite["outstanding"]))
+
+    kick = report(kind="kick", title="Removal of X")
+    check("a removal tally stays sealed", kick["tally"] == "sealed")
+    check("a carried-out removal leaves nothing outstanding", not kick["outstanding"])
+
+    failed = report(status="failed", act=None)
+    check("a failed bill rules failed", failed["ruling"] == "failed")
+    check("a failed bill leaves nothing to do but refile",
+          any("file it again" in line for line in failed["outstanding"]))
+    check("a failed bill publishes no Act",
+          not any("gazette" in line for line in failed["done"]))
+
+    print("\ncalling time early")
+    now = clerk.now_utc()
+
+    def on_floor(hours_ago, window_hours=48):
+        submitted = now - clerk.timedelta(hours=hours_ago)
+        return {"no": 5, "title": "t", "what": "w", "status": "on_floor",
+                "kind": "ordinary", "ballots": {}, "notes": {},
+                "submitted_at": submitted.isoformat(),
+                "ends_at": (submitted + clerk.timedelta(hours=window_hours)).isoformat()}
+
+    live = {}
+    clerk.bill_by = lambda field, value: live.get(value)
+    closed = []
+
+    async def fake_close(guild, bill):
+        bill["status"] = "passed"
+        bill["tally_line"] = "✅ 1 / ❌ 0"
+        bill["act"] = 10
+        closed.append(bill["no"])
+
+    clerk.close_bill = fake_close
+    clerk.post_closing_report = lambda guild, bill: _async(clerk.closing_report(bill))
+    clerk.find_channel = lambda guild, needle: None
+    toolbox.configure(HERE, data, clerk.BILL_ACTIONS)
+
+    live[5] = on_floor(hours_ago=1)
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+    check(f"one hour into a 48 hour floor is refused: {out.get('error', '')[:40]}",
+          "error" in out and not closed)
+    check("and it says when calling time becomes possible",
+          out.get("closable_from", "").startswith("20"))
+
+    live[5] = on_floor(hours_ago=13)
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+    check("past a quarter of the window it closes", closed == [5])
+    check("and returns the ruling", out.get("ruling") == "passed")
+    check("with the report attached",
+          out.get("outstanding") and out.get("done"))
+    check("naming who called time", out.get("closed_early_by") == "Hadi")
+
+    live[5]["status"] = "passed"
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
+    check("a bill that already closed cannot be closed again", "error" in out)
+
+    check("an unknown bill number is refused", "error" in json.loads(
+        run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 999}))))
+    check("a missing bill number is refused", "error" in json.loads(
+        run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {}))))
+    check("a non-numeric bill number is refused", "error" in json.loads(
+        run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": "the books one"}))))
+
+    # a three-minute sandbox floor must still be closable
+    live[6] = dict(on_floor(hours_ago=0.02, window_hours=0.05), no=6)
+    clerk.bill_by = lambda field, value: live.get(value)
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 6})))
+    check("the guard scales to a three-minute test floor", "error" not in out)
+
+
+def _async(value):
+    async def wrapper():
+        return value
+    return wrapper()
+
+
 def main():
     data = Path(tempfile.mkdtemp(prefix="clerk-tests-"))
     try:
@@ -208,6 +316,7 @@ def main():
             skip("the filing handlers", "discord.py is not installed")
         else:
             test_filing(clerk, data)
+            test_closing(clerk, data)
         test_firewall(data)
         if clerk is not None:
             test_audit(data)
