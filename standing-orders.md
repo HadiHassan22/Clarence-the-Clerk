@@ -51,10 +51,13 @@ of every note is preserved with the bill.
 
 ### 3. The ballot
 
-Voting is by button on the bill itself: one tap, yes or no. Ballots are
-anonymous: the clerk records votes only to count them and to permit
-changes, and never reveals to anyone who voted which way. Anyone may
-change or retract their vote while the floor is open.
+Voting is by button on the bill itself: one tap, yes or no. Bills that
+admit a person carry a third button, abstain, because "I do not know them
+well enough to say" is an honest answer and deserves recording rather
+than silence. It goes to neither side. Ballots are anonymous: the clerk
+records votes only to count them and to permit changes, and never reveals
+to anyone who voted which way. Anyone may change or retract their vote
+while the floor is open.
 
 ### 4. Counting
 

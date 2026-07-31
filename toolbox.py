@@ -395,11 +395,48 @@ COLOUR_TOOLS = {
     },
 }
 
-for _name, _spec in COLOUR_TOOLS.items():
+BILL_TOOLS = {
+    "propose_bill": {
+        "description": "File a bill on the floor for the person you are "
+        "talking to, in their name. Use it the moment they say they want "
+        "something changed: draft the what and the why from what they said, "
+        "file it, and tell them the number. Do not ask them to confirm and "
+        "do not send them to the button. Filing decides nothing; the house "
+        "votes and you have no say in it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "a short name for the law"},
+                "what": {"type": "string", "description": "the operative text: what becomes law if it passes"},
+                "why": {"type": "string", "description": "their reasons, in their voice. A bill without reasons is not a bill"},
+            },
+            "required": ["title", "what", "why"],
+        },
+    },
+    "propose_member": {
+        "description": "File a bill proposing that someone be invited, and "
+        "open the ballot: yes, no, or abstain, anonymous, tally sealed at "
+        "close so nobody newly admitted learns their margin. Use it as soon "
+        "as someone names a person they want in. If it passes you send a "
+        "single-use invite link privately to whoever proposed them.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "who is being proposed, as the house would know them"},
+                "discord_id": {"type": "string", "description": "their Discord ID, digits only, if the proposer knows it"},
+                "why": {"type": "string", "description": "why the house should let them in, in the proposer's voice"},
+            },
+            "required": ["name", "why"],
+        },
+    },
+}
+
+for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS}.items():
     REGISTRY[_name] = {
         # "member" tier: acts as the invoker, strictly inside powers that
-        # member already holds through the buttons in #roles. No Act needed
-        # because no privilege is gained; the handler enforces every limit.
+        # member already holds through the buttons in #roles and
+        # #submit-a-bill. No Act needed because no privilege is gained;
+        # the handler enforces every limit.
         "tier": "member",
         "description": _spec["description"],
         "parameters": _spec["parameters"],

@@ -473,46 +473,57 @@ class NotesView(discord.ui.View):
 
 # ---------- ballots ----------
 
+async def cast_ballot(interaction, choice):
+    """Record one ballot, or retract it when choice is None. Shared by
+    every ballot shape so they cannot drift apart on who may vote."""
+    if not has_key(interaction.user):
+        return await interaction.response.send_message(
+            "A key is required to vote. Sign the charter at the door first.",
+            ephemeral=True,
+        )
+    bill = bill_by("ballot_message_id", interaction.message.id)
+    if bill is None or bill["status"] != "on_floor":
+        return await interaction.response.send_message(
+            "This floor has closed.", ephemeral=True
+        )
+    if bill.get("kind") == "kick" and interaction.user.id == bill.get("target_id"):
+        return await interaction.response.send_message(
+            "You are the question, not the jury. The chamber is yours "
+            "for the full floor; the ballot is not.",
+            ephemeral=True,
+        )
+    ballots = bill.setdefault("ballots", {})
+    uid = str(interaction.user.id)
+    if choice is None:
+        if uid in ballots:
+            del ballots[uid]
+            await update_bill(bill)
+            return await interaction.response.send_message(
+                "Ballot retracted.", ephemeral=True
+            )
+        return await interaction.response.send_message(
+            "You have no ballot to retract.", ephemeral=True
+        )
+    ballots[uid] = choice
+    await update_bill(bill)
+    note = (
+        "Counted as present and undecided; it goes to neither side."
+        if choice == "abstain"
+        else "You can change it until the floor closes."
+    )
+    await interaction.response.send_message(
+        f"Your ballot: **{choice}**. {note} "
+        f"No member, including the author, will ever see how you voted.",
+        ephemeral=True,
+    )
+
+
 class BallotView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     async def _vote(self, interaction, choice):
-        if not has_key(interaction.user):
-            return await interaction.response.send_message(
-                "A key is required to vote. Sign the charter at the door first.",
-                ephemeral=True,
-            )
-        bill = bill_by("ballot_message_id", interaction.message.id)
-        if bill is None or bill["status"] != "on_floor":
-            return await interaction.response.send_message(
-                "This floor has closed.", ephemeral=True
-            )
-        if bill.get("kind") == "kick" and interaction.user.id == bill.get("target_id"):
-            return await interaction.response.send_message(
-                "You are the question, not the jury. The chamber is yours "
-                "for the full floor; the ballot is not.",
-                ephemeral=True,
-            )
-        ballots = bill.setdefault("ballots", {})
-        uid = str(interaction.user.id)
-        if choice is None:
-            if uid in ballots:
-                del ballots[uid]
-                await update_bill(bill)
-                return await interaction.response.send_message(
-                    "Ballot retracted.", ephemeral=True
-                )
-            return await interaction.response.send_message(
-                "You have no ballot to retract.", ephemeral=True
-            )
-        ballots[uid] = choice
-        await update_bill(bill)
-        await interaction.response.send_message(
-            f"Your ballot: **{choice}**. You can change it until the floor closes. "
-            f"No member, including the author, will ever see how you voted.",
-            ephemeral=True,
-        )
+        await cast_ballot(interaction, choice)
 
     @discord.ui.button(
         label="Yes", emoji="✅",
@@ -533,6 +544,45 @@ class BallotView(discord.ui.View):
     )
     async def retract(self, interaction, button):
         await self._vote(interaction, None)
+
+
+class MemberBallotView(discord.ui.View):
+    """The ballot for admitting someone. Three choices instead of two,
+    because in a house this small "I do not know them well enough to say"
+    is an honest answer, and the two-button ballot made it look like
+    absence. It goes to neither side: passage is still yes against no,
+    which is what the standing orders say."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Yes", emoji="✅",
+        style=discord.ButtonStyle.success, custom_id="clerk:member_yes",
+    )
+    async def yes(self, interaction, button):
+        await cast_ballot(interaction, "yes")
+
+    @discord.ui.button(
+        label="No", emoji="❌",
+        style=discord.ButtonStyle.danger, custom_id="clerk:member_no",
+    )
+    async def no(self, interaction, button):
+        await cast_ballot(interaction, "no")
+
+    @discord.ui.button(
+        label="Abstain", emoji="🤍",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:member_abstain",
+    )
+    async def abstain(self, interaction, button):
+        await cast_ballot(interaction, "abstain")
+
+    @discord.ui.button(
+        label="Retract", style=discord.ButtonStyle.secondary,
+        custom_id="clerk:member_retract",
+    )
+    async def retract(self, interaction, button):
+        await cast_ballot(interaction, None)
 
 
 MULTI_MAX = 10
@@ -622,24 +672,23 @@ def multi_ballot_content(bill, ends_at, chamber_mention):
     )
 
 
-async def file_bill(interaction, title, what, why, kind="ordinary",
+async def file_bill(guild, author, title, what, why, kind="ordinary",
                     options=None, target_id=None, floor_hours=None,
                     eligible_ids=None):
-    """Shared filing pipeline for all bill kinds. Assumes the interaction
-    was already deferred."""
-    guild = interaction.guild
+    """Shared filing pipeline for all bill kinds. Returns the filed bill,
+    or None if the floor is missing. Callers own their acknowledgement,
+    since Clarence also files on request in conversation, where there is
+    no interaction to reply to."""
     floor = find_channel(guild, "the-floor")
     if floor is None:
-        return await interaction.followup.send(
-            "The floor is missing. Run build_server.py first.", ephemeral=True
-        )
+        return None
     number = await next_bill_number()
     ends_at = now_utc() + timedelta(hours=floor_hours or FLOOR_HOURS)
 
     category, text, voice = await open_chamber(guild, number, title)
 
     stamp = await floor.send(
-        view=Card([f"## Bill No. {number}: {title}\nSubmitted by {interaction.user.mention}"])
+        view=Card([f"## Bill No. {number}: {title}\nSubmitted by {author.mention}"])
     )
     notes_thread = await stamp.create_thread(
         name=(bill_name(number, title) + ": notes")[:100]
@@ -656,16 +705,22 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
             view=MultiBallotView(options),
         )
     else:
-        if kind in ("invite", "kick"):
+        if kind == "invite":
+            view = MemberBallotView()
+            tail = ("Yes, no, or abstain. The tally will be sealed at close; "
+                    "individual votes are never seen by anyone.")
+        elif kind == "kick":
+            view = BallotView()
             tail = ("The tally will be sealed at close; individual votes "
                     "are never seen by anyone.")
         else:
+            view = BallotView()
             tail = "Results appear at close; individual votes never do."
         ballot = await floor.send(
             f"**Ballot** for Bill No. {number}. Cast, change, or retract "
             f"until the floor closes <t:{int(ends_at.timestamp())}:R>. "
             f"Debate in {text.mention}. {tail}",
-            view=BallotView(),
+            view=view,
         )
 
     bills = load_json(BILLS, [])
@@ -676,8 +731,8 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
             "kind": kind,
             "target_id": target_id,
             "eligible_ids": eligible_ids,
-            "author_id": interaction.user.id,
-            "author": interaction.user.display_name,
+            "author_id": author.id,
+            "author": author.display_name,
             "what": what,
             "why": why,
             "message_id": stamp.id,
@@ -697,12 +752,25 @@ async def file_bill(interaction, title, what, why, kind="ordinary",
         }
     )
     save_json(BILLS, bills)
-    log.info(f"bill filed: no. {number} ({title!r}, {kind}) by {interaction.user.display_name}")
+    log.info(f"bill filed: no. {number} ({title!r}, {kind}) by {author.display_name}")
+    return bills[-1]
+
+
+async def file_from_modal(interaction, **kwargs):
+    """Filing from a button, with the ephemeral receipt that expects."""
+    bill = await file_bill(interaction.guild, interaction.user, **kwargs)
+    if bill is None:
+        return await interaction.followup.send(
+            "The floor is missing. Run build_server.py first.", ephemeral=True
+        )
+    floor = find_channel(interaction.guild, "the-floor")
+    chamber = interaction.guild.get_channel(bill["chamber_text_id"])
     await interaction.followup.send(
-        f"Filed. Bill No. {number} is on the floor: {floor.mention}, "
-        f"debate in {text.mention}.",
+        f"Filed. Bill No. {bill['no']} is on the floor: {floor.mention}, "
+        f"debate in {chamber.mention}.",
         ephemeral=True,
     )
+    return bill
 
 
 # ---------- submitting bills ----------
@@ -747,7 +815,7 @@ class BillModal(discord.ui.Modal, title="Submit a bill"):
                 f"(one per line), or none at all for a yes/no ballot.",
                 ephemeral=True,
             )
-        await file_bill(
+        await file_from_modal(
             interaction,
             title=str(self.bill_title),
             what=str(self.what),
@@ -785,7 +853,7 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
             f"passes, the clerk issues a single-use invite link, valid seven "
             f"days, delivered privately to the proposer."
         )
-        await file_bill(
+        await file_from_modal(
             interaction,
             title=f"Invitation of {name}"[:100],
             what=what,
@@ -820,7 +888,7 @@ class KickModal(discord.ui.Modal, title="Propose a removal"):
             m.id for m in self.target.guild.members
             if has_key(m) and not m.bot and m.id != self.target.id
         ]
-        await file_bill(
+        await file_from_modal(
             interaction,
             title=f"Removal of {self.target.display_name}"[:100],
             what=what,
@@ -1093,7 +1161,13 @@ async def close_bill(guild, bill):
     ballots = bill.get("ballots", {})
     yes = sum(1 for v in ballots.values() if v == "yes")
     no = sum(1 for v in ballots.values() if v == "no")
+    abstain = sum(1 for v in ballots.values() if v == "abstain")
     bill["tally"] = {"yes": yes, "no": no}
+    if bill.get("kind") == "invite":
+        # recorded, and deliberately not counted: the standing orders
+        # decide passage on yes against no, and call abstention a
+        # delegation rather than a veto
+        bill["tally"]["abstain"] = abstain
 
     if bill.get("kind") == "kick":
         # eligibility is snapshotted at filing and intersected with current
@@ -1114,7 +1188,10 @@ async def close_bill(guild, bill):
         return
 
     passed = yes > no
-    await finalize_bill(guild, bill, passed, f"✅ {yes} / ❌ {no}")
+    line = f"✅ {yes} / ❌ {no}"
+    if bill.get("kind") == "invite":
+        line += f" / 🤍 {abstain}"
+    await finalize_bill(guild, bill, passed, line)
     if passed and bill.get("kind") == "invite":
         await execute_invite(guild, bill)
 
@@ -1731,6 +1808,85 @@ COLOR_ACTIONS = {
     "shed_color_role": act_shed_color,
 }
 
+
+# ---------- filing bills in conversation ----------
+# Same powers the buttons in #submit-a-bill already give every citizen,
+# reached by asking instead of clicking. The bill is filed in the asker's
+# name, because the standing orders say laws have public authors, and
+# Clarence has no vote on what he files.
+
+MAX_OPEN_BILLS = 5        # the floor is shared; nobody can bury it
+MAX_OPEN_PER_CITIZEN = 2
+
+
+def _floor_full(author):
+    """A refusal line, or None."""
+    open_bills = [b for b in load_json(BILLS, []) if b.get("status") == "on_floor"]
+    if len(open_bills) >= MAX_OPEN_BILLS:
+        return (f"The floor is full: {len(open_bills)} bills are already open. "
+                f"One has to close before another can be filed.")
+    mine = [b for b in open_bills if b.get("author_id") == author.id]
+    if len(mine) >= MAX_OPEN_PER_CITIZEN:
+        return (f"You already have {len(mine)} bills on the floor. The house "
+                f"finishes with those first.")
+    return None
+
+
+def _clean(value, limit):
+    return str(value or "").strip()[:limit]
+
+
+async def act_propose_bill(guild, invoker, args):
+    title = _clean(args.get("title"), 100)
+    what = _clean(args.get("what"), 4000)
+    why = _clean(args.get("why"), 4000)
+    if not (title and what and why):
+        return json.dumps({"error": "a bill needs a title, a what, and a why"})
+    denial = _floor_full(invoker)
+    if denial:
+        return json.dumps({"error": denial})
+    bill = await file_bill(guild, invoker, title=title, what=what, why=why)
+    if bill is None:
+        return json.dumps({"error": "the floor channel is missing"})
+    return json.dumps({"filed": bill["no"], "title": title,
+                       "author": bill["author"], "closes_at": bill["ends_at"]})
+
+
+async def act_propose_member(guild, invoker, args):
+    name = _clean(args.get("name"), 80)
+    discord_id = _clean(args.get("discord_id"), 25)
+    why = _clean(args.get("why"), 4000)
+    if not name:
+        return json.dumps({"error": "name the person being proposed"})
+    if not why:
+        return json.dumps({"error": "the house deserves reasons, stated properly"})
+    if discord_id and not discord_id.isdigit():
+        return json.dumps({"error": "a Discord ID is digits only, or leave it out"})
+    denial = _floor_full(invoker)
+    if denial:
+        return json.dumps({"error": denial})
+    tail = f" (Discord ID {discord_id})" if discord_id else ""
+    what = (
+        f"{name}{tail} shall be invited to {guild.name}. If this bill passes, "
+        f"the clerk issues a single-use invite link, valid seven days, "
+        f"delivered privately to the proposer."
+    )
+    bill = await file_bill(
+        guild, invoker, title=f"Invitation of {name}"[:100],
+        what=what, why=why, kind="invite",
+    )
+    if bill is None:
+        return json.dumps({"error": "the floor channel is missing"})
+    return json.dumps({"filed": bill["no"], "proposed": name,
+                       "author": bill["author"], "closes_at": bill["ends_at"],
+                       "ballot": "yes, no, or abstain; anonymous; tally sealed at close"})
+
+
+BILL_ACTIONS = {
+    "propose_bill": act_propose_bill,
+    "propose_member": act_propose_member,
+}
+
 # ---------- pinned buttons ----------
 
 async def ensure_button_message(channel, state_key, content, view, restamp=False):
@@ -1796,11 +1952,12 @@ async def start_web():
 @bot.event
 async def setup_hook():
     await start_web()
-    toolbox.configure(HERE, DATA, COLOR_ACTIONS)
+    toolbox.configure(HERE, DATA, {**COLOR_ACTIONS, **BILL_ACTIONS})
     brain.configure(bot, HERE, DATA, has_key, health_log, chunk_text)
     bot.add_view(SignView())
     bot.add_view(SubmitBillView())
     bot.add_view(BallotView())
+    bot.add_view(MemberBallotView())
     bot.add_view(NotesView())
     bot.add_view(RolesHomeView())
     guild = discord.Object(id=GUILD_ID)
@@ -1904,5 +2061,6 @@ async def on_member_join(member: discord.Member):
         )
 
 
-logging.getLogger("discord").setLevel(logging.WARNING)
-bot.run(TOKEN, log_level=logging.INFO)
+if __name__ == "__main__":
+    logging.getLogger("discord").setLevel(logging.WARNING)
+    bot.run(TOKEN, log_level=logging.INFO)
