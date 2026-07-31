@@ -1766,8 +1766,37 @@ class RolesHomeView(discord.ui.View):
 BANNED_ROLE_NAMES = {"@everyone", "@here"}
 
 
+def _ok(msg):
+    return f"OK: {msg}"
+
+
+def _fail(msg):
+    return f"FAILED: {msg}"
+
+
 def _protected_names():
     return BANNED_ROLE_NAMES | {CITIZEN.lower(), NERD, brain.WHISPERER, "clerk"}
+
+
+def _find_member(guild, needle, fallback):
+    """Resolve a member by mention, id, display name, or username. Falls
+    back to the person speaking when nothing is named."""
+    needle = (needle or "").strip()
+    if not needle:
+        return fallback
+    digits = "".join(ch for ch in needle if ch.isdigit())
+    if digits and len(digits) >= 17:
+        member = guild.get_member(int(digits))
+        if member:
+            return member
+    low = needle.lower().lstrip("@")
+    for m in guild.members:
+        if m.display_name.lower() == low or m.name.lower() == low:
+            return m
+    for m in guild.members:
+        if low and (low in m.display_name.lower() or low in m.name.lower()):
+            return m
+    return None
 
 
 def _find_custom_role(guild, needle):
@@ -1800,15 +1829,18 @@ async def act_list_colors(guild, member, args):
 
 
 async def act_create_color(guild, member, args):
+    wearer = _find_member(guild, args.get("member"), member)
+    if wearer is None:
+        return _fail(f"No member here matching {args.get('member')!r}.")
     name = (args.get("name") or "").strip()[:100]
     if not name or name.lower() in _protected_names():
-        return "That name is not available."
+        return _fail("That name is not available.")
     if len(created_by(member.id)) >= ROLE_CREATE_MAX:
-        return f"{member.display_name} already made {ROLE_CREATE_MAX} roles; one must go first."
+        return _fail(f"{member.display_name} already made {ROLE_CREATE_MAX} roles; one must go first.")
     try:
         colour = parse_colour(args.get("color", ""))
     except ValueError:
-        return "That is not a hex colour."
+        return _fail("That is not a hex colour.")
     role = await guild.create_role(
         name=name, colour=colour, permissions=discord.Permissions.none(),
         mentionable=False, hoist=False,
@@ -1818,18 +1850,18 @@ async def act_create_color(guild, member, args):
     registry[str(role.id)] = {"creator_id": member.id}
     save_json(ROLES, registry)
     worn = ""
-    if len(worn_custom(member)) < ROLE_WEAR_MAX:
-        await member.add_roles(role, reason="Creator wears their creation")
-        worn = " and is wearing it"
+    if len(worn_custom(wearer)) < ROLE_WEAR_MAX:
+        await wearer.add_roles(role, reason=f"Created via the clerk by {member.display_name}")
+        worn = f" and put it on {wearer.display_name}"
     await ensure_color_stack(guild)
     await update_wardrobe(guild)
-    return f"Created {role.name} ({args.get('color')}) for {member.display_name}{worn}."
+    return _ok(f"Created {role.name} ({args.get('color')}){worn}.")
 
 
 async def act_edit_color(guild, member, args):
     role = _find_custom_role(guild, args.get("role"))
     if not owns_role(member.id, role):
-        return "No such colour role of theirs; only the creator may change one."
+        return _fail("No such colour role of theirs; only the creator may change one.")
     kwargs = {}
     new_name = (args.get("name") or "").strip()
     if new_name and new_name.lower() not in _protected_names():
@@ -1838,47 +1870,61 @@ async def act_edit_color(guild, member, args):
         try:
             kwargs["colour"] = parse_colour(args["color"])
         except ValueError:
-            return "That is not a hex colour."
+            return _fail("That is not a hex colour.")
     if not kwargs:
-        return "Nothing to change."
+        return _fail("Nothing to change.")
     await role.edit(**kwargs)
     await update_wardrobe(guild)
-    return f"Updated {role.name}."
+    return _ok(f"Updated {role.name}.")
 
 
 async def act_delete_color(guild, member, args):
     role = _find_custom_role(guild, args.get("role"))
     if not owns_role(member.id, role):
-        return "No such colour role of theirs; only the creator may delete one."
+        return _fail("No such colour role of theirs; only the creator may delete one.")
     registry = role_registry()
     registry.pop(str(role.id), None)
     save_json(ROLES, registry)
     name = role.name
     await role.delete(reason=f"Deleted by creator {member.display_name}, via the clerk")
     await update_wardrobe(guild)
-    return f"Deleted {name}."
+    return _ok(f"Deleted {name}.")
 
 
 async def act_wear_color(guild, member, args):
+    """Colours are cosmetic and reversible, so anyone may put one on
+    anyone. The wearer can always take it off again."""
+    target = _find_member(guild, args.get("member"), member)
+    if target is None:
+        return _fail(f"No member here matching {args.get('member')!r}.")
     role = _find_custom_role(guild, args.get("role"))
     if role is None:
-        return "No colour role by that name."
-    if role in member.roles:
-        return f"{member.display_name} is already wearing {role.name}."
-    if len(worn_custom(member)) >= ROLE_WEAR_MAX:
-        return f"{member.display_name} is wearing {ROLE_WEAR_MAX} already; one must come off."
-    await member.add_roles(role, reason="Worn via the clerk")
+        return _fail("No colour role by that name.")
+    if role in target.roles:
+        return _fail(f"{target.display_name} is already wearing {role.name}.")
+    if len(worn_custom(target)) >= ROLE_WEAR_MAX:
+        return _fail(f"{target.display_name} is wearing {ROLE_WEAR_MAX} already; one must come off.")
+    await target.add_roles(role, reason=f"Put on via the clerk by {member.display_name}")
     await update_wardrobe(guild)
-    return f"{member.display_name} is now wearing {role.name}."
+    return _ok(f"{target.display_name} is now wearing {role.name}.")
 
 
 async def act_shed_color(guild, member, args):
+    """You may take a colour off yourself, or off anyone if you made it."""
+    target = _find_member(guild, args.get("member"), member)
+    if target is None:
+        return _fail(f"No member here matching {args.get('member')!r}.")
     role = _find_custom_role(guild, args.get("role"))
-    if role is None or role not in member.roles:
-        return "They are not wearing that one."
-    await member.remove_roles(role, reason="Shed via the clerk")
+    if role is None or role not in target.roles:
+        return _fail(f"{target.display_name} is not wearing that one.")
+    if target.id != member.id and not owns_role(member.id, role):
+        return _fail(
+            f"Only {target.display_name} can take that off, or whoever "
+            f"made the role."
+        )
+    await target.remove_roles(role, reason=f"Taken off via the clerk by {member.display_name}")
     await update_wardrobe(guild)
-    return f"{member.display_name} took off {role.name}."
+    return _ok(f"{target.display_name} took off {role.name}.")
 
 
 COLOR_ACTIONS = {
