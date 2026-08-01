@@ -11,12 +11,9 @@ frictionless and free of judgement -- a quiet fortnight sets it on its own, and
 nobody is ever expected to explain themselves.
 
 That rule is the cooperative's, and it only works because the cooperative is a
-few people who all signed up to be counted. A poll open to the whole server is
-counted against the whole server, where silence is the ordinary state of most
-of the room; treating it as a no there would put every public poll out of reach
-on the day it was filed. So the open kind is decided by a majority of whoever
-voted, and `quorum` is what stops that being three people. Both rules live
-here, and which one applies is decided by who the ballot let in.
+few people who all signed up to be counted -- which is why the cooperative is
+the only electorate there is: a roll somebody joined on purpose is one where
+saying nothing is a position, and a whole server is not.
 
 Every number either rule uses arrives as an argument. The house sets them; the
 defaults below are only what he came with.
@@ -140,15 +137,3 @@ def required(size, tier="normal", fundamental_share=None):
     return min(size, max(math.ceil(size * share), majority))
 
 
-def quorum(size, share):
-    """How many have to vote for a poll of the open kind to mean anything.
-
-    Passage there is a majority of whoever turned up, so the quorum is the
-    whole of the protection against three people deciding something for
-    sixty. Never more than the roster holds, and never zero while there is
-    anybody at all to ask -- a poll that carries on nobody's vote is not a
-    poll.
-    """
-    if size <= 0:
-        return 0
-    return max(1, min(size, math.ceil(size * share)))

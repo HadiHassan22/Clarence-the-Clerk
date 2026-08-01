@@ -255,7 +255,6 @@ VOTING_RULES = {
     "floor_hours":        (48.0, 0.01, 24 * 30.0, float),
     "removal_hours":      (72.0, 0.01, 24 * 30.0, float),
     "fundamental_share":  (0.75, 0.5, 1.0, float),
-    "public_quorum_share": (0.2, 0.01, 1.0, float),
     "kick_min_yes":       (3, 1, 100, int),
     "away_days":          (14, 1, 365, int),
 }
@@ -268,7 +267,6 @@ VOTING_HELP = {
     "floor_hours": "how long an ordinary vote stays open if nothing settles it",
     "removal_hours": "the same, for a removal",
     "fundamental_share": "the share of the roster a removal or a rule change needs",
-    "public_quorum_share": "the share of the server that must vote for an open poll to count",
     "kick_min_yes": "the fewest yes votes a removal can ever pass on",
     "away_days": "a quiet spell this long takes you out of the count",
 }

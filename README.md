@@ -63,7 +63,7 @@ server and says what is done and what is missing:
 4 of 12 features are running. Press Apply to finish the rest.
 
 ✅ 1 · Roles      — @Cooperative · @Member
-⬜ 2 · Rooms      — missing `polls`, `health` — Apply makes them
+⬜ 2 · Rooms      — missing `health` — Apply makes them
 ⬜ 3 · The cooperative — empty. Nobody can propose, vote or talk to him
 ✅ 4 · Features   — 9 on, 3 off · waiting on something: conversation, memory
 ⬜ 5 · Brain      — no key, so he keeps records and says nothing
@@ -119,16 +119,13 @@ a conversation:
 - **`/propose`** — file a proposal: title, what, why. Add `priority: True`
   and everyone who has not voted gets one DM halfway through; leave it off
   and nobody is chased.
-- **`/poll`** — ask the whole server a question instead of the
-  cooperative. Yes/no, or up to ten options.
 - **`/invite`** — propose that someone outside be invited into the server.
   What passes is a single-use link, sent privately to whoever proposed
   them; it is not a seat in the cooperative and not a vote.
 - **`/remove`** — propose that someone be removed. Says what the
   instrument costs before it asks who.
 - **`/close <number>`** — call time on a vote that has had its run.
-- **`/bills`** — what is open for a vote right now. The cooperative sees
-  everything; anyone else in the room sees the open polls.
+- **`/bills`** — what is open for a vote right now.
 - **`/house`** — every feature and whether it is running, and the numbers
   this house votes by. Read-only, and free; the changing is done by asking
   him.
@@ -151,7 +148,6 @@ panel is the whole list, ticked or unticked.
 | Feature | What it is | Out of the box |
 |---|---|---|
 | Governance | proposals, anonymous ballots, the permanent record | on |
-| Polls | advisory questions put to the whole server | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
 | Health card | his vitals, pinned and current; administrators only | on |
 
@@ -238,7 +234,6 @@ them at once with.
 | `floor_hours` | how long an ordinary vote stays open if nothing settles it | 48 |
 | `removal_hours` | the same, for a removal | 72 |
 | `fundamental_share` | the share of the roster a removal or rule change needs | 0.75 |
-| `public_quorum_share` | the share of the server that must vote for an open poll to count | 0.2 |
 | `kick_min_yes` | the fewest yes votes a removal can ever pass on | 3 |
 | `away_days` | a quiet spell this long takes you out of the count | 14 |
 
@@ -248,29 +243,23 @@ be set to nothing. Nothing is cached: a number changed at noon is the one
 he quotes at one minute past, including on votes already open. Votes
 already on the floor keep the window they were filed with.
 
-## Two kinds of vote
+## One kind of vote
 
-**The cooperative's own business** — `/propose`, `/invite`, `/remove` — is
-counted against the roster, so not voting is a no, and it passes the moment
-the yes votes reach what is needed.
+Every ballot is the cooperative's — `/propose`, `/invite`, `/remove` — and
+every one is counted against the roster, so not voting is a no and it passes
+the moment the yes votes reach what is needed. A ballot with options is
+carried by whichever option gets past half the roster.
 
-**A poll open to the whole server** — `/poll` — is counted against the
-whole server. The roster rule would make every one of those fail on the day
-it was filed, since most of a server has never asked to be counted in
-anything, so a poll is carried by a majority of whoever votes, once
-`public_quorum_share` of the room has voted at all. Under quorum it fails; a
-tie fails; abstaining counts toward the quorum and toward neither side.
-
-Both end early the moment they are decisive — a threshold reached for the
-first, a lead bigger than the number of people left to vote for the second.
-A poll is advisory: it never becomes a numbered decision, and acting on one
-is a separate proposal.
+There is no second kind put to the wider server. A house that wants everyone
+to have a vote gives everyone the `Cooperative` role; that is one decision,
+taken once, by people who already hold it — and afterwards there is still one
+electorate, one denominator, and one meaning for "carried".
 
 **Nobody is DMed except about a priority vote**, which means one at the
 fundamental tier (a removal, a rule change) or one whose author filed it as
-priority with `/propose priority: True`. Ordinary proposals aren't chased,
-and polls are never chased — a bot that DMs about everything teaches people
-to ignore the one that mattered.
+priority with `/propose priority: True`. Ordinary proposals aren't chased — a
+bot that DMs about everything teaches people to ignore the one that
+mattered.
 
 Each annex has a default model, chosen to be cheap rather than clever —
 the clerk answers in a sentence or two, and a frontier model is several

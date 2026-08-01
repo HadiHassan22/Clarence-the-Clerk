@@ -567,66 +567,21 @@ def test_filing(clerk, data):
         check(f"a bill with {label} is refused", "error" in json.loads(
             run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", args))))
 
-    print("\nasking the whole server instead of the cooperative")
+    print("\nchasing people is asked for, not assumed")
     set_floor([])
-    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
-        "title": "Movie night", "what": "Should we do a movie night?",
-        "why": "Someone asked."})))
-    check("with no room bound for polls it is refused, and says how to fix "
-          "it rather than failing silently",
-          "error" in out and "/setup" in out["error"])
-
-    keep_room = clerk.room
-    clerk.room = lambda guild, key: (types.SimpleNamespace(id=5, mention="#polls")
-                                     if key == "polls" else keep_room(guild, key))
-    try:
-        set_floor([])
-        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
-            "title": "Movie night", "what": "Should we do a movie night?",
-            "why": "Someone asked."})))
-        check(f"a poll is filed: No. {out.get('filed')}", out.get("filed") == 13)
-        check("and it is filed as everybody's, which is the whole difference",
-              filed.get("audience") == clerk.EVERYONE)
-        check("the asker is the author, the same as a proposal",
-              out.get("author") == "Hadi")
-        check("and what comes back says nobody will be chased about it",
-              "chased" in out.get("note", ""))
-
-        set_floor([])
-        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
-            "title": "Movie night", "what": "Which night?", "why": "y",
-            "options": ["Tuesday", "Thursday", "Tuesday"]})))
-        check("a poll can offer a choice of answers, duplicates dropped",
-              filed.get("options") == ["Tuesday", "Thursday"])
-        set_floor([])
-        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", {
-            "title": "t", "what": "w", "why": "y", "options": ["Only one"]})))
-        check("a single option is not a choice and is refused", "error" in out)
-        for label, args in (
-            ("no title", {"what": "w", "why": "y"}),
-            ("no question", {"title": "t", "why": "y"}),
-            ("no reasons", {"title": "t", "what": "w"}),
-        ):
-            check(f"a poll with {label} is refused too", "error" in json.loads(
-                run(toolbox.dispatch(GUILD, CITIZEN, "open_poll", args))))
-
-        print("\nchasing people is asked for, not assumed")
-        set_floor([])
-        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
-            "title": "t", "what": "w", "why": "y"})))
-        check("an ordinary proposal is not a priority one",
-              filed.get("priority") is False and out.get("priority") is False)
-        check("and says so, so he cannot promise a chase that will not happen",
-              "Nobody is direct-messaged" in out.get("note", ""))
-        set_floor([])
-        out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
-            "title": "t", "what": "w", "why": "y", "priority": True})))
-        check("but somebody who asks for one gets it",
-              filed.get("priority") is True and out.get("priority") is True)
-        check("and is told what it costs everyone else",
-              "direct message" in out.get("note", ""))
-    finally:
-        clerk.room = keep_room
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
+        "title": "t", "what": "w", "why": "y"})))
+    check("an ordinary proposal is not a priority one",
+          filed.get("priority") is False and out.get("priority") is False)
+    check("and says so, so he cannot promise a chase that will not happen",
+          "Nobody is direct-messaged" in out.get("note", ""))
+    set_floor([])
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
+        "title": "t", "what": "w", "why": "y", "priority": True})))
+    check("but somebody who asks for one gets it",
+          filed.get("priority") is True and out.get("priority") is True)
+    check("and is told what it costs everyone else",
+          "direct message" in out.get("note", ""))
 
     print("\nthe floor is not rationed")
     # The cap that used to live here bound only the people who asked Eugene
@@ -853,7 +808,7 @@ def test_setup_rooms(clerk, data):
     seen.clear()
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
-                 ["🖋️・propose", "🗳️・votes", "🏛️・decisions", "📊・polls",
+                 ["🖋️・propose", "🗳️・votes", "🏛️・decisions",
                   "🩺・bot-health", "💬・eugene-chat"])]
     dressed = guild_for(3333)
     dressed.text_channels = built
@@ -906,7 +861,7 @@ def test_setup_rooms(clerk, data):
           "everyone else",
           sorted(shut) == ["bot-health", "propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
-          == ["decisions", "eugene-chat", "polls"])
+          == ["decisions", "eugene-chat"])
     health_ow = dict(seen)["bot-health"]
     check("the health room grants nobody anything: administrators read it "
           "because Discord lets them past an overwrite, so there is no role "
@@ -1302,230 +1257,7 @@ def test_voting_numbers(data):
           "merely inherited",
           set(settings.voting_overrides(1)) == {"fundamental_share"})
 
-    import roster
-    check("a fifth of sixty is twelve", roster.quorum(60, 0.2) == 12)
-    check("a quorum rounds up, never down: eleven of fifty-one is not a fifth",
-          roster.quorum(51, 0.2) == 11)
-    check("a quorum is never more than the people it counts",
-          all(roster.quorum(n, 1.0) <= n for n in range(1, 40)))
-    check("and never nought while there is anybody to ask",
-          all(roster.quorum(n, 0.001) >= 1 for n in range(1, 40)))
-    check("an empty room has no quorum to meet", roster.quorum(0, 0.2) == 0)
-
     settings.configure(data)
-
-
-def test_open_polls(clerk, data):
-    """A poll open to the whole server is counted against the whole server.
-
-    That is the point of the audience, and until now it was not true: every
-    vote was counted against the cooperative whatever it said on the tin,
-    so a poll open to sixty people passed or failed on the roster of eight.
-    """
-    print("\na poll open to the server is counted against the server")
-    import roster
-
-    roster.configure(data)
-    settings.configure(data)
-    keep_coop, keep_room = clerk.in_cooperative, clerk.in_room
-    # Eight in the cooperative; twenty-four in the room, which is what a
-    # public poll is put to.
-    inside = {i for i in range(1, 9)}
-    clerk.in_cooperative = lambda m: m.id in inside
-    clerk.in_room = lambda m: not getattr(m, "bot", False)
-    try:
-        guild = types.SimpleNamespace(
-            id=77, name="The Hangout",
-            members=[fake_member(i) for i in range(1, 25)],
-            get_channel=lambda _id: None, get_role=lambda _id: None,
-        )
-
-        def poll(ballots, audience=None, **extra):
-            bill = {"no": 9, "title": "Movie night", "kind": "ordinary",
-                    "status": "on_floor", "ballots": dict(ballots), **extra}
-            if audience:
-                bill["audience"] = audience
-            return bill
-
-        closed = clerk.vote_state(guild, poll({}))
-        open_st = clerk.vote_state(guild, poll({}, audience=clerk.EVERYONE))
-        check("the cooperative's own business is still counted against the "
-              "cooperative", closed["size"] == 8 and closed["need"] == 5)
-        check("and a poll open to everyone against everyone",
-              open_st["size"] == 24)
-        check("which is the whole of what the audience was ever supposed "
-              "to mean", open_st["open_kind"] is True)
-
-        by_id = {m.id: m for m in guild.members}
-        for label, audience in (("the cooperative's", None),
-                                ("an open poll's", clerk.EVERYONE)):
-            subject = poll({}, audience=audience)
-            roll = clerk.electorate(guild, subject)
-            check(f"every one of {label} denominator is somebody the ballot "
-                  f"would let in",
-                  roll and all(clerk.may_vote(subject, by_id[uid]) for uid in roll))
-            check(f"and nobody {label} door turns away is counted in it",
-                  not any(clerk.may_vote(subject, m) for m in guild.members
-                          if m.id not in roll))
-
-        check("a fifth of the room has to turn up for it to count at all",
-              open_st["quorum"] == 5)
-        check("and no count of yes votes is quoted, because there is no "
-              "number of them that carries it", open_st["need"] == 0)
-
-        # Four of twenty-four, all yes: a landslide among people who came,
-        # and not enough people came.
-        four = clerk.vote_state(
-            guild, poll({str(i): "yes" for i in range(1, 5)},
-                        audience=clerk.EVERYONE))
-        check("four yes and nothing against is not settled while a fifth "
-              "voter could still turn up", clerk.vote_settled(four) is False)
-
-        # Decisive, on a majority of votes cast, means the lead is bigger
-        # than the number of people who could still turn up. Twenty-four in
-        # the room: twelve yes leaves twelve, who could level it, and a tie
-        # fails — so twelve is not decided and thirteen is.
-        twelve = clerk.vote_state(
-            guild, poll({str(i): "yes" for i in range(1, 13)},
-                        audience=clerk.EVERYONE))
-        check("twelve of twenty-four with twelve still to vote is not "
-              "decided: the twelve could level it, and a tie fails",
-              clerk.vote_settled(twelve) is False)
-        thirteen = clerk.vote_state(
-            guild, poll({str(i): "yes" for i in range(1, 14)},
-                        audience=clerk.EVERYONE))
-        check("one more makes the lead bigger than the room that is left, "
-              "and it closes on the spot",
-              clerk.vote_settled(thirteen) is True)
-        check("a lead is measured against the other side, not against "
-              "nothing: 12 yes to 1 no is a lead of eleven with eleven left, "
-              "which the eleven can still level",
-              clerk.vote_settled(clerk.vote_state(
-                  guild, poll({**{str(i): "yes" for i in range(1, 13)},
-                               "13": "no"}, audience=clerk.EVERYONE))) is False)
-        check("and is over once nobody is left, however level",
-              clerk.vote_settled(clerk.vote_state(
-                  guild, poll({str(i): "yes" for i in range(1, 25)},
-                              audience=clerk.EVERYONE))) is True)
-
-        face = clerk.ballot_content(
-            guild, poll({"1": "yes", "2": "yes", "3": "no"},
-                        audience=clerk.EVERYONE))
-        check("the ballot measures the bar against quorum, which is the "
-              "thing a reader can still do something about",
-              "3 of 24 voted" in face and "quorum **5**" in face)
-        check("and says plainly that silence is not a no here",
-              "not voting is not a no here" in face)
-        check("with both sides on show: an open poll is about a thing",
-              "✅ 2" in face and "❌ 1" in face)
-
-        short = clerk.standing_line(
-            guild, poll({"1": "yes"}, audience=clerk.EVERYONE))
-        check("short of quorum, the receipt says how many more would count "
-              "it", "4 more and it counts" in short)
-        leading = clerk.standing_line(
-            guild, poll({"1": "yes", "2": "yes", "3": "yes", "4": "yes",
-                         "5": "no"}, audience=clerk.EVERYONE))
-        check("past it, the receipt names who leads and never claims a "
-              "number of yes votes would carry it",
-              "yes leads 4 to 1" in leading and "carries it" not in leading)
-
-        check("nobody is direct-messaged about an open poll: the nudge "
-              "exists because silence is a no, and here it is not",
-              clerk.nudge_roll(guild, poll({}, audience=clerk.EVERYONE)) == [])
-        check("nor about an ordinary proposal, which the ballot in the room "
-              "can speak for itself",
-              clerk.nudge_roll(guild, poll({})) == [])
-        check("a removal is chased, because silence there is a no about "
-              "somebody's standing",
-              len(clerk.nudge_roll(guild, poll({}, kind="kick"))) == 8)
-        check("so is a rule change, and anything else at that tier",
-              len(clerk.nudge_roll(guild, poll({}, tier="fundamental"))) == 8)
-        check("and so is anything its author filed as priority, which is a "
-              "claim they make in the open",
-              len(clerk.nudge_roll(guild, poll({}, priority=True))) == 8)
-        check("but priority cannot be used to chase the whole server about "
-              "a poll",
-              clerk.nudge_roll(
-                  guild, poll({}, priority=True, audience=clerk.EVERYONE)) == [])
-    finally:
-        clerk.in_cooperative, clerk.in_room = keep_coop, keep_room
-
-
-def test_open_poll_closing(clerk, data):
-    """What actually carries an open poll: a majority of whoever voted, and
-    a quorum standing between that and three people deciding for sixty."""
-    print("\nwhat carries a poll open to the server")
-    import roster
-
-    roster.configure(data)
-    settings.configure(data)
-    keep_coop, keep_room = clerk.in_cooperative, clerk.in_room
-    clerk.in_cooperative = lambda m: m.id <= 8
-    clerk.in_room = lambda m: not getattr(m, "bot", False)
-
-    finalized = {}
-
-    async def fake_finalize(guild, bill, passed, tally_line, decided=None):
-        finalized.clear()
-        finalized.update(bill=bill, passed=passed, line=tally_line)
-        bill["status"] = "passed" if passed else "failed"
-
-    keep_final = clerk.finalize_bill
-    clerk.finalize_bill = fake_finalize
-    try:
-        guild = types.SimpleNamespace(
-            id=78, name="The Hangout",
-            members=[fake_member(i) for i in range(1, 25)],
-            get_channel=lambda _id: None, get_role=lambda _id: None,
-        )
-
-        def close(ballots):
-            bill = {"no": 10, "title": "Movie night", "kind": "ordinary",
-                    "status": "on_floor", "audience": clerk.EVERYONE,
-                    "ballots": dict(ballots), "notes": {}}
-            run(clerk.close_bill(guild, bill))
-            return bill
-
-        thin = close({"1": "yes", "2": "yes", "3": "yes"})
-        check("three people cannot decide for twenty-four, however unanimous",
-              thin["status"] == "failed")
-        check("and the tally says why rather than reading as a defeat",
-              "quorum 5 — not met" in finalized["line"])
-
-        carried = close({"1": "yes", "2": "yes", "3": "yes",
-                         "4": "no", "5": "no"})
-        check("quorum met, and a majority of those who voted carries it",
-              carried["status"] == "passed")
-        check("the record keeps what it was counted against",
-              carried["threshold"] == {"roster": 24, "quorum": 5,
-                                       "audience": clerk.EVERYONE})
-
-        lost = close({"1": "yes", "2": "yes", "3": "no", "4": "no", "5": "no"})
-        check("and a minority of them does not", lost["status"] == "failed")
-
-        level = close({"1": "yes", "2": "yes", "3": "no", "4": "no",
-                       "5": "abstain"})
-        check("a tie fails: the status quo never has to defend itself",
-              level["status"] == "failed")
-        check("but an abstention still helped the poll reach quorum, which "
-              "is the whole of what turning up is for",
-              "5 of 24 voted" in finalized["line"])
-
-        report = clerk.closing_report(carried)
-        check("a poll that carried is not a decision and does not pretend "
-              "to be one",
-              report["advisory"] is True and report["act"] is None
-              and any("binds nobody" in line for line in report["done"]))
-        check("and what is left is named as a separate vote, not as work",
-              any("that is a proposal" in line
-                  for line in report["outstanding"]))
-        check("a poll that lost says the room may be asked again",
-              any("ask the room again" in line
-                  for line in clerk.closing_report(lost)["outstanding"]))
-    finally:
-        clerk.in_cooperative, clerk.in_room = keep_coop, keep_room
-        clerk.finalize_bill = keep_final
 
 
 def test_numbers_bite(clerk, data):
@@ -1560,19 +1292,9 @@ def test_numbers_bite(clerk, data):
         check("and a house that wants a shorter quiet spell gets one",
               clerk.numbers(guild)["away_days"] == 1)
 
-        settings.set_voting(guild.id, public_quorum_share=0.5)
-        open_bill = dict(bill, audience=clerk.EVERYONE)
-        keep_room = clerk.in_room
-        clerk.in_room = lambda m: True
-        try:
-            check("a house that wants half the room to turn up gets that too",
-                  clerk.vote_state(guild, open_bill)["quorum"] == 4)
-        finally:
-            clerk.in_room = keep_room
     finally:
         clerk.in_cooperative = original
-        settings.set_voting(guild.id, fundamental_share=None, away_days=None,
-                            public_quorum_share=None)
+        settings.set_voting(guild.id, fundamental_share=None, away_days=None)
 
 
 def test_choice_ballots(clerk, data):
@@ -1690,29 +1412,18 @@ def test_eligibility(clerk):
 
     insider, outsider, stranger = person(coop), person(memb), person()
     robot = person(coop, bot=True)
-    closed = {"no": 1, "status": "on_floor"}                 # no audience stated
-    public = {"no": 2, "status": "on_floor", "audience": "everyone"}
+    closed = {"no": 1, "status": "on_floor"}
 
-    check("a proposal that never says otherwise is the cooperative's",
-          clerk.audience_of(closed) == clerk.COOPERATIVE_ONLY)
     check("the cooperative votes on its own business",
           clerk.may_vote(closed, insider) is True)
     check("a member cannot", clerk.may_vote(closed, outsider) is False)
     check("and nor can somebody with no role at all",
           clerk.may_vote(closed, stranger) is False)
-
-    check("a member votes in a public poll", clerk.may_vote(public, outsider) is True)
-    check("so does the cooperative", clerk.may_vote(public, insider) is True)
-    check("somebody outside the room still cannot",
-          clerk.may_vote(public, stranger) is False)
-    check("bots never vote in anything",
-          clerk.may_vote(public, robot) is False and clerk.may_vote(closed, robot) is False)
-
-    check("an unrecognised audience is treated as the closed kind, not the "
-          "open one", clerk.audience_of({"audience": "everybody"})
-          == clerk.COOPERATIVE_ONLY)
-    check("and a member is refused by it",
-          clerk.may_vote({"audience": "everybody"}, outsider) is False)
+    check("bots never vote", clerk.may_vote(closed, robot) is False)
+    check("and an audience left over on an old proposal changes nothing: "
+          "every vote is the cooperative's now",
+          clerk.may_vote({"audience": "everyone"}, outsider) is False
+          and clerk.may_vote({"audience": "everyone"}, insider) is True)
 
 
 def test_bindings(data):
@@ -2170,13 +1881,13 @@ def test_prompt_caching(data):
         # A switch is the cheapest live thing to move: it belongs in the
         # volatile half by design, so flipping one must leave the cached
         # half byte-identical or the saving is silently off.
-        modules.set_enabled(7788, "polls", False)
+        modules.set_enabled(7788, "health", False)
         after = brain._system_prompt(guild)
 
         check("the stable half survives a switch changing under it",
               before[0] == after[0])
         check("because what is switched on is in the other half",
-              "polls" in after[1].lower())
+              "health card" in after[1].lower())
         check("and the switch table is never in this one",
               "# What is switched on" not in after[0])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2272,8 +1983,7 @@ def test_modules(data):
           == len({x for s in modules.SPEC.values() for x in s["tools"]}))
 
     print("\na fresh server is the clerk as he was before there were modules")
-    check("governance and polls are on out of the box",
-          all(modules.enabled(gid, k) for k in ("governance", "polls")))
+    check("governance is on out of the box", modules.enabled(gid, "governance"))
     check("and the filters are not, which is what they were already",
           not modules.enabled(gid, "moderation"))
     check("nothing is stored until somebody chooses something",
@@ -2320,8 +2030,7 @@ def test_modules(data):
 
     print("\nthe whole roll set at once, which is what the menu submits")
     on, off = modules.apply_set(gid, ["governance", "health"])
-    check("what was on and is not any more is named",
-          "polls" in off and "chat" in off)
+    check("what was on and is not any more is named", "chat" in off)
     check("what the selection left standing is still standing",
           modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
     modules.reset(gid)
@@ -2346,12 +2055,12 @@ def test_modules(data):
           and modules.live(gid, "chat", brain=True))
 
     print("\nthe structure is generated, so it cannot describe another server")
-    modules.apply_set(gid, ["governance", "polls", "health"])
+    modules.apply_set(gid, ["governance", "health"])
     plan = dict(modules.structure(gid, only_buildable=True))
     check("every room he makes is in one category, and there is one category",
           list(plan) == ["governance"]
           and plan["governance"] == ["proposals", "votes", "decisions",
-                                     "polls", "health"])
+                                     "health"])
     check("who may read a room is written on the room, not on a second "
           "category filing it",
           list(modules.CATEGORIES) == ["governance"]
@@ -2373,7 +2082,7 @@ def test_modules(data):
     modules.apply_set(gid, ["governance"])
     check("its tools are still his", modules.tool_allowed(gid, "propose_bill"))
     check("a switched-off feature's are not",
-          not modules.tool_allowed(gid, "open_poll"))
+          not modules.tool_allowed(gid, "server_info"))
     check("and the tools that switch a feature back on belong to no feature, "
           "so switching everything off is not a locked door",
           all(modules.of_tool(name) is None
@@ -2684,7 +2393,7 @@ def test_officer_gate(data):
 
     toolbox.configure(HERE, data, in_cooperative=broken)
     burnt = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "set_feature", {"feature": "polls", "on": False})))
+        GUILD, insider, "set_feature", {"feature": "health", "on": False})))
     check("and a check that throws is a no, not a yes",
           "the answer is no" in burnt.get("error", ""))
 
@@ -2735,8 +2444,6 @@ def main():
             test_close_floor_split(clerk, data)
             test_voting(clerk, data)
             test_voting_numbers(data)
-            test_open_polls(clerk, data)
-            test_open_poll_closing(clerk, data)
             test_numbers_bite(clerk, data)
             test_choice_ballots(clerk, data)
             test_eligibility(clerk)

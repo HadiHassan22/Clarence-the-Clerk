@@ -296,30 +296,6 @@ BILL_TOOLS = {
             "required": ["title", "what", "why"],
         },
     },
-    "open_poll": {
-        "description": "Ask the whole server a question, in the name of the "
-        "person you are talking to. This is the other kind of vote and the "
-        "difference is who it is put to: a proposal is the cooperative's "
-        "business, a poll is everybody's. Use it when they want to know what "
-        "the room thinks rather than to change something. It is carried by a "
-        "majority of whoever votes once enough of them have, so nobody is "
-        "chased about it and not voting costs nothing. Options are for a "
-        "choice of answers; leave them out for yes/no.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "a short name for the question"},
-                "what": {"type": "string", "description": "the question itself, as the room will read it"},
-                "why": {"type": "string", "description": "why they are asking, in their voice"},
-                "options": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "2 to 10 answers for a choice ballot, or omit entirely for yes/no",
-                },
-            },
-            "required": ["title", "what", "why"],
-        },
-    },
     "close_floor": {
         "description": "Call time on a vote that is still open: count the "
         "ballots, rule it passed or failed, and do everything a close "
@@ -431,7 +407,7 @@ DUTY_TOOLS = {
 OFFICER_TOOLS = {
     "set_feature": {
         "description": "Switch one of the features on or off for this "
-        "server: governance, polls, chat, "
+        "server: governance, chat, "
         "moderation, welcome, log, health. This is the "
         "master switch -- 'turn the filters on', 'stop greeting people', "
         "'we do not want the log'. A feature that is off does nothing and "
@@ -514,8 +490,8 @@ def declarations(guild_id=None):
     Given a guild, the list shrinks to the features that server has
     switched on. A tool he is not handed is one he cannot be talked into
     using, and -- as much to the point -- one he does not mention: a clerk
-    who offers to open a poll in a server that has switched polls off has
-    told somebody something false about their own house.
+    who offers a feature the server has switched off has told somebody
+    something false about their own house.
 
     """
     return [

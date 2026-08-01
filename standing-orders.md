@@ -56,11 +56,11 @@ than no summary at all.*
   else.
 - **Nudges are rationed.** One DM at the halfway mark, to whoever has not
   voted, and only on a priority vote — Fundamental tier, or filed as
-  priority by its author. Never on an open poll.
-- **An open poll is counted against the whole server** and decides nothing.
-  Carried by a majority of whoever votes, once a quorum of the room has
-  voted at all; under quorum it fails however lopsided. It ends early when
-  the lead cannot be caught. It never becomes a numbered decision.
+  priority by its author.
+- **Every vote is the cooperative's.** There is no second kind of ballot put
+  to the wider server. A house that wants everybody to have a vote gives
+  everybody the role; that is one decision, taken once, rather than a
+  parallel poll that decides nothing.
 - **Ties fail** — the status quo never has to defend itself. Below 3 active
   people everything except safety and admissions is suspended.
 - **One thing cannot be amended at any threshold**: everyone is respected,
@@ -91,15 +91,12 @@ agreed design that is not yet running code.
 - Thresholds counted against the roster: a **majority** for everything, **75%**
   for a removal. Shares, not fixed counts — they move as the roster does, and
   the cooperative sets the shares themselves.
-- **Polls open to the whole server**, counted against the whole server: carried
-  by a majority of whoever votes, once a quorum of the room has voted at all.
 - **Self-closing votes. Every vote here ends the moment it is decisive**, and
   the clock is only ever a backstop. What decisive means follows from what
   carries it: for a roster-counted vote, the yes votes reaching what is needed;
   for a choice ballot, an option past half the roster, which is a majority of
-  however many end up voting; for an open poll, a lead bigger than the number
-  of people left to vote, with the quorum met. If everyone has voted, it closes
-  then too, whichever kind it is.
+  however many end up voting. If everyone has voted, it closes then too,
+  whichever kind it is.
 - **A live ballot that shows its own progress** — how many yes it has, how many
   it needs, how many people have not voted yet — repainted on every ballot cast.
   A choice ballot shows a bar per option and the turnout, repainted the same way.
@@ -114,8 +111,7 @@ agreed design that is not yet running code.
   never with a hint of how anyone voted. Ask him to stop and he stops. Priority
   means one of two things and nothing else: it is at the Fundamental tier, or
   its author filed it as priority, which is a claim they make in public and
-  which shows on the ballot. Ordinary proposals are not chased, and open polls
-  are never chased.
+  which shows on the ballot. Ordinary proposals are not chased.
 - **A standing list of what is decided and not yet done**, kept pinned in
   `#decisions` and always current. Tell Eugene when you have carried one out
   and it comes off the list under your name.
@@ -182,11 +178,9 @@ wired up.
 ## 1. Who counts
 
 Everyone holding the `Cooperative` role is on the **roster** by default. The
-roster is the denominator for every threshold below, with one exception: a poll
-open to the whole server is counted against the whole server, and is decided
-differently for that reason (§11). Holding `Member` instead means you are in
-the room, see everything, and do not cast a ballot on the cooperative's
-business — an open poll is put to you too.
+roster is the denominator for every threshold below, with no exceptions.
+Holding `Member` instead means you are in the room, see everything, and do not
+cast a ballot: there is one electorate here, and it is this one (§11).
 
 **Away.** Anyone can mark themselves Away at any time. One command, no reason
 needed, no permission needed, nobody thinks anything of it. Away people are not
@@ -250,14 +244,11 @@ roster-counted threshold already contains its own turnout requirement — a
 majority of the roster cannot be reached without that many people actually
 voting.
 
-A poll open to the whole server is the one thing not counted this way, and it
-is the one thing with a quorum. See §11.
-
 **Every number on this page is the cooperative's to set**, not the code's: the
-tier shares, the window, the quiet spell that steps somebody out of the count,
-the quorum in §11. They live in the server's own settings and can be changed
-without touching the repo. What is fixed is the *shape* — that there are tiers,
-that ordinary business is counted against the roster, that an open poll is not.
+tier shares, the window, the quiet spell that steps somebody out of the count.
+They live in the server's own settings and can be changed without touching the
+repo. What is fixed is the *shape* — that there are tiers, and that everything
+is counted against the roster.
 
 **One thing is not on this table at all:** the core value, set out in §14.
 Not amendable, at any threshold.
@@ -440,8 +431,8 @@ Anyone in the cooperative can invite someone. The invite sits for 48 hours; no
 objection and they're in, one objection makes it a Light vote. This door is
 deliberately the cheapest in the system.
 
-Members can open advisory polls with no gate at all, ask for anything to go on
-the agenda for the next gathering, and propose changes.
+Members can ask for anything to go on the agenda for the next gathering, and
+propose changes.
 
 **A member proposal with enough backing is tabled automatically** — the
 cooperative has to vote on it and publish the outcome with reasons. Free to
@@ -453,46 +444,21 @@ as a punishment.
 
 ---
 
-## 11. Polls
+## 11. One electorate
 
-Any cooperative member can open an **advisory poll** alone, with no threshold.
-It gathers opinion and binds nobody. Asking should be the cheapest thing in the
-system, not the most expensive. A badly framed one can be pulled early by a
-simple majority, with the reason posted.
+Every vote here is the cooperative's. There is no second kind of ballot put to
+the wider server.
 
-A **binding poll** — where we commit in advance to following the result —
-needs a vote at whatever tier the underlying decision would need. The gate is
-on the promise, not on the question.
+There used to be: an advisory poll, open to everyone in the room, carried by a
+majority of whoever voted once a quorum turned up, deciding nothing. It was a
+reasonable idea and it cost more than it was worth. It doubled the machinery —
+two electorates, two quorum rules, two rooms, two ways for a vote to end — and
+the second one existed to produce an answer nobody was bound by.
 
-**A poll open to the whole server is counted against the whole server**, and
-that changes how it is decided. Everywhere else, not voting is a no, which
-works because the roster is a few people who all agreed to be counted. Put the
-same rule to a room where most people have never asked to be part of anything,
-and every open poll fails on the day it is filed. So an open poll is carried by
-a **majority of whoever votes**, and a **quorum** — a share of the people in the
-room, a fifth unless the cooperative sets another — is what stands between that
-and three people deciding for sixty. Under quorum it fails, however lopsided;
-a tie fails, because the status quo never has to defend itself. Abstaining
-counts toward the quorum and toward neither side, so turning up to say "no
-opinion" is a real thing to do.
-
-**An open poll ends early when it is decisive**, the same as everything else
-here — the test is just different, because the rule it is decided by is
-different. It closes once the lead is bigger than the number of people who
-could still vote, and the quorum has been met: past that point nobody left can
-change the answer, so there is nothing to wait for. Everywhere else the test is
-a threshold reached; here it is a lead that cannot be caught.
-
-**Nobody is direct-messaged about an open poll.** The nudge exists because
-silence is a no, and here it is not, so what would be left is a bot messaging
-the whole server about a poll they never asked about.
-
-**An open poll decides nothing.** It is advisory by construction: it does not
-become a numbered decision and it is not on the record. If the cooperative
-wants to act on what the room said, that is a proposal, and it is a separate
-vote. This is the point of having two kinds rather than one.
-
----
+A house that wants everybody to have a vote gives everybody the cooperative
+role. That is one decision, taken once, in the open, by people who already
+hold the role — and afterwards there is still only one kind of ballot, one
+denominator, and one meaning for the word "carried".
 
 ## 12. When things stall
 

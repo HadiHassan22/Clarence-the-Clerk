@@ -378,25 +378,26 @@ def in_room(member):
 # Who a ballot is open to. Cooperative business is the default, because a
 # thing that forgets to say what it is should be the closed kind, never the
 # open one.
+# Every vote here is the cooperative's. There used to be a second audience
+# -- a poll put to the whole server, deciding nothing -- and it doubled
+# almost everything below: two electorates, two quorum rules, two rooms,
+# two refusals, and a `quorum` field that meant something in one and
+# nothing in the other. A house that wants everybody to have a vote gives
+# everybody the role, which is one decision in one place rather than a
+# second kind of ballot running alongside the first.
 COOPERATIVE_ONLY = "cooperative"
-EVERYONE = "everyone"
-
-
-def audience_of(bill):
-    return EVERYONE if bill.get("audience") == EVERYONE else COOPERATIVE_ONLY
 
 
 def belongs_to(bill):
     """The membership test a ballot admits people by.
 
-    One function, handed to both the door and the arithmetic, because those
-    two disagreeing is the failure that cannot be seen from outside: a vote
-    counted against a roster wider than the one allowed to vote in it can
-    never pass, and one counted against a narrower roster passes on fewer
-    people than it claims. So `may_vote` and the denominator are the same
-    question asked twice, never two questions that happen to agree.
+    Still a function of the proposal rather than a constant, because
+    `may_vote` and the denominator have to be the same question asked
+    twice: a vote counted against a wider roster than the one allowed to
+    vote in it can never pass, and one counted against a narrower roster
+    passes on fewer people than it claims.
     """
-    return in_room if audience_of(bill) == EVERYONE else in_cooperative
+    return in_cooperative
 
 
 def may_vote(bill, member):
@@ -414,16 +415,7 @@ def may_vote(bill, member):
 
 
 def floor_for(guild, bill):
-    """The room a vote is held in.
-
-    The cooperative's business goes to the floor. A poll open to everyone
-    goes where everyone can see it, which is the polls room -- putting an
-    open poll on a floor the room cannot read would be a vote nobody it was
-    open to could find, and the permissions would make a liar of the word
-    "open" while the arithmetic went on counting them.
-    """
-    if audience_of(bill) == EVERYONE:
-        return room(guild, "polls")
+    """The room a vote is held in."""
     return room(guild, "votes")
 
 
@@ -440,12 +432,8 @@ def electorate(guild, bill):
 
 
 def refusal_for(bill):
-    return (
-        "You need to be in the room to vote in this one."
-        if audience_of(bill) == EVERYONE
-        else "This one is the cooperative's to decide. Public polls are in "
-        "#polls, and whatever gets decided lands in #decisions."
-    )
+    return ("This one is the cooperative's to decide, and whatever it "
+            "decides lands in #decisions.")
 
 
 # ---------- which house ----------
@@ -756,18 +744,13 @@ def vote_state(guild, bill):
     words -- the ballot itself, the receipt, the nudge -- branches on that
     one key rather than keeping a second set of sums of its own.
 
-    `open_kind` is the other branch, and it decides what the numbers even
-    mean. A vote the cooperative takes is carried against the roster, so
-    `need` is a count of yes votes and not voting is a no. A poll open to
-    the whole server is carried by a majority of whoever voted, so `need`
-    is meaningless there and `quorum` -- how many have to turn up at all --
-    is the number doing the work. Nothing reads both.
+    Every vote is the cooperative's and is carried against the roster, so
+    `need` is a count of yes votes and not voting counts as a no.
     """
     ballots = bill.get("ballots", {})
     roll = electorate(guild, bill)
     size = len(roll)
     tier = vote_tier(bill)
-    open_kind = audience_of(bill) == EVERYONE
     figures = numbers(guild)
     yes = sum(1 for v in ballots.values() if v == "yes")
     no = sum(1 for v in ballots.values() if v == "no")
@@ -775,12 +758,8 @@ def vote_state(guild, bill):
     st = {
         "size": size,
         "tier": tier,
-        "audience": audience_of(bill),
-        "open_kind": open_kind,
-        "need": 0 if open_kind else roster.required(
-            size, tier, figures["fundamental_share"]
-        ),
-        "quorum": roster.quorum(size, figures["public_quorum_share"]) if open_kind else 0,
+        "audience": COOPERATIVE_ONLY,
+        "need": roster.required(size, tier, figures["fundamental_share"]),
         "yes": yes,
         "no": no,
         "abstain": abstain,
@@ -840,30 +819,6 @@ def choice_body(st):
     )
 
 
-def open_body(st):
-    """The live face of a poll open to the whole server.
-
-    Two things to show and they are not the same thing: whether enough of
-    the room has turned up for the poll to count at all, and which way the
-    people who did turn up are leaning. The bar measures the first, because
-    that is the one anybody reading can still do something about.
-    """
-    short = max(st["quorum"] - st["voted"], 0)
-    standing = (
-        f"{short} more {'vote' if short == 1 else 'votes'} and this poll counts"
-        if short
-        else "Quorum met; this poll counts."
-    )
-    return (
-        f"🗳️ `{bar(st['voted'], st['quorum'])}` **{st['voted']} of "
-        f"{st['size']} voted** · quorum **{st['quorum']}**\n"
-        f"✅ {st['yes']}  ·  ❌ {st['no']}"
-        + (f"  ·  🤍 {st['abstain']}" if st["abstain"] else "")
-        + f"\n-# {standing} Open to the whole server, and carried by a "
-        f"majority of whoever votes — not voting is not a no here."
-    )
-
-
 def ballot_content(guild, bill):
     """The live face of a vote, whatever shape it is. Rewritten on every
     ballot cast, so the progress toward the threshold is visible the whole
@@ -878,15 +833,10 @@ def ballot_content(guild, bill):
         clock = ""
 
     round_note = " (runoff)" if bill.get("round", 1) > 1 else ""
-    # Both markers are said out loud because both are claims on other
-    # people: an open poll is a claim on the whole server's attention, and
-    # priority is a claim on their inbox. Neither should be discoverable
-    # only by being direct-messaged, or by noticing you were not.
-    kind_note = ""
-    if audience_of(bill) == EVERYONE:
-        kind_note = " · 📣 open to everyone"
-    elif is_priority(bill):
-        kind_note = " · ⚡ priority"
+    # Said out loud because it is a claim on other people's inbox, and one
+    # nobody should discover only by being direct-messaged about it -- or
+    # by noticing that they were not.
+    kind_note = " · ⚡ priority" if is_priority(bill) else ""
     head = (f"**Proposal No. {bill['no']}: {bill['title']}**"
             f"{round_note}{kind_note}{where}{clock}")
     if st["options"]:
@@ -897,8 +847,6 @@ def ballot_content(guild, bill):
             f"{st['size']} voted** · needs **{st['need']} yes**\n"
             f"-# No running count on a vote about a person."
         )
-    elif st["open_kind"]:
-        body = open_body(st)
     else:
         body = (
             f"✅ `{bar(st['yes'], st['need'])}` **{st['yes']} of {st['need']} "
@@ -951,14 +899,6 @@ def vote_settled(st):
     and otherwise waits for the room, since the leader can still change
     hands while the vote is open.
 
-    An open poll is settled when its lead is bigger than the number of
-    people left to vote, once enough of them have voted to count it. It is
-    carried on a majority of votes cast, so there is no threshold to reach
-    early -- but there is still a point past which nobody left can change
-    the answer, and that is the same point, arrived at from the other
-    direction. Both halves are needed: a lead of ten with quorum unmet is
-    not decided, because the poll could still fail for want of turnout.
-
     An empty roster is never settled: that means we cannot see who is here,
     not that nobody is.
     """
@@ -968,14 +908,8 @@ def vote_settled(st):
         return True
     if st["options"]:
         # An option past half the room has a majority of however many end
-        # up voting, whoever else turns up. On an open poll it still has to
-        # have brought the quorum with it.
-        if st["open_kind"] and st["voted"] < st["quorum"]:
-            return False
+        # up voting, whoever else turns up.
         return st["leader"] >= st["clinch"]
-    if st["open_kind"]:
-        left = st["size"] - st["voted"]
-        return st["voted"] >= st["quorum"] and abs(st["yes"] - st["no"]) > left
     return st["yes"] >= st["need"]
 
 
@@ -1014,18 +948,6 @@ def standing_line(guild, bill, carried="It already has what it needs."):
                 f"**{st['leaders'][0]}** leads with {st['leader']}.")
     if is_blind(bill):
         return f"{st['voted']} of {st['size']} have voted."
-    if st["open_kind"]:
-        # Never "x more carries it": on a majority of votes cast there is no
-        # such number, and inventing one would be a lie told to get a click.
-        short = max(st["quorum"] - st["voted"], 0)
-        if short:
-            return (f"{st['voted']} of {st['size']} have voted; {short} more "
-                    f"and it counts.")
-        if st["yes"] == st["no"]:
-            return f"{st['voted']} have voted and it is level."
-        ahead = "yes" if st["yes"] > st["no"] else "no"
-        return (f"{st['voted']} of {st['size']} have voted, and {ahead} leads "
-                f"{max(st['yes'], st['no'])} to {min(st['yes'], st['no'])}.")
     left = max(st["need"] - st["yes"], 0)
     if left == 0:
         return carried
@@ -1205,21 +1127,15 @@ class MultiBallotView(discord.ui.View):
 
 async def file_bill(guild, author, title, what, why, kind="ordinary",
                     options=None, target_id=None, floor_hours=None,
-                    eligible_ids=None, audience=COOPERATIVE_ONLY,
-                    priority=False):
+                    eligible_ids=None, priority=False):
     """Shared filing pipeline for all proposal kinds. Returns the filed
     proposal,
     or None if the room it belongs in is missing. Callers own their
     acknowledgement, since Eugene also files on request in conversation,
     where there is no interaction to reply to.
 
-    `audience` decides who votes and, from that, everything else: which
-    room it is posted in, who the debate on it is open to, what carries
-    it. It defaults to the closed kind, because a caller that forgets to say has
-    said nothing, and the wrong default there is the one that puts the
-    cooperative's business in front of the whole server.
     """
-    audience = EVERYONE if audience == EVERYONE else COOPERATIVE_ONLY
+    audience = COOPERATIVE_ONLY
     floor = floor_for(guild, {"audience": audience})
     if floor is None:
         return None
@@ -1293,11 +1209,10 @@ async def file_from_modal(interaction, **kwargs):
     """Filing from a button, with the ephemeral receipt that expects."""
     bill = await file_bill(interaction.guild, interaction.user, **kwargs)
     if bill is None:
-        missing = ("polls" if kwargs.get("audience") == EVERYONE else "votes")
         return await interaction.followup.send(
-            f"There is no room bound for the `{missing}` job, so there is "
-            f"nowhere to put this. An admin can point me at one with "
-            f"`/setup`.",
+            "There is no room bound for the `votes` job, so there is "
+            "nowhere to put this. An admin can point me at one with "
+            "`/setup`.",
             ephemeral=True,
         )
     floor = floor_for(interaction.guild, bill)
@@ -1380,57 +1295,6 @@ def parse_options(raw):
             f"(one per line), or none at all for a yes/no ballot."
         )
     return options or None
-
-
-class PollModal(discord.ui.Modal, title="Open a public poll"):
-    """A question put to the whole server rather than to the cooperative.
-
-    Deliberately the same four fields as a proposal, because it is the same
-    thing asked of different people, and a second form that looked
-    different would suggest the difference was in the asking rather than in
-    who is asked.
-    """
-
-    poll_title = discord.ui.TextInput(
-        label="Title",
-        style=discord.TextStyle.short,
-        placeholder="A short name for it.",
-        max_length=100,
-    )
-    what = discord.ui.TextInput(
-        label="What",
-        style=discord.TextStyle.paragraph,
-        placeholder="The question. This is the text people vote on.",
-        max_length=4000,
-    )
-    why = discord.ui.TextInput(
-        label="Why",
-        style=discord.TextStyle.paragraph,
-        placeholder="Why you are asking. Worth a line even for a poll.",
-        max_length=4000,
-    )
-    choices = discord.ui.TextInput(
-        label="Options (empty = yes/no ballot)",
-        style=discord.TextStyle.paragraph,
-        placeholder="One option per line, 2 to 10 lines.",
-        required=False,
-        max_length=800,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            options = parse_options(self.choices)
-        except ValueError as e:
-            return await interaction.followup.send(str(e), ephemeral=True)
-        await file_from_modal(
-            interaction,
-            title=str(self.poll_title),
-            what=str(self.what),
-            why=str(self.why),
-            options=options,
-            audience=EVERYONE,
-        )
 
 
 class InviteModal(discord.ui.Modal, title="Propose an invitation"):
@@ -1580,28 +1444,6 @@ class SubmitBillView(discord.ui.View):
         await interaction.response.send_modal(BillModal())
 
     @discord.ui.button(
-        label="Open a public poll",
-        emoji="📣",
-        style=discord.ButtonStyle.secondary,
-        custom_id="clerk:bill_poll",
-    )
-    async def poll(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Opening one is the cooperative's, per the standing orders; voting
-        # in it is everybody's, which is the whole point of the thing.
-        if not self._keyed(interaction):
-            return await interaction.response.send_message(
-                NOT_INSIDE, ephemeral=True
-            )
-        if room(interaction.guild, "polls") is None:
-            return await interaction.response.send_message(
-                "There is no room bound for the `polls` job, so a poll open "
-                "to everyone has nowhere to go. An admin can point me at one "
-                "with `/setup`.",
-                ephemeral=True,
-            )
-        await interaction.response.send_modal(PollModal())
-
-    @discord.ui.button(
         label="Propose an invite",
         emoji="💌",
         style=discord.ButtonStyle.secondary,
@@ -1725,15 +1567,8 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     shown = "The tally is sealed." if secret else tally_line
     floor = floor_for(guild, bill)
 
-    # An open poll is advisory, and the record is for decisions. Numbering
-    # one alongside the cooperative's own would put a thing that binds
-    # nobody in the same list as the things that do, where the next person
-    # to read the record has no way to tell them apart -- and the standing
-    # orders promise the opposite in as many words. The result stands in
-    # the polls room, where it was asked.
-    advisory = audience_of(bill) == EVERYONE
     act_line = ""
-    if passed and not advisory:
+    if passed:
         act_line = await publish_act(guild, bill, decided)
 
     if floor:
@@ -1798,32 +1633,6 @@ def closing_report(bill):
     ]
     outstanding = []
 
-    if audience_of(bill) == EVERYONE:
-        # Said whichever way it went, because "the room said yes" and "the
-        # room decided" are different sentences and only one of them is
-        # true. An advisory poll that quietly read as a decision would be
-        # the most useful lie in the building.
-        done.append(
-            "This was a poll open to the whole server, not a decision. It "
-            "is advisory: it binds nobody and is not on the record."
-        )
-        outstanding.append(
-            "If the cooperative wants to act on it, that is a proposal, "
-            "and it is a separate vote."
-            if passed else
-            "Nothing to do. Anyone may ask the room again, reworded, "
-            "whenever they like."
-        )
-        return {
-            "bill": bill["no"],
-            "title": bill.get("title", ""),
-            "ruling": "passed" if passed else "failed",
-            "tally": bill.get("tally_line", ""),
-            "act": None,
-            "advisory": True,
-            "done": done,
-            "outstanding": outstanding,
-        }
 
     if passed:
         if bill.get("act"):
@@ -1970,31 +1779,7 @@ async def close_bill(guild, bill):
     line = f"✅ {yes} / ❌ {no}"
     if bill.get("kind") == "invite":
         line += f" / 🤍 {abstain}"
-    if st["open_kind"]:
-        # An open poll is carried by a majority of the votes cast, and the
-        # quorum is the whole of what stops a handful of people deciding
-        # for a server. Abstentions count toward turning up and toward
-        # nothing else: somebody who came and declined to pick has helped
-        # the poll count without being made to have an opinion.
-        if st["size"] <= 0:
-            # Same protection the roster-counted path has, for the same
-            # reason: a cold member cache reads as an empty room, and
-            # failing a poll because we cannot see who is in it would be
-            # wrong fast. Fall back to the votes actually cast.
-            passed = yes > no
-            line += " · roster unreadable; counted on the votes cast"
-        else:
-            bill["threshold"] = {
-                "roster": st["size"], "quorum": st["quorum"],
-                "audience": EVERYONE,
-            }
-            met = st["voted"] >= st["quorum"]
-            passed = met and yes > no
-            line += (
-                f" · {st['voted']} of {st['size']} voted, quorum {st['quorum']}"
-                + ("" if met else " — not met")
-            )
-    elif st["size"] > 0:
+    if st["size"] > 0:
         bill["threshold"] = {
             "roster": st["size"], "required": st["need"], "tier": st["tier"],
         }
@@ -2088,7 +1873,7 @@ async def check_floor():
     # Polls run on the same machinery, so either feature keeps the clock
     # ticking: a vote already on the floor when governance was switched off
     # still deserves to be closed rather than left open forever.
-    if not (module_live(guild, "governance") or module_live(guild, "polls")):
+    if not module_live(guild, "governance"):
         return
     for bill in load_json(BILLS, []):
         if bill.get("status") != "on_floor" or "ends_at" not in bill:
@@ -2130,13 +1915,7 @@ def is_priority(bill):
     - anything filed as priority, which is a claim the author makes in the
       open and which everyone can see on the proposal.
 
-    Never a poll open to the whole server, whatever else is true of it. The
-    nudge exists because silence is a no, and on an open poll it is not;
-    what would be left is a bot direct-messaging a whole server about a
-    poll nobody asked it about. A quorum that goes unmet is an answer too.
     """
-    if audience_of(bill) == EVERYONE:
-        return False
     return vote_tier(bill) == "fundamental" or bool(bill.get("priority"))
 
 
@@ -2172,10 +1951,9 @@ def nudge_text(guild, bill):
     ballot is settled among the votes cast, so silence is not a vote
     against anything -- it just hands the answer to whoever did turn up,
     and saying otherwise would be a lie told to get somebody to click.
-    An open poll is the same, and is never nudged about at all.
     """
     st = vote_state(guild, bill)
-    if st["options"] or st["open_kind"]:
+    if st["options"]:
         cost = "and the answer is being chosen without you"
     elif is_blind(bill):
         cost = "and the house is still short of a view"
@@ -2379,47 +2157,6 @@ async def act_propose_bill(guild, invoker, args):
                                 "itself.")})
 
 
-async def act_open_poll(guild, invoker, args):
-    """A question put to the whole server, in the asker's name.
-
-    The same door as a proposal and a different room behind it. Nothing
-    here decides anything -- an open poll is advisory by construction, and
-    the standing orders say a cooperative member may open one alone -- so
-    it needs no more permission than filing does.
-    """
-    title = _clean(args.get("title"), 100)
-    what = _clean(args.get("what"), 4000)
-    why = _clean(args.get("why"), 4000)
-    if not (title and what and why):
-        return json.dumps({"error": "a poll needs a title, a question, and a why"})
-    options = []
-    for raw in args.get("options") or []:
-        line = _clean(raw, 100)
-        if line and line not in options:
-            options.append(line)
-    if options and not 2 <= len(options) <= MULTI_MAX:
-        return json.dumps(
-            {"error": f"a choice ballot needs 2 to {MULTI_MAX} distinct "
-                      f"options, or none at all for yes/no"}
-        )
-    if room(guild, "polls") is None:
-        return json.dumps(
-            {"error": "no room is bound for the polls job, so a poll open to "
-                      "everyone has nowhere to go; an admin can point me at "
-                      "one with /setup"}
-        )
-    bill = await file_bill(guild, invoker, title=title, what=what, why=why,
-                           options=options or None, audience=EVERYONE)
-    if bill is None:
-        return json.dumps({"error": "the polls channel is missing"})
-    return json.dumps({"filed": bill["no"], "title": title,
-                       "author": bill["author"], "closes_at": bill["ends_at"],
-                       "audience": "everyone",
-                       "note": "Open to the whole server. Carried by a "
-                               "majority of whoever votes, once a quorum of "
-                               "the room has. Nobody is chased about it."})
-
-
 async def act_propose_member(guild, invoker, args):
     name = _clean(args.get("name"), 80)
     discord_id = _clean(args.get("discord_id"), 25)
@@ -2566,7 +2303,6 @@ async def act_propose_removal(guild, invoker, args):
 
 BILL_ACTIONS = {
     "propose_bill": act_propose_bill,
-    "open_poll": act_open_poll,
     "propose_member": act_propose_member,
     "propose_removal": act_propose_removal,
     "close_floor": act_close_floor,
@@ -4248,18 +3984,6 @@ async def slash_propose(interaction: discord.Interaction, priority: bool = False
 
 
 @bot.tree.command(
-    name="poll", description="Ask the whole server a question"
-)
-@app_commands.guild_only()
-async def slash_poll(interaction: discord.Interaction):
-    if await refuse_unless(interaction, "polls"):
-        return
-    if not keyed_in(interaction):
-        return await refuse(interaction, NOT_INSIDE)
-    await interaction.response.send_modal(PollModal())
-
-
-@bot.tree.command(
     name="invite", description="Propose that someone be invited to the server"
 )
 @app_commands.guild_only()
@@ -4323,47 +4047,26 @@ async def slash_close(interaction: discord.Interaction, number: int):
 @bot.tree.command(name="bills", description="What is open for a vote right now")
 @app_commands.guild_only()
 async def slash_bills(interaction: discord.Interaction):
-    """What is open, to whoever is asking.
-
-    Not cooperative-only any more, because not everything open is the
-    cooperative's. Somebody in the room who is not in the cooperative gets
-    the polls they can actually vote in and nothing else -- listing the
-    proposals at them would only be a list of things they cannot do.
-    """
-    member = interaction.user
-    inside = keyed_in(interaction)
-    if not inside and not in_room(member):
+    """What is open, to the cooperative it belongs to."""
+    if await refuse_unless(interaction, "governance"):
+        return
+    if not keyed_in(interaction):
         return await refuse(interaction, NOT_INSIDE)
-    # Two features can put something on this list, and it is worth reading
-    # while either one of them runs.
-    live = [k for k in ("governance", "polls")
-            if module_live(interaction.guild, k)]
-    if not live:
-        return await refuse(interaction, module_note(interaction.guild,
-                                                     "governance"))
 
     open_bills = sorted(
-        (b for b in load_json(BILLS, [])
-         if b.get("status") == "on_floor"
-         and (inside or audience_of(b) == EVERYONE)),
+        (b for b in load_json(BILLS, []) if b.get("status") == "on_floor"),
         key=lambda b: b["no"],
     )
     if not open_bills:
         return await interaction.response.send_message(
-            "Nothing is open. The floor is yours." if inside
-            else "No polls are open just now.",
-            ephemeral=True,
+            "Nothing is open. The floor is yours.", ephemeral=True
         )
-    lines = ["**Open for a vote**" if inside else "**Open to the room**"]
+    lines = ["**Open for a vote**"]
     # A title can run to a hundred characters, so a busy floor is trimmed
     # rather than sent and refused by Discord for length.
     for bill in open_bills[:10]:
         ends = int(datetime.fromisoformat(bill["ends_at"]).timestamp())
-        mark = ""
-        if audience_of(bill) == EVERYONE:
-            mark = "📣 " if inside else ""
-        elif is_priority(bill):
-            mark = "⚡ "
+        mark = "⚡ " if is_priority(bill) else ""
         where = floor_for(interaction.guild, bill)
         lines.append(
             f"{mark}**No. {bill['no']}: {bill['title']}** — "
@@ -4373,9 +4076,7 @@ async def slash_bills(interaction: discord.Interaction):
     rest = len(open_bills) - 10
     if rest > 0:
         lines.append(f"-# And {rest} more.")
-    if inside:
-        lines.append("-# 📣 is open to the whole server; ⚡ is one you will "
-                     "be chased about.")
+    lines.append("-# ⚡ is one you will be chased about.")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 

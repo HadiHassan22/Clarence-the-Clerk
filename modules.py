@@ -116,15 +116,6 @@ ROOM_PLAN = {
         "visibility": "members", "read_only": True,
         "topic": "Every decision ever made, numbered. The permanent record.",
     },
-    "polls": {
-        "name": "polls", "category": "governance",
-        "visibility": "members", "read_only": True,
-        # Same reason as `votes`: the argument about a poll happens in the
-        # thread on it, and here it is open to whoever the poll is open to.
-        "threads": True,
-        "topic": "Polls open to everyone. Advisory: they say what the room "
-                 "thinks.",
-    },
     "health": {
         "name": "bot-health", "category": "governance",
         # Administrators only, and nobody else -- not the cooperative, not
@@ -202,20 +193,6 @@ SPEC = {
                   "list_bills", "get_bill", "list_acts", "get_act",
                   "get_standing_orders"),
     },
-    "polls": {
-        "name": "Polls",
-        "blurb": "Advisory questions put to the whole server, not just the "
-                 "cooperative.",
-        "default": True,
-        "rooms": {"polls": True},
-        "roles": (),
-        "needs": (),
-        "brain": False,
-        "settings": (),
-        "builds": True,
-        "commands": ("poll",),
-        "tools": ("open_poll",),
-    },
     "chat": {
         "name": "Conversation",
         "blurb": "He answers when mentioned, and does as he is asked.",
@@ -253,7 +230,7 @@ SPEC = {
 # Display order for every list a human reads: what he is for, then what he
 # can be talked into, then the housekeeping. Not alphabetical -- the first
 # three are the reason to install him and belong at the top.
-ORDER = ("governance", "polls", "chat", "health")
+ORDER = ("governance", "chat", "health")
 
 # Tools that belong to no module because they are how a module is
 # configured. Switching every feature off must still leave the way to
