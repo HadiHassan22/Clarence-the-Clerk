@@ -727,8 +727,7 @@ def test_setup_rooms(clerk, data):
     seen.clear()
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
-                 ["🖋️・propose", "🗳️・votes", "🏛️・decisions",
-                  "💬・eugene-chat"])]
+                 ["🖋️・propose", "🗳️・votes", "🏛️・decisions"])]
     dressed = guild_for(3333)
     # A copy: the fake create_text_channel appends to guild.text_channels,
     # and handing it the same list means `built` grows as he builds.
@@ -739,7 +738,7 @@ def test_setup_rooms(clerk, data):
           bound == [] and len(made) == len(built))
     check("and he builds his own instead, under his own names",
           all("🗳️・votes" not in line for line in made))
-    for key in ("proposals", "votes", "decisions", "chat"):
+    for key in ("proposals", "votes", "decisions"):
         bindings.bind_channel(3333, key, None)
     seen.clear()
 
@@ -797,7 +796,7 @@ def test_setup_rooms(clerk, data):
           "everyone else",
           sorted(shut) == ["propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
-          == ["decisions", "eugene-chat"])
+          == ["decisions"])
     check("the cooperative is named in every room that is shut — let in on "
           "its own, and never merely left out",
           all(role in ow for _n, ow in seen if ow))
@@ -1904,17 +1903,17 @@ def test_prompt_caching(data):
         # taking them back two paragraphs later. A house reconfigures itself
         # about once, so this costs one fresh prefix and buys a prompt that
         # is not arguing with itself.
-        modules.set_enabled(7788, "chat", False)
+        modules.set_enabled(7788, "chat", True)
         toggled = brain._system_prompt(guild)
-        check("but switching a feature off does move it, deliberately",
+        check("but switching a feature on does move it, deliberately",
               toggled[0] != before[0])
         check("because what he is told he can do follows what is switched on",
-              "# Running the place" in before[0]
-              and "# Running the place" not in toggled[0])
+              "# Running the place" not in before[0]
+              and "# Running the place" in toggled[0])
         check("while the switch table itself stays in the half that moves",
               "conversation" in toggled[1].lower()
               and "# What is switched on" not in toggled[0])
-        modules.set_enabled(7788, "chat", True)
+        modules.set_enabled(7788, "chat", False)
         after = brain._system_prompt(guild)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         check("today's date is kept out of the cached half",
@@ -2035,6 +2034,7 @@ def test_modules(data):
         "builds": False, "commands": (), "tools": (),
     }
     try:
+        modules.set_enabled(gid, "chat", True)
         changed, knock = modules.set_enabled(gid, "chat", False)
         check("switching off what another module stands on takes it too",
               changed and set(knock) == {"_dependant"})
@@ -2057,6 +2057,8 @@ def test_modules(data):
 
     print("\nthe whole roll set at once, which is what the menu submits")
     on, off = modules.apply_set(gid, ["governance"])
+    modules.set_enabled(gid, "chat", True)
+    on, off = modules.apply_set(gid, ["governance"])
     check("what was on and is not any more is named", "chat" in off)
     check("what the selection left standing is still standing",
           modules.enabled(gid, "governance"))
@@ -2077,9 +2079,14 @@ def test_modules(data):
               modules.blockers(gid, "governance",
                                rooms={"votes", "decisions"},
                                roles={"cooperative"})))
-    check("conversation with no key says so in as many words",
+    check("conversation is off out of the box, because a feature that is "
+          "on and waiting on a key reads as broken when nothing is",
+          not modules.enabled(gid, "chat"))
+    modules.set_enabled(gid, "chat", True)
+    check("switched on with no key it says so in as many words",
           modules.blockers(gid, "chat") == ["no AI key"]
           and modules.live(gid, "chat", brain=True))
+    modules.set_enabled(gid, "chat", False)
 
     print("\nthe structure is generated, so it cannot describe another server")
     modules.apply_set(gid, ["governance"])

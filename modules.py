@@ -180,8 +180,16 @@ SPEC = {
     },
     "chat": {
         "name": "Conversation",
-        "blurb": "He answers when mentioned, and does as he is asked.",
-        "default": True,
+        "blurb": "He answers when mentioned, and does as he is asked. "
+                 "Needs an AI key, and is the only part of him that sends "
+                 "anything outside your server.",
+        # Off. It used to be on and dormant, so a fresh install with no key
+        # showed a feature waiting on something and read as half-broken --
+        # when in fact the whole governance engine was running and nothing
+        # was missing. A server that wants him to talk switches it on and
+        # sets a key, which is one decision made on purpose rather than a
+        # default nobody chose.
+        "default": False,
         "rooms": {"chat": False},
         "roles": (),
         "needs": (),

@@ -1,14 +1,27 @@
 # Eugene the Clerk
 
-The executive of a Discord server run as an experiment in direct
-self-governance. No moderators, no admins; a parliament of everyone, and
-this bot as the only officeholder.
+**A voting engine for a Discord server that governs itself.** Anyone on
+the roll files a proposal — title, what, why. Eugene opens an anonymous
+ballot, and it ends the moment its result can no longer change rather
+than when a clock runs out. What passes becomes a numbered decision in a
+permanent record, and he keeps a standing list of the ones nobody has
+carried out yet.
 
-How it works, in one breath: anyone in the cooperative files a proposal
-(title, what, why), Eugene opens an anonymous ballot, and a vote ends the
-moment its result can no longer change rather than when a clock runs out;
-what passes becomes a numbered decision in the permanent record, and
-Eugene keeps a standing list of the ones nobody has carried out yet.
+Three things make that more than a poll bot:
+
+- **The roster is the denominator, not turnout.** Not voting counts as a
+  no, which is why stepping out of the count is one command and happens
+  on its own after a quiet fortnight. Thresholds are shares of who is
+  actually here, so they move as the roll does.
+- **A vote ends when it is decided.** Passing is called the instant the
+  yes votes arrive; failing waits for everyone, because a no can still
+  become a yes.
+- **Ballots are sealed from everybody, including from him.** They are
+  destroyed at close. The tally survives; the votes do not.
+
+**No AI key is needed for any of it, and with no key nothing leaves your
+server.** Conversation is a separate feature, off out of the box, that a
+house can switch on and pay for itself. See [PRIVACY.md](PRIVACY.md).
 
 The rules: [standing-orders.md](standing-orders.md) — ordinary rules,
 rewritable at the top tier, and the only document Eugene is given. One
@@ -18,11 +31,11 @@ them: [examples-charter.md](examples-charter.md).
 ## The programs
 
 - **`clerk.py`**: the resident daemon. This is what gets hosted 24/7.
-- **`modules.py`**: what he does here, in twelve switchable parts. Each
-  one declares the rooms it posts in, the roles it reads, the settings it
-  owns, the tools it lends the model and the modules it stands on — which
-  is simultaneously the switch, the structure preview, the build plan and
-  the list the model is allowed to touch. Imports nothing from Discord.
+- **`modules.py`**: what he does here, in switchable parts. Each one
+  declares the rooms it posts in, the roles it reads, the settings it
+  owns and the tools it lends the model — which is simultaneously the
+  switch, the structure preview, the build plan and the list the model is
+  allowed to touch. Imports nothing from Discord.
 - **`builder.py`**: the shaping itself — the rooms `/setup` builds, off
   the plan in `modules.py`.
 - **`settings.py`**: per-server settings, keyed by guild id: the AI
@@ -38,7 +51,7 @@ them: [examples-charter.md](examples-charter.md).
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env               # then fill in DISCORD_TOKEN and GUILD_ID
+cp .env.example .env               # then fill in DISCORD_TOKEN
 .venv/bin/python clerk.py          # run the clerk
 ```
 
@@ -47,13 +60,15 @@ server and says what is done and what is missing:
 
 ```
 ## Eugene in Book Club
-4 of 12 features are running. Press Apply to finish the rest.
+1 of 3 features are running. Press Apply to finish the rest.
 
 ✅ 1 · Roles      — @Cooperative · @Member
-⬜ 2 · Rooms      — missing `health` — Apply makes them
-⬜ 3 · The cooperative — empty. Nobody can propose, vote or talk to him
-✅ 4 · Features   — 9 on, 3 off · waiting on something: conversation, memory
-⬜ 5 · Brain      — no key, so he keeps records and says nothing
+⬜ 2 · Rooms      — missing `votes`, `decisions` — Apply makes them
+       -# Channels: make new ones. Channels changes it.
+⬜ 3 · The cooperative — empty. Nobody can propose or vote
+✅ 4 · Features   — 1 on, 1 off
+⬜ 5 · Brain      — optional. Governance runs without one, and with no
+                   key nothing leaves this server
 ⬜ 6 · This place — he describes it neutrally rather than guessing
 
 [ Features ] [ Rooms ] [ Roles & votes ] [ Brain ] [ Numbers ]
@@ -141,17 +156,21 @@ back on. `/setup` is the administrators', and so is one command:
   he moves. The monthly counter re-prices itself to match, so an opus month
   is billed as one.
 
-## What he does here, in four parts
+## What he does here, in two parts
 
 Every feature is a module with a switch, and **Features** on the `/setup`
 panel is the whole list, ticked or unticked.
 
 | Feature | What it is | Out of the box |
 |---|---|---|
-| Governance | proposals, anonymous ballots, the permanent record | on |
-| Conversation | he answers when mentioned, and does as he is asked | on¹ |
+| Governance | proposals, anonymous ballots, the permanent record | **on** |
+| Conversation | he answers when mentioned, and does as he is asked | off |
 
-¹ *needs an AI key, so it is on and dormant until somebody sets one.*
+Conversation is off because it is the only part of him that needs an AI
+key and the only part that sends anything outside your server. It used to
+be on and dormant, which meant a fresh install showed a feature waiting on
+something and read as half-broken — when in fact the whole voting engine
+was running and nothing was missing.
 
 Switching one off is not cosmetic. Its commands say it is off and name
 who can turn it back on, its rooms stop being built, its settings are

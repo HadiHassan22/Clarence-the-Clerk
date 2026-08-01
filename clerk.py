@@ -2619,7 +2619,8 @@ def panel_content(guild, user, note=None):
         f"{mark(has_brain(guild))} **5 · Brain** — "
         + (f"awake through {providers.label(brain.provider_name(guild.id))}"
            if has_brain(guild) else
-           "no key, so he keeps records and says nothing"),
+           "optional. Governance runs without one, and with no key "
+           "**nothing leaves this server**"),
         f"{mark(bool(settings.get(guild.id, 'house')))} **6 · This place** — "
         + (f"*{brain.house_description(guild.id)}*"
            if settings.get(guild.id, "house") else
