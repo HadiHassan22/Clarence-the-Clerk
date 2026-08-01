@@ -116,19 +116,6 @@ ROOM_PLAN = {
         "visibility": "members", "read_only": True,
         "topic": "Every decision ever made, numbered. The permanent record.",
     },
-    "health": {
-        "name": "bot-health", "category": "governance",
-        # Administrators only, and nobody else -- not the cooperative, not
-        # members. It carries the running commit, the month's spend, the
-        # annex he is on and every error he has hit, which is operational
-        # detail for whoever keeps him running and clutter for everybody
-        # else. It used to be behind an opt-in `nerd` role, which meant a
-        # third role in the list that was not a rank, a button to toggle
-        # it, and a room whose audience was whoever had once been curious.
-        "visibility": "admins", "read_only": True,
-        "topic": "Eugene's vitals: commit, latency, spend, open votes. "
-                 "Administrators only.",
-    },
     "chat": {
         # His own room, made under his own name. A server with a channel
         # called `chat` has not thereby asked to be confined to it, and the
@@ -211,26 +198,12 @@ SPEC = {
         "commands": (),
         "tools": ("server_info",),
     },
-    "health": {
-        "name": "Health card",
-        "blurb": "His own vitals, pinned and current: commit, latency, "
-                 "spend, open votes. Administrators only.",
-        "default": True,
-        "rooms": {"health": True},
-        "roles": (),
-        "needs": (),
-        "brain": False,
-        "settings": (),
-        "builds": True,
-        "commands": (),
-        "tools": (),
-    },
 }
 
 # Display order for every list a human reads: what he is for, then what he
 # can be talked into, then the housekeeping. Not alphabetical -- the first
 # three are the reason to install him and belong at the top.
-ORDER = ("governance", "chat", "health")
+ORDER = ("governance", "chat")
 
 # Tools that belong to no module because they are how a module is
 # configured. Switching every feature off must still leave the way to

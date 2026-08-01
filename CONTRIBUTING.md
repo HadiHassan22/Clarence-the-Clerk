@@ -36,16 +36,14 @@ You need your own bot and your own server; never test against the live one.
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python install.py        # asks, writes .env, prints the invite link
+cp .env.example .env               # then fill in DISCORD_TOKEN and GUILD_ID
 .venv/bin/python clerk.py          # runs the clerk
 ```
 
 Then `/setup` in your sandbox server: **Apply** builds the structure and
 puts you in the cooperative, and **Brain** wakes him with your own key.
-`build_server.py` does the same building from a terminal if you prefer,
-off the same plan — `--list` prints what it would build without building
-it. Nothing about the brain goes in `.env`: keys are per server and live
-in `guilds/<id>/settings.json`, which is gitignored.
+Nothing about the brain goes in `.env`: keys are per server and live in
+`guilds/<id>/settings.json`, which is gitignored.
 
 Switch off whatever you are not working on. **Features** on the panel is
 the whole list, and a feature that is off costs nothing to have around:
@@ -66,7 +64,7 @@ if `requirements.txt` is not installed.
 ## House rules
 
 - **Never commit secrets, state, logs or raw data.** `.env`, the JSON state
-  files (`signatures.json`, `bills.json`, `acts.json`, `roles.json`,
+  files (`bills.json`, `acts.json`,
   `clerk_state.json`, `brain_state.json`), the `logs/` directory (which is
   where `executor_log.json` lives) and the whole `guilds/` directory are
   gitignored on purpose. They are the server's memory and live on the
@@ -80,11 +78,10 @@ if `requirements.txt` is not installed.
 - **A server's AI key is shown to nobody.** It is entered in a modal,
   answered ephemerally, stored `0600`, and only ever displayed or logged
   through `settings.fingerprint()`. Never put one in a log line, an error
-  message, a health post or a channel.
+  message or a channel.
 - **Building is destructive and must stay deliberate.** `builder.py`
-  sweeps and re-permissions channels and deletes stray voice channels,
-  and only ever when `--sweep` is asked for by name at a terminal. From
-  inside Discord, **Apply** is strictly additive: it creates and adopts,
+  can sweep and re-permission channels, and nothing reachable from
+  Discord ever asks it to. **Apply** is strictly additive: it creates and adopts,
   and never renames, moves, re-topics, re-permissions or deletes anything
   that already existed. Keep that line where it is, and keep the preview
   honest — somebody should be able to read what is about to happen before
@@ -109,29 +106,23 @@ if `requirements.txt` is not installed.
 
 ## The shape of the thing
 
-- `clerk.py`: the resident daemon (door, bills, ballots, chambers, roles,
+- `clerk.py`: the resident daemon (door, bills, ballots, chambers, the
   health endpoint, the `/setup` panel). This is what gets hosted.
-- `modules.py`: what he does here, in twelve switchable parts, and the
+- `modules.py`: what he does here, in two switchable parts, and the
   single description of the governance layout. Discord-free, so all of it
   is testable on a laptop.
-- `slate.py`: whose history is on this disk, and clearing it by scope.
-  Anything new that gets written to the data root belongs in one of its
-  scopes, or it will follow the daemon to the next server it serves.
-- `brain.py`: the conversational layer, gated to holders of the
-  `bot-whisperers` role, rate limited and budget capped. Knows nothing
-  about any API's wire format.
+- `brain.py`: the conversational layer, gated to the cooperative, rate
+  limited and budget capped. Knows nothing about any API's wire format.
 - `providers.py`: the annexes. Gemini, Grok and Claude behind one
   interface, so adding a fourth is one class and no edits elsewhere.
 - `settings.py`: per-server settings and keys, keyed by guild id. Pure
   standard library; keep it that way so it stays testable anywhere.
 - `toolbox.py`: the harness. The only door between the model and reality.
-- `builder.py`: shaping a server. Shared by `build_server.py` and
-  `/setup` so a terminal and Discord cannot drift apart.
-- `install.py`: the first-run wizard.
-- `build_server.py`: the terminal route into a server, off the plan in
-  `modules.py`. `server_config.yaml` is now only the hangout, for laying
-  out an empty server with `--full-layout`.
-- `constitution.md`, `standing-orders.md`: the founding documents; the
-  clerk reads them into his own system prompt. Treat their wording as
-  precious, it was argued over at length.
-- `ROADMAP.md`: where this is going.
+- `builder.py`: shaping a server, off the plan in `modules.py`. `/setup`
+  is the only caller.
+- `powers.py`: which member somebody meant, and the tools that configure
+  the clerk himself.
+- `standing-orders.md`: the rules. The marked brief in it is read into
+  Eugene's system prompt on every message, so a rule changed in the code
+  has to change here in the same commit. Treat the wording as precious;
+  it was argued over at length.

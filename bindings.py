@@ -27,7 +27,6 @@ ROOMS = {
     "proposals": "Where a new proposal is announced",
     "votes": "Where ballots run",
     "decisions": "The permanent record of what was decided",
-    "health": "Eugene's own vitals. Administrators only",
     "chat": "Where people talk to Eugene. He makes this one himself",
 }
 
@@ -70,8 +69,6 @@ JOBS = {
     "the-floor": "votes",
     "decisions": "decisions",
     "gazette": "decisions",
-    "bot-health": "health",
-    "health": "health",
     # His own room, by his own name, and only by that. A server's existing
     # `#chat` is not on this list and must never be: binding `chat` does not
     # add a room he talks in, it takes away every other one, and no server

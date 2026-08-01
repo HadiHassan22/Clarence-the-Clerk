@@ -1,30 +1,12 @@
-# The hangout, and nothing else.
+# What is left of the old layout file: one number.
 #
 # What Eugene needs -- somewhere to propose, somewhere to vote, somewhere to
-# publish the result, the archive -- is no longer described here. It is
-# generated from the features a server has switched on, in `modules.py`, and
-# both routes into a server read that same plan: `/setup` inside Discord and
-# `build_server.py` at a terminal. There used to be a description in each
-# place, and a server set up both ways ended up with two of every governance
-# room.
-#
-# What is left is a starting point for an EMPTY server and a description of
-# no particular one. It is never built unless somebody asks for it by name:
-#
-#     .venv/bin/python build_server.py --full-layout
-#
-# Adding channels to a server that did not ask for them is how the first
-# install went wrong.
-#
-# Naming style: emoji + "・" separator for text, emoji + space for voice.
-# visibility levels:
-#   gate     - visible to everyone in the server, role or no role
-#   members  - visible to anyone inside (the default for everything)
-# read_only: true means only the bot can post there; members can react.
-#
-# `former:` on a channel lists names it used to go by, so a rename adopts the
-# existing channel and keeps its history instead of archiving it and starting
-# an empty one.
+# publish the result, the archive -- is generated from the features a server
+# has switched on, in `modules.py`, and `/setup` is the only route that
+# builds it. The hangout that used to live here (general, memes, pets, six
+# voice channels) was a description of one particular server, and adding
+# channels to a server that did not ask for them is how the first install
+# went wrong.
 
 # The backstop only: a vote now ends as soon as its result is settled, so this
 # is the deadline for one nobody finishes. It stays here because CONTRIBUTING
@@ -33,66 +15,3 @@
 # rule: a house that sets its own window in `/setup` outranks it.
 voting:
   floor_hours: 48
-
-categories:
-  # No door. Roles are given by people, not earned at a button, so there is
-  # nothing to sign and nowhere to queue. This channel is only somewhere an
-  # invite link can point and new arrivals can be greeted -- the arrivals
-  # feature will adopt it if it is bound, and never makes one itself.
-  - name: ""
-    channels:
-      - name: "🛎️・welcome"
-        former: ["reception"]
-        visibility: gate
-        topic: "Say hello."
-
-  - name: hangout
-    channels:
-      - name: "💬・general"
-        topic: "The room."
-      - name: "😂・memes"
-        topic: "Quantity over quality."
-      - name: "🥗・food"
-        topic: "What you cooked, what you ordered, what you regret."
-      - name: "🐶・pets"
-        topic: "Mandatory tax payments accepted here."
-      - name: "📷・photos"
-        topic: "Things you saw and pointed a camera at."
-      - name: "🎨・art"
-        topic: "Things you made. Skill optional."
-      - name: "🖥️・tech"
-        topic: "Setups, gadgets, code, and strong opinions about all three."
-      # Voice inside hangout so it sits under the texts, above gaming.
-      - name: "🛋️ General"
-        type: voice
-
-  - name: "🎵 music"
-    channels:
-      - name: "🎵 Music 1"
-        type: voice
-      - name: "🎵 Music 2"
-        type: voice
-      - name: "🎵 Music 3"
-        type: voice
-
-  - name: "🎮 gaming"
-    channels:
-      - name: "🕹️・gaming"
-        topic: "What we play, when we play it, and whose fault the loss was."
-      - name: "🎮 Lobby"
-        type: voice
-      - name: "🎮 Team of 10"
-        type: voice
-        user_limit: 10
-      - name: "🎮 Team of 5 A"
-        type: voice
-        user_limit: 5
-      - name: "🎮 Team of 5 B"
-        type: voice
-        user_limit: 5
-      - name: "🎮 Trio A"
-        type: voice
-        user_limit: 3
-      - name: "🎮 Trio B"
-        type: voice
-        user_limit: 3

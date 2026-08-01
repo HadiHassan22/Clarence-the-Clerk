@@ -647,100 +647,6 @@ def test_filing(clerk, data):
         clerk.in_cooperative = keep_keyed
 
 
-def test_health_room_is_private(clerk, data):
-    """The health room is administrators only, and the two ways that goes
-    wrong are both silent.
-
-    Locking the writer out is one: the room is denied to everybody, and the
-    bot is inside everybody unless he happens to be an administrator, so a
-    room he cannot post in looks exactly like a bot with nothing to say.
-    Arguing with an administrator is the other: this shuts a room somebody
-    may deliberately open again, so it has to be a thing that happens once
-    rather than a loop that keeps winning.
-    """
-    print("\nthe health room is the administrators'")
-    import bindings
-    import discord
-
-    settings.configure(data)
-
-    class Role:  # hashable, because it is an overwrite key
-        def __init__(self, rid, name):
-            self.id, self.name = rid, name
-
-    coop, members = Role(77, "Cooperative"), Role(78, "Member")
-    me = Role(99, "Eugene")
-    guild = types.SimpleNamespace(
-        id=5151, default_role="@everyone", me=me, roles=[coop, members],
-        get_role=lambda i: {77: coop, 78: members}.get(i),
-    )
-    bindings.bind_role(5151, "cooperative", 77)
-    bindings.bind_role(5151, "member", 78)
-
-    ow = clerk.admin_only_overwrites(guild)
-    check("everybody is denied, which is the whole of the rule",
-          ow["@everyone"].view_channel is False)
-    check("the cooperative and members are denied by name, not left to "
-          "inherit it",
-          ow[coop].view_channel is False and ow[members].view_channel is False)
-    check("and nobody at all is granted a view, because administrators do "
-          "not need one -- Discord walks them past every overwrite here",
-          [k for k, v in ow.items() if v.view_channel and k is not me] == [])
-    check("the bot is the one exception, and he is named: a room denied to "
-          "everybody is a room he cannot write the health card into",
-          ow[me].view_channel is True and ow[me].send_messages is True)
-
-    guild_no_bot = types.SimpleNamespace(
-        id=5151, default_role="@everyone", roles=[],
-        get_role=lambda i: None,
-    )
-    check("a guild that cannot say who he is still shuts the room rather "
-          "than failing open",
-          clerk.admin_only_overwrites(guild_no_bot)["@everyone"]
-          .view_channel is False)
-
-    print("\nand it is shut once, not every five minutes")
-    edits = []
-
-    async def edit(overwrites=None, reason=None):
-        edits.append(overwrites)
-
-    posted = []
-
-    async def send(text, *a, **k):
-        posted.append(text)
-
-    channel = types.SimpleNamespace(
-        id=4242, name="bot-health", mention="#bot-health", edit=edit,
-        send=send,
-    )
-    guild.get_channel = lambda i: channel if i == 4242 else None
-    bindings.bind_channel(5151, "health", 4242)
-
-    state_path = clerk.STATE
-    keep = clerk.load_json(state_path, {})
-    try:
-        clerk.save_json(state_path, {})
-        run(clerk.close_health_room(guild))
-        check("the first look shuts it", len(edits) == 1)
-        check("and it is shut to exactly what the plan says",
-              edits[0]["@everyone"].view_channel is False)
-        run(clerk.close_health_room(guild))
-        run(clerk.close_health_room(guild))
-        check("and no later look touches it again, so an administrator who "
-              "opens it back up has decided something rather than started an "
-              "argument with a loop",
-              len(edits) == 1)
-        check("which is remembered on disk, not in this process, because a "
-              "restart every deploy would make once mean daily",
-              clerk.load_json(state_path, {}).get("health_closed") is True)
-        check("and the room says so once, so whoever is left reading it "
-              "knows what changed rather than noticing people missing",
-              len(posted) == 1 and "administrators only" in posted[0].lower())
-    finally:
-        clerk.save_json(state_path, keep)
-
-
 def test_setup_rooms(clerk, data):
     """What `/setup` hands Discord when it makes a room, and which rooms
     it makes at all.
@@ -795,21 +701,17 @@ def test_setup_rooms(clerk, data):
           all(isinstance(ow, Mapping) for _name, ow in seen))
     check("a house with no cooperative role yet gets its rooms open to "
           "everybody, rather than no rooms at all",
-          all(ow == {} for name, ow in seen if name != "bot-health"))
-    check("except the health room, which is shut before there is anybody to "
-          "shut it to: it carries the spend and the errors, and waiting for "
-          "a cooperative to exist would open it to the whole server first",
-          dict(seen).get("bot-health") not in ({}, None))
+          all(ow == {} for _name, ow in seen))
 
     print("\na room already built is adopted, never duplicated")
-    # The bug this is here for: `build_server.py` writes "🗳️・votes" and this
+    # The bug this is here for: the builder writes "🗳️・votes" and this
     # command looked for "votes". It found nothing, made a second one loose at
     # the top of the sidebar, and bound Eugene to the empty one.
     seen.clear()
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
                  ["🖋️・propose", "🗳️・votes", "🏛️・decisions",
-                  "🩺・bot-health", "💬・eugene-chat"])]
+                  "💬・eugene-chat"])]
     dressed = guild_for(3333)
     dressed.text_channels = built
     made, bound, _skipped = run(clerk.make_missing_rooms(dressed))
@@ -859,21 +761,11 @@ def test_setup_rooms(clerk, data):
     shut = [name for name, ow in seen if ow]
     check("once there is one, the rooms that are its business are shut to "
           "everyone else",
-          sorted(shut) == ["bot-health", "propose", "votes"])
+          sorted(shut) == ["propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
           == ["decisions", "eugene-chat"])
-    health_ow = dict(seen)["bot-health"]
-    check("the health room grants nobody anything: administrators read it "
-          "because Discord lets them past an overwrite, so there is no role "
-          "to hand out and none to forget to take back",
-          all(getattr(o, "view_channel", None) is False
-              for o in health_ow.values()))
-    check("and the cooperative is denied it by name rather than by omission, "
-          "so a server that opens a category up does not open this with it",
-          role in health_ow
-          and health_ow[role].view_channel is False)
     check("the cooperative is named in every room that is shut — let in on "
-          "its own, kept out of the health room, and never merely left out",
+          "its own, and never merely left out",
           all(role in ow for _n, ow in seen if ow))
     check("and let in on exactly the two that are its business",
           [n for n, ow in seen
@@ -916,8 +808,7 @@ def test_closing(clerk, data):
 
     structural = report(title="A books channel", what="There shall be a books channel.")
     check("a structural Act names the real next steps",
-          any("server_config.yaml" in line and "build_server.py" in line
-              for line in structural["outstanding"]))
+          any("by hand" in line for line in structural["outstanding"]))
 
     invite = report(kind="invite", title="Invitation of Sam")
     check("an invite tally stays sealed in the report", invite["tally"] == "sealed")
@@ -1881,13 +1772,13 @@ def test_prompt_caching(data):
         # A switch is the cheapest live thing to move: it belongs in the
         # volatile half by design, so flipping one must leave the cached
         # half byte-identical or the saving is silently off.
-        modules.set_enabled(7788, "health", False)
+        modules.set_enabled(7788, "chat", False)
         after = brain._system_prompt(guild)
 
         check("the stable half survives a switch changing under it",
               before[0] == after[0])
         check("because what is switched on is in the other half",
-              "health card" in after[1].lower())
+              "conversation" in after[1].lower())
         check("and the switch table is never in this one",
               "# What is switched on" not in after[0])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2029,10 +1920,10 @@ def test_modules(data):
     modules.reset(gid)
 
     print("\nthe whole roll set at once, which is what the menu submits")
-    on, off = modules.apply_set(gid, ["governance", "health"])
+    on, off = modules.apply_set(gid, ["governance"])
     check("what was on and is not any more is named", "chat" in off)
     check("what the selection left standing is still standing",
-          modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
+          modules.enabled(gid, "governance"))
     modules.reset(gid)
 
     print("\ndormant is not off: it names the gap instead")
@@ -2055,12 +1946,11 @@ def test_modules(data):
           and modules.live(gid, "chat", brain=True))
 
     print("\nthe structure is generated, so it cannot describe another server")
-    modules.apply_set(gid, ["governance", "health"])
+    modules.apply_set(gid, ["governance"])
     plan = dict(modules.structure(gid, only_buildable=True))
     check("every room he makes is in one category, and there is one category",
           list(plan) == ["governance"]
-          and plan["governance"] == ["proposals", "votes", "decisions",
-                                     "health"])
+          and plan["governance"] == ["proposals", "votes", "decisions"])
     check("who may read a room is written on the room, not on a second "
           "category filing it",
           list(modules.CATEGORIES) == ["governance"]
@@ -2090,114 +1980,6 @@ def test_modules(data):
           and all(modules.tool_allowed(gid, name)
                   for name in modules.UNGATED_TOOLS))
     modules.reset(gid)
-
-
-# ---------- clearing what a previous server wrote down ----------
-
-def test_slate(data):
-    """Half of what he remembers is kept per server; half is not.
-
-    The half that is not -- the record, the roster, the memory book, the
-    ledgers -- sits at the top of the data directory from when there was
-    only ever one house, and follows the daemon anywhere it goes. Pointing
-    it at a second server without clearing that means arriving with the
-    first one's proposals, its numbering, and its notes about people who
-    are not there.
-    """
-    print("\nwhose slate this is")
-    import slate
-
-    store = data / "slate-store"
-    store.mkdir(parents=True, exist_ok=True)
-    settings.configure(store)
-    slate.configure(store)
-
-    check("a directory nobody has run in belongs to nobody",
-          slate.owner() is None and slate.has_history() is False)
-    check("and so cannot be stranded from anybody", not slate.stranded(1))
-    slate.claim(1)
-    check("claiming it stamps the server it is serving", slate.owner() == 1)
-    check("claiming it twice is not a write", slate.claim(1) is False)
-
-    (store / "bills.json").write_text(json.dumps(
-        [{"no": 7, "title": "Kettle"}, {"no": 8, "title": "Rug"}]))
-    (store / "acts.json").write_text(json.dumps([{"act": 1}, {"act": 2}]))
-    (store / "roster.json").write_text(json.dumps({"5": "2026-07-01"}))
-    (store / "clerk_memory.json").write_text(json.dumps([{"id": 1}]))
-    (store / "people.json").write_text(json.dumps({"5": {"notes": ["a"]}}))
-    (store / "roles.json").write_text(json.dumps({"900": {"creator_id": 5}}))
-    # Something of the first server's own, in its own directory, to prove
-    # the wipe never reaches across into it.
-    theirs = settings.state_file(1, "warden_cases.json")
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text(json.dumps([{"kind": "warn"}]))
-    state = json.loads((store / "clerk_state.json").read_text())
-    state.update(bill_counter=8, health_message_id=555)
-    (store / "clerk_state.json").write_text(json.dumps(state))
-
-    check("a directory with a record in it says so",
-          slate.has_history() is True)
-    check("and points at the server that wrote it when asked about another",
-          slate.stranded(2) and not slate.stranded(1))
-    check("what is about to go is counted before anything happens",
-          ("bills.json (2)" in slate.summary(1)
-           and "acts.json (2)" in slate.summary(1)))
-    check("every scope says what it costs, in words somebody can decide on",
-          all(spec["costs"] and spec["name"] and spec["blurb"]
-              for spec in slate.SCOPES.values()))
-
-    print("\nthe move: what goes, and what stays")
-    gone = slate.wipe(2, slate.ON_MOVE)
-    check("the record goes, numbering with it",
-          not (store / "bills.json").exists()
-          and not (store / "acts.json").exists()
-          and "bill_counter" in gone["record"])
-    check("so do the notes on people, and the memory book",
-          not (store / "people.json").exists()
-          and not (store / "clerk_memory.json").exists())
-    check("and the roster",
-          not (store / "roster.json").exists()
-          and not (store / "roles.json").exists())
-    left = json.loads((store / "clerk_state.json").read_text())
-    check("the bookkeeping file is edited rather than deleted, so the stamp "
-          "survives a wipe somebody asked for",
-          (store / "clerk_state.json").exists()
-          and "bill_counter" not in left and "guild_id" in left)
-    check("the previous server's own directory is untouched: they may come "
-          "back to it, and it was never in the way",
-          json.loads(theirs.read_text()) == [{"kind": "warn"}])
-    slate.claim(2)
-    check("and the disk belongs to the new server afterwards",
-          slate.owner() == 2 and not slate.stranded(2))
-
-    print("\nan AI key is never what gets cleared")
-    settings.set_brain_key(3, "gemini", "AIzaSyTESTKEYVALUE0123")
-    settings.put(3, house="a book club", rooms={"votes": 5})
-    slate.wipe(3, ["install"])
-    check("the install goes: bindings, switches, numbers, the one line",
-          settings.get(3, "house") is None and settings.get(3, "rooms") is None)
-    check("the key stays exactly where it was, because it costs money to "
-          "replace and cannot be read back off Discord",
-          settings.brain_key(3, "gemini") == "AIzaSyTESTKEYVALUE0123")
-    check("clearing a scope with nothing in it is not an error",
-          slate.wipe(3, ["record", "memory"]) == {})
-
-    print("\nlooking is never a write")
-    # A screen that lists what *could* be cleared asked about ids that were
-    # never servers, and left a directory behind for each one.
-    before = sorted(p.name for p in (store / "guilds").iterdir())
-    slate.summary(987654)
-    slate.present(987654, "install")
-    slate.has_history()
-    settings.get(987654, "house")
-    check("asking what a server has does not bring that server into being",
-          sorted(p.name for p in (store / "guilds").iterdir()) == before)
-    check("but writing one setting still does",
-          settings.put(987654, house="x") is not None
-          and (store / "guilds" / "987654").exists())
-    check("and a scope nobody has heard of is ignored rather than obeyed",
-          slate.wipe(3, ["everything", "rm -rf"]) == {})
-    settings.configure(data)
 
 
 def test_turn_shape(data):
@@ -2393,7 +2175,7 @@ def test_officer_gate(data):
 
     toolbox.configure(HERE, data, in_cooperative=broken)
     burnt = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "set_feature", {"feature": "health", "on": False})))
+        GUILD, insider, "set_feature", {"feature": "chat", "on": False})))
     check("and a check that throws is a no, not a yes",
           "the answer is no" in burnt.get("error", ""))
 
@@ -2419,7 +2201,6 @@ def main():
         test_roster(data)
         test_duties(data)
         test_modules(data)
-        test_slate(data)
         settings.configure(data)  # back to the shared store
         test_officer_gate(data)
         clerk = load_clerk(data)
@@ -2439,7 +2220,6 @@ def main():
             test_debate_thread(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
-            test_health_room_is_private(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
             test_voting(clerk, data)

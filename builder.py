@@ -13,14 +13,14 @@ Two layouts feed it, from two different places, and the difference is the
 whole design. `from_modules()` generates the rooms the enabled features
 ask for -- that is the default install, and it is generated rather than
 written down so it cannot describe a server other than the one the
-switches produce. `hangout_only()` is what is left of
+switches produce. What is left of
 `server_config.yaml` once the governance half moved into `modules.py`:
 memes, pets, gaming, voice. Eugene has no business deciding whether a
 server has a memes channel, so that half is only ever built when somebody
 asks for it by name.
 
 This module is the work itself and knows nothing about how it was asked
-for. Two callers share it: build_server.py, for a human at a terminal
+for. `/setup` is the only caller
 with the repo checked out, and `/setup` inside Discord, for someone
 installing Eugene in their own server with no terminal at all. They must
 do the same thing, so they run the same code; `say` is the only
@@ -107,19 +107,6 @@ def from_modules(guild_id):
         "channels": [],
     })
     return {"categories": categories}
-
-
-def hangout_only(config):
-    """The parts of `server_config.yaml` that are nobody's business but the
-    server's: the hangout, the voice rooms, the front door. The governance
-    half of that file moved into `modules.py`; what is left is a starting
-    point for an empty server and is only ever built when somebody asks for
-    it by name."""
-    wide = copy.deepcopy(config)
-    wide["categories"] = [
-        c for c in config["categories"] if not c.get("governance")
-    ]
-    return wide
 
 
 def merge(*configs):

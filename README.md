@@ -11,10 +11,9 @@ what passes becomes a numbered decision in the permanent record, and
 Eugene keeps a standing list of the ones nobody has carried out yet.
 
 The rules: [standing-orders.md](standing-orders.md) — ordinary rules,
-rewritable at the top tier, and the only document Eugene is given.
-Design history and scopes: [governance-design.md](governance-design.md),
-[ROADMAP.md](ROADMAP.md), [voting-system-scope.md](voting-system-scope.md),
-[roles-scope.md](roles-scope.md). Brand kit: [branding/](branding/).
+rewritable at the top tier, and the only document Eugene is given. One
+server's charter, as an example of what a house might adopt on top of
+them: [examples-charter.md](examples-charter.md).
 
 ## The programs
 
@@ -24,22 +23,10 @@ Design history and scopes: [governance-design.md](governance-design.md),
   owns, the tools it lends the model and the modules it stands on — which
   is simultaneously the switch, the structure preview, the build plan and
   the list the model is allowed to touch. Imports nothing from Discord.
-- **`install.py`**: the first-run wizard. Asks four questions, writes
-  `.env`, stores any AI keys, prints your invite link.
-- **`build_server.py`**: the structure builder, from a terminal. Builds
-  exactly what `/setup` would — the rooms your switched-on features ask
-  for — because both read the same plan out of `modules.py`. `--list`
-  prints it without building; `--full-layout` adds the hangout from
-  [server_config.yaml](server_config.yaml), which only suits an empty
-  server. Idempotent.
-- **`builder.py`**: the shaping itself, shared by `build_server.py` and
-  `/setup` so both do exactly the same thing.
+- **`builder.py`**: the shaping itself — the rooms `/setup` builds, off
+  the plan in `modules.py`.
 - **`settings.py`**: per-server settings, keyed by guild id: the AI
   keys, the model, the budget.
-- **`slate.py`**: whose history is on this disk, and how to clear it.
-  Stamps the data directory with the server it belongs to, says so out
-  loud when that stops matching, and knows what each kind of forgetting
-  costs. Imports nothing from Discord.
 - **`duties.py`**: the short list of things the clerk says without being
   asked, and the ledger that stops him saying any of them twice. Costs
   nothing: no line of it consults the model.
@@ -51,7 +38,7 @@ Design history and scopes: [governance-design.md](governance-design.md),
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python install.py        # writes .env, prints your invite link
+cp .env.example .env               # then fill in DISCORD_TOKEN and GUILD_ID
 .venv/bin/python clerk.py          # run the clerk
 ```
 
@@ -100,9 +87,7 @@ unset and he describes the server neutrally rather than guessing.
 Everything Apply does is additive. It never renames, moves, re-topics,
 re-permissions or deletes a channel you already had, and it only makes
 rooms a feature you left switched on actually asked for — no hangout, no
-memes channel, nothing you did not ask for. The full starting layout
-exists for an empty server and has to be asked for by name
-(`build_server.py --full-layout`).
+memes channel, nothing you did not ask for.
 
 The bot needs Administrator with its role at the top of the role list,
 and the **Server Members** and **Message Content** privileged intents
@@ -149,7 +134,6 @@ panel is the whole list, ticked or unticked.
 |---|---|---|
 | Governance | proposals, anonymous ballots, the permanent record | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
-| Health card | his vitals, pinned and current; administrators only | on |
 
 ¹ *needs an AI key, so it is on and dormant until somebody sets one.*
 
@@ -198,10 +182,6 @@ Two things it never does. **It never touches an AI key** — that is the one
 thing in the store that costs money to replace and cannot be read back off
 Discord. And **it never deletes anything in Discord**: no channel, no role,
 no message.
-
-`install.py` asks the same question when you point it at a server the disk
-does not already belong to, and only then — a first install has nothing to
-clear and is never asked.
 
 ## Giving the clerk a brain
 

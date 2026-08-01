@@ -55,7 +55,6 @@ import powers
 import providers
 import roster
 import settings
-import slate
 import toolbox
 
 HERE = Path(__file__).parent
@@ -73,8 +72,7 @@ if _MISSING:
         f"Eugene cannot start: {' and '.join(_MISSING)} "
         f"{'is' if len(_MISSING) == 1 else 'are'} not set.\n"
         f"On a host these are the service's environment variables; on a "
-        f"laptop they live in a .env file next to clerk.py, and "
-        f"`python install.py` writes one for you.\n"
+        f"laptop they live in a .env file next to clerk.py.\n"
         f"DISCORD_TOKEN is the bot token from the Discord developer portal. "
         f"GUILD_ID is the id of the server he keeps -- turn on Developer "
         f"Mode, right-click the server icon, Copy Server ID."
@@ -280,74 +278,19 @@ def archive_category(guild):
     return next((c for c in guild.categories if "archive" in c.name.lower()), None)
 
 
-def health_channel(guild):
-    return room(guild, "health")
-
-
 async def health_log(guild, text):
-    """Post an event line to bot-health; never let reporting break the op."""
-    channel = health_channel(guild)
-    if channel:
-        try:
-            await channel.send(text[:1900])
-        except discord.HTTPException:
-            pass
+    """An operational line for whoever runs the host.
 
-
-def health_content(guild):
-    bills = load_json(BILLS, [])
-    open_bills = [b for b in bills if b.get("status") == "on_floor"]
-    next_close = min(
-        (b["ends_at"] for b in open_bills if "ends_at" in b), default=None
-    )
-    lines = [
-        "## Eugene's vitals",
-        f"Commit: `{COMMIT}`",
-        f"On duty since <t:{int(BOOT_AT.timestamp())}:R>",
-        f"Gateway latency: {round(bot.latency * 1000)}ms" if bot.is_ready() else "Gateway: connecting",
-        f"Open proposals: {len(open_bills)}"
-        + (
-            f" (next close <t:{int(datetime.fromisoformat(next_close).timestamp())}:R>)"
-            if next_close
-            else ""
-        ),
-        f"Decisions: {len(load_json(ACTS, []))} "
-        f"Vote window: {numbers(guild)['floor_hours']:g}h",
-        brain.status_line(guild.id),
-        # Only when there is something waiting. A card in the log room is
-        # easy to scroll past, and a sign-off nobody notices is a
-        # moderation action that silently never happened -- which is the
-        # one way this whole arrangement fails quietly.
-        f"-# Updated <t:{int(now_utc().timestamp())}:R>. "
-        f"Administrators only.",
-    ]
-    return "\n".join(lines)
-
-
-async def update_health(guild):
-    if not modules.enabled(guild.id, "health"):
-        return
-    channel = health_channel(guild)
-    if channel is None:
-        return
-    state = load_json(STATE, {})
-    content = health_content(guild)
-    msg_id = state.get("health_message_id")
-    if msg_id:
-        try:
-            message = await channel.fetch_message(msg_id)
-            return await message.edit(content=content)
-        except discord.NotFound:
-            pass
-    message = await channel.send(content)
-    try:
-        await message.pin(reason="Eugene's vitals")
-    except discord.HTTPException:
-        pass
-    state["health_message_id"] = message.id
-    save_json(STATE, state)
-
-
+    This used to be a message in a pinned, administrator-only #bot-health
+    room, alongside a card carrying the commit, the latency and the
+    month's spend. The room is gone: it was a channel, a permission dance
+    and a rewritten message per boot, to say what a host's own log says
+    for nothing -- and it put the bill in Discord, where the people who
+    can read it are not the people who pay it.
+    """
+    del guild  # kept in the signature: every caller has one, and the day
+               # this posts somewhere again it will want to know where
+    log.info(text)
 def in_cooperative(member):
     role = cooperative_role(member.guild)
     return role is not None and role in member.roles
@@ -1649,9 +1592,9 @@ def closing_report(bill):
             haystack = f"{bill.get('title', '')} {bill.get('what', '')}".lower()
             if any(word in haystack for word in STRUCTURAL_WORDS):
                 outstanding.append(
-                    "This decision changes the shape of the server, which Eugene "
-                    "cannot do himself yet. Someone edits server_config.yaml, "
-                    "runs build_server.py, and deploys."
+                    "This decision changes the shape of the server, which "
+                    "Eugene cannot do himself yet. Someone has to make the "
+                    "change in Discord by hand."
                 )
             else:
                 outstanding.append(
@@ -2686,10 +2629,6 @@ class SetupPanel(StewardView):
     async def house(self, interaction, button):
         await interaction.response.send_modal(HouseModal(interaction.guild))
 
-    @discord.ui.button(label="Start fresh…", style=discord.ButtonStyle.danger, row=2)
-    async def fresh(self, interaction, button):
-        await open_slate(interaction)
-
     @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary, row=1)
     async def details(self, interaction, button):
         guild = interaction.guild
@@ -3180,7 +3119,6 @@ class BrainKeyModal(discord.ui.Modal):
             + "-# Mention him to talk.",
             ephemeral=True,
         )
-        await update_health(self.guild)
 
 
 class SetKeyButton(discord.ui.Button):
@@ -3221,7 +3159,6 @@ class OnDutySelect(discord.ui.Select):
         settings.set_provider(guild.id, picked)
         brain.forget_client(guild.id)
         log.info(f"guild {guild.id} switched to {picked}")
-        await update_health(guild)
         await open_brain(
             interaction,
             f"{providers.label(picked)} it is, on `{brain.model_name(guild.id)}`. "
@@ -3250,7 +3187,6 @@ class ForgetKeySelect(discord.ui.Select):
         settings.clear_brain_key(guild.id, annex)
         brain.forget_client(guild.id)
         log.info(f"{annex} key cleared for guild {guild.id}")
-        await update_health(guild)
         still = brain.provider_name(guild.id)
         await open_brain(
             interaction,
@@ -3291,140 +3227,6 @@ async def open_brain(interaction, note=None):
 
 
 # ---------- starting again ----------
-# The clerk keeps half his memory per server and half of it at the top of
-# the data directory, from when there was only ever one house. Move the
-# daemon to a new server and the second half follows: last house's
-# proposals, last house's decisions, last house's numbering, and forty
-# notes about people who are not there.
-#
-# `slate.py` knows what would go; this is the asking. Two guards, because
-# there is no undo and the thing on the other side of the button is a
-# parliament's entire record: nothing is ticked to begin with, and the
-# button does not erase anything -- it opens a box you have to type a word
-# into, having read what each scope costs.
-
-
-class SlateSelect(discord.ui.Select):
-    def __init__(self, guild, picked):
-        options = []
-        for scope in slate.keys():
-            spec = slate.SCOPES[scope]
-            found = slate.present(guild.id, scope)
-            total = sum(len(v) for v in found.values())
-            options.append(discord.SelectOption(
-                label=spec["name"],
-                value=scope,
-                description=(spec["blurb"] if total else
-                             "nothing written here yet")[:100],
-                default=scope in picked,
-            ))
-        super().__init__(
-            placeholder="What to erase — nothing is ticked to begin with",
-            min_values=0, max_values=len(options), options=options, row=0,
-        )
-
-    async def callback(self, interaction):
-        await open_slate(interaction, picked=set(self.values))
-
-
-class SlateConfirm(discord.ui.Modal, title="This cannot be undone"):
-    word = discord.ui.TextInput(
-        label="Type ERASE to go ahead",
-        style=discord.TextStyle.short,
-        max_length=10,
-        placeholder="ERASE",
-    )
-
-    def __init__(self, guild, picked):
-        super().__init__()
-        self.guild = guild
-        self.picked = picked
-
-    async def on_submit(self, interaction):
-        if str(self.word).strip().upper() != "ERASE":
-            return await open_slate(
-                interaction, picked=self.picked,
-                note="Nothing was erased — that was not the word.",
-            )
-        gone = slate.wipe(self.guild.id, self.picked)
-        # The rolling transcript and the heartbeat's buffer are in this
-        # process, not on disk, so a wipe that left them would have him
-        # quoting a room he had just been told to forget.
-        if "memory" in self.picked:
-            brain.forget_room()
-        log.warning(
-            f"{interaction.user.display_name} erased "
-            f"{', '.join(self.picked)} in guild {self.guild.id}"
-        )
-        await health_log(
-            self.guild,
-            "🧹 " + ", ".join(slate.name(s) for s in self.picked)
-            + f" erased by {interaction.user.display_name}.",
-        )
-        lines = ["## Erased"]
-        for scope in slate.keys():
-            if scope in gone:
-                lines.append(f"- **{slate.name(scope)}** — "
-                             + ", ".join(f"`{x}`" for x in gone[scope]))
-        empty = [s for s in self.picked if s not in gone]
-        if empty:
-            lines.append("- Nothing was stored for "
-                         + ", ".join(slate.name(s) for s in empty) + ".")
-        lines.append("")
-        lines.append("-# Nothing in Discord was touched: no channel, no role "
-                     "and no message was deleted. He has simply stopped "
-                     "knowing about them.")
-        await interaction.response.edit_message(
-            content="\n".join(lines)[:1990],
-            view=StewardView(interaction.user.id),
-        )
-
-
-class SlateEraseButton(discord.ui.Button):
-    def __init__(self, picked):
-        super().__init__(
-            label=f"Erase the {len(picked)} ticked…" if picked
-                  else "Tick something first",
-            style=discord.ButtonStyle.danger if picked
-                  else discord.ButtonStyle.secondary,
-            disabled=not picked, row=4,
-        )
-        self.picked = picked
-
-    async def callback(self, interaction):
-        await interaction.response.send_modal(
-            SlateConfirm(interaction.guild, self.picked)
-        )
-
-
-async def open_slate(interaction, picked=(), note=None):
-    guild = interaction.guild
-    picked = {s for s in picked if s in slate.SCOPES}
-    view = StewardView(interaction.user.id)
-    view.add_item(SlateSelect(guild, picked))
-    view.add_item(SlateEraseButton(picked))
-    body = [
-        "## Start fresh",
-        "For pointing him at a different server, or for putting the "
-        "numbering back to one. **There is no undo.**",
-        "",
-        slate.summary(guild.id),
-    ]
-    if picked:
-        body += ["", "**About to erase:**"]
-        body += [f"- **{slate.name(s)}** — {slate.SCOPES[s]['costs']}"
-                 for s in slate.keys() if s in picked]
-    if slate.stranded(guild.id):
-        body.insert(2, f"⚠️ This data directory was last used by server "
-                       f"`{slate.owner()}`, not this one. What is written "
-                       f"here is that server's.")
-    if note:
-        body += ["", note]
-    await interaction.response.edit_message(
-        content="\n".join(body)[:1990], view=view
-    )
-
-
 # ---------- the numbers this house votes by ----------
 # The shape of a vote is code and stays code. The numbers are the house's,
 # and the reason they are here rather than in the repo is that they were
@@ -3894,7 +3696,6 @@ async def do_apply(interaction):
         content="\n".join(lines)[:1990],
         view=StewardView(interaction.user.id),
     )
-    await update_health(guild)
 
 
 @bot.tree.command(
@@ -4215,7 +4016,6 @@ async def slash_model(interaction: discord.Interaction,
           f"${settings.budget_usd(guild.id):.0f} spent this month.",
         ephemeral=True,
     )
-    await update_health(guild)
 
 
 # ---------- pinned buttons ----------
@@ -4299,7 +4099,6 @@ async def setup_hook():
     # server_config.yaml's window becomes the default every house starts
     # from, and stops being the rule the moment one sets its own.
     settings.configure_voting(floor_hours=CONFIG_FLOOR_HOURS)
-    slate.configure(DATA)
     roster.configure(DATA)
     duties.configure(DATA)
     # Upgrade in place: a host that still carries a key in its environment
@@ -4345,50 +4144,6 @@ async def ensure_furniture(guild, restamp=False):
             SubmitBillView(),
             restamp=restamp,
         )
-    if module_live(guild, "health"):
-        await close_health_room(guild)
-        await update_health(guild)
-
-
-async def close_health_room(guild):
-    """Shut the health room to everyone but administrators, once.
-
-    New servers get this from the room plan, which `/setup` reads. Servers
-    that already have the room do not: everything `/setup` does is additive
-    and it never re-permissions a channel, which is the promise that lets
-    people run it without reading the code first. So the one room that
-    changed audience is changed here instead, deliberately and by name.
-
-    Once, and tracked, because the alternative is a loop that argues. An
-    administrator who opens this room back up to the cooperative has
-    decided something, and a bot that quietly re-shuts it every five
-    minutes is overriding a person who outranks it on exactly the question
-    the room is about.
-    """
-    state = load_json(STATE, {})
-    if state.get("health_closed"):
-        return
-    channel = health_channel(guild)
-    if channel is None:
-        return
-    try:
-        await channel.edit(
-            overwrites=admin_only_overwrites(guild),
-            reason="bot-health is administrators only",
-        )
-    except discord.HTTPException as e:
-        log.warning(f"could not close the health room: {e!r}")
-        return
-    state["health_closed"] = True
-    save_json(STATE, state)
-    log.info(f"#{channel.name} is now administrators only")
-    await health_log(
-        guild,
-        "🔒 This room is administrators only now. The opt-in `nerd` role "
-        "that used to open it is gone; nothing here was ever anything but "
-        "operational detail. The `nerd` role itself is left where it is — "
-        "delete it whenever you like, it does nothing.",
-    )
 
 
 @tasks.loop(seconds=300)
@@ -4409,24 +4164,6 @@ async def on_ready():
     log.info(f"on duty as {bot.user} (commit {COMMIT})")
     guild = home_guild()
     if guild:
-        # Whose history is in this directory. A wrong GUILD_ID is a typo
-        # somebody fixes in a minute; a record erased on their behalf
-        # because of one is not recoverable, so this says it and stops.
-        if slate.stranded(GUILD_ID):
-            log.warning(
-                f"data directory belongs to guild {slate.owner()}, not "
-                f"{GUILD_ID}: this server is reading another one's record. "
-                f"`/setup` → Start fresh clears it."
-            )
-            await health_log(
-                guild,
-                f"⚠️ The record on this disk was written by server "
-                f"`{slate.owner()}`, not this one, so the proposals, "
-                f"decisions and numbering here are theirs. **`/setup` → "
-                f"Start fresh** clears it. Nothing is erased on its own.",
-            )
-        else:
-            slate.claim(GUILD_ID)
         await ensure_furniture(guild, restamp=not getattr(bot, "_boot_announced", False))
         if not getattr(bot, "_boot_announced", False):
             bot._boot_announced = True
