@@ -32,6 +32,8 @@ You need your own bot and your own server; never test against the live one.
 2. Create an empty Discord server, invite your bot with Administrator, and
    drag its role to the top of the role list.
 3. Copy the server ID (Developer Mode on, right-click the server icon).
+   Put it in `GUILD_ID` so your commands appear at once rather than
+   whenever Discord gets round to publishing them.
 
 ```sh
 python3 -m venv .venv

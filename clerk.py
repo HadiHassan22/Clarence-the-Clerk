@@ -65,28 +65,22 @@ load_dotenv(HERE / ".env")
 # os.environ, a restart policy obligingly produces ten more of it, and
 # nothing anywhere says which variable, what goes in it, or where it is
 # set. It costs four lines to say that instead.
-_MISSING = [n for n in ("DISCORD_TOKEN", "GUILD_ID")
-            if not (os.environ.get(n) or "").strip()]
-if _MISSING:
+if not (os.environ.get("DISCORD_TOKEN") or "").strip():
     raise SystemExit(
-        f"Eugene cannot start: {' and '.join(_MISSING)} "
-        f"{'is' if len(_MISSING) == 1 else 'are'} not set.\n"
-        f"On a host these are the service's environment variables; on a "
-        f"laptop they live in a .env file next to clerk.py.\n"
-        f"DISCORD_TOKEN is the bot token from the Discord developer portal. "
-        f"GUILD_ID is the id of the server he keeps -- turn on Developer "
-        f"Mode, right-click the server icon, Copy Server ID."
+        "Eugene cannot start: DISCORD_TOKEN is not set.\n"
+        "On a host it is the service's environment variable; on a laptop it "
+        "lives in a .env file next to clerk.py. It is the bot token from the "
+        "Discord developer portal."
     )
 TOKEN = os.environ["DISCORD_TOKEN"].strip()
+# GUILD_ID used to be required and used to be the whole design: one daemon,
+# one house. It is optional now and means only "sync my commands to this
+# server first", which is the difference between seeing a new command
+# immediately and waiting an hour for Discord to publish it globally.
 try:
-    GUILD_ID = int(os.environ["GUILD_ID"].strip())
+    DEV_GUILD_ID = int((os.environ.get("GUILD_ID") or "").strip() or 0) or None
 except ValueError:
-    raise SystemExit(
-        f"Eugene cannot start: GUILD_ID is "
-        f"{os.environ['GUILD_ID'].strip()!r}, which is not a server id. It "
-        f"is the long number Copy Server ID gives you, digits only -- not "
-        f"the server's name and not an invite link."
-    )
+    DEV_GUILD_ID = None
 
 CONFIG = yaml.safe_load((HERE / "server_config.yaml").read_text())
 # The one governance number that predates the settings store. It stays
@@ -396,29 +390,34 @@ def refusal_for(bill):
 
 
 # ---------- which house ----------
-# The daemon keeps one house today, named by GUILD_ID. Everything that
-# needs to know which one asks here rather than reading the environment,
-# so the day it keeps several these three functions change and nothing
-# else does.
+# He keeps as many houses as he has been invited to. Everything that needs
+# to know which one asks here rather than reading the environment, which is
+# what made changing this a three-function job rather than a rewrite.
 
-def home_guild():
-    return bot.get_guild(GUILD_ID)
+def houses():
+    """Every server he keeps."""
+    return list(bot.guilds)
 
 
 def serves(guild):
-    return guild is not None and guild.id == GUILD_ID
+    return guild is not None and guild in bot.guilds
 
 
 def resolve_guild(message):
-    """The server a message is addressed to. In a channel it is plain; in
-    a direct message there is no guild at all, so Eugene answers for
-    the server he keeps, and only to someone who is in it."""
+    """The server a message is addressed to.
+
+    In a channel it is plain. A direct message has no guild at all, so it
+    is answered for the one server both he and the writer are in -- and
+    only then. Somebody in two of his houses gets no answer rather than an
+    answer about whichever one happened to sort first: a private message
+    that quietly picks a house is a private message that quotes the wrong
+    roster at you.
+    """
     if message.guild is not None:
         return message.guild if serves(message.guild) else None
-    guild = home_guild()
-    if guild is not None and guild.get_member(message.author.id) is not None:
-        return guild
-    return None
+    shared = [g for g in bot.guilds
+              if g.get_member(message.author.id) is not None]
+    return shared[0] if len(shared) == 1 else None
 
 
 def bill_by(guild, field, value):
@@ -1829,12 +1828,15 @@ async def close_multi(guild, bill):
 
 @tasks.loop(seconds=60)
 async def check_floor():
-    guild = home_guild()
-    if guild is None:
-        return
-    # Polls run on the same machinery, so either feature keeps the clock
-    # ticking: a vote already on the floor when governance was switched off
-    # still deserves to be closed rather than left open forever.
+    for guild in houses():
+        try:
+            await _check_floor_in(guild)
+        except Exception as e:
+            # One house's clock must not stop every other house's.
+            log.error(f"the floor check failed in {guild.id}: {e!r}")
+
+
+async def _check_floor_in(guild):
     if not module_live(guild, "governance"):
         return
     for bill in load_json(bills_path(guild), []):
@@ -2059,9 +2061,14 @@ async def update_outstanding(guild, silent=False):
 
 @tasks.loop(minutes=DUTY_MINUTES)
 async def duty_loop():
-    guild = home_guild()
-    if guild is None:
-        return
+    for guild in houses():
+        try:
+            await _duties_in(guild)
+        except Exception as e:
+            log.error(f"the duty round failed in {guild.id}: {e!r}")
+
+
+async def _duties_in(guild):
     # The first round against a fresh ledger only takes stock. Everything
     # already true when this was switched on is history, not news, and a
     # server should not be woken up by a fortnight of it at once.
@@ -4075,18 +4082,25 @@ async def start_web():
 
     async def healthz(request):
         ready = bot.is_ready()
-        guild = home_guild() if ready else None
-        bills = load_json(bills_path(guild), []) if guild else []
+        served = houses() if ready else []
+        open_bills = 0
+        acts = 0
+        for guild in served:
+            open_bills += sum(
+                1 for b in load_json(bills_path(guild), [])
+                if b.get("status") == "on_floor"
+            )
+            acts += len(load_json(acts_path(guild), []))
         return web.json_response(
             {
                 "status": "ok",
                 "commit": COMMIT,
                 "clerk": str(bot.user) if ready else None,
-                "guild": guild.name if guild else None,
+                "servers": len(served),
                 "ready": ready,
                 "latency_ms": round(bot.latency * 1000) if ready else None,
-                "open_bills": sum(1 for b in bills if b.get("status") == "on_floor"),
-                "acts": len(load_json(acts_path(guild), [])) if guild else 0,
+                "open_bills": open_bills,
+                "acts": acts,
             }
         )
 
@@ -4124,11 +4138,6 @@ async def setup_hook():
     settings.configure_voting(floor_hours=CONFIG_FLOOR_HOURS)
     roster.configure(DATA)
     duties.configure(DATA)
-    # Upgrade in place: a host that still carries a key in its environment
-    # hands it to the server it serves, once, and is never read again.
-    adopted = settings.adopt_env_keys(GUILD_ID)
-    if adopted:
-        log.info(f"adopted host {', '.join(adopted)} key(s) into guild {GUILD_ID}")
     brain.configure(
         bot, HERE, DATA, in_cooperative, health_log, chunk_text, resolve_guild,
         numbers=numbers,
@@ -4148,9 +4157,16 @@ async def setup_hook():
     # ballot on the floor with dead buttons and no way to say so.
     bot.add_view(MultiBallotView())
     bot.add_view(NotesView())
-    guild = discord.Object(id=GUILD_ID)
-    bot.tree.copy_global_to(guild=guild)
-    await bot.tree.sync(guild=guild)
+    # Global, because he is not one server's any more. A GUILD_ID in the
+    # environment is now only a convenience for whoever is working on him:
+    # a guild sync appears at once, where a global one takes Discord up to
+    # an hour to publish.
+    if DEV_GUILD_ID:
+        where = discord.Object(id=DEV_GUILD_ID)
+        bot.tree.copy_global_to(guild=where)
+        await bot.tree.sync(guild=where)
+        log.info(f"commands synced to guild {DEV_GUILD_ID} for development")
+    await bot.tree.sync()
 
 
 async def ensure_furniture(guild, restamp=False):
@@ -4171,31 +4187,40 @@ async def ensure_furniture(guild, restamp=False):
 
 @tasks.loop(seconds=300)
 async def furniture_loop():
-    guild = home_guild()
-    if guild:
+    for guild in houses():
         # Clear bindings whose channel or role has been deleted, so a room
         # that quietly went away shows as unbound instead of as silence.
         bindings.prune(guild)
         try:
             await ensure_furniture(guild)
         except Exception as e:
-            log.error(f"furniture check failed: {e!r}")
+            log.error(f"furniture check failed in {guild.id}: {e!r}")
 
 
 @bot.event
 async def on_ready():
-    log.info(f"on duty as {bot.user} (commit {COMMIT})")
-    guild = home_guild()
-    if guild:
-        await ensure_furniture(guild, restamp=not getattr(bot, "_boot_announced", False))
-        if not getattr(bot, "_boot_announced", False):
-            bot._boot_announced = True
-            await repaint_open_ballots(guild)
-            state = load_json(state_path(guild), {})
-            if state.get("announced_commit") != COMMIT:
-                state["announced_commit"] = COMMIT
-                save_json(state_path(guild), state)
-                await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
+    log.info(f"on duty as {bot.user} in {len(bot.guilds)} server(s) "
+             f"(commit {COMMIT})")
+    first = not getattr(bot, "_boot_announced", False)
+    bot._boot_announced = True
+    for guild in houses():
+        try:
+            # A host that still carries a key in its environment hands it to
+            # each server it serves, once, and is never read again.
+            adopted = settings.adopt_env_keys(guild.id)
+            if adopted:
+                log.info(f"adopted host {', '.join(adopted)} key(s) into "
+                         f"guild {guild.id}")
+            await ensure_furniture(guild, restamp=first)
+            if first:
+                await repaint_open_ballots(guild)
+                state = load_json(state_path(guild), {})
+                if state.get("announced_commit") != COMMIT:
+                    state["announced_commit"] = COMMIT
+                    save_json(state_path(guild), state)
+                    await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
+        except Exception as e:
+            log.error(f"could not settle into {guild.id}: {e!r}")
     if not check_floor.is_running():
         check_floor.start()
     if not furniture_loop.is_running():

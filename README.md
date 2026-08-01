@@ -91,7 +91,8 @@ memes channel, nothing you did not ask for.
 
 The bot needs Administrator with its role at the top of the role list,
 and the **Server Members** and **Message Content** privileged intents
-enabled in the Developer Portal. If you cannot enable Message Content,
+enabled in the Developer Portal. He keeps every server he is invited to,
+each with its own record, roster, settings and bill. If you cannot enable Message Content,
 set `CLERK_MESSAGE_CONTENT=0`; everything works except talking.
 
 ## What members can type
@@ -321,7 +322,7 @@ provides none.
 `railway.json` in this repo sets the start command, so a fresh service
 needs no build configuration. Deploy from the GitHub repo, then:
 
-1. **Variables**: `DISCORD_TOKEN`, `GUILD_ID`, `CLERK_DATA_DIR=/data`.
+1. **Variables**: `DISCORD_TOKEN` and `CLERK_DATA_DIR=/data`.
 2. **Volume**: add one to the service, mount path `/data`. Do this before
    the first real use, not after.
 3. Redeploy, and watch the logs for `on duty as ...`.
