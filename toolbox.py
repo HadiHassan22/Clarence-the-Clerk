@@ -156,6 +156,36 @@ async def _get_bill(guild, invoker, args):
     return json.dumps({"error": f"no Proposal No. {bill_no} on record"})
 
 
+async def _lookup(guild, invoker, args):
+    """Whichever drawer of the record was asked for.
+
+    The five handlers underneath are unchanged and still take their own
+    arguments; this only works out which one was meant. A `kind` that is
+    not one of the five comes back naming them, because a refusal that
+    says what would have worked is one the model can act on.
+    """
+    kind = str(args.get("kind") or "").strip().lower()
+    number = args.get("number")
+    if kind == "rules":
+        return await _get_standing_orders(guild, invoker, {})
+    if kind == "bills":
+        return await _list_bills(guild, invoker, args)
+    if kind == "acts":
+        return await _list_acts(guild, invoker, args)
+    if kind == "bill":
+        if number is None:
+            return json.dumps({"error": "which proposal? give me its number"})
+        return await _get_bill(guild, invoker, {"bill_no": number})
+    if kind == "act":
+        if number is None:
+            return json.dumps({"error": "which decision? give me its number"})
+        return await _get_act(guild, invoker, {"act_no": number})
+    return json.dumps(
+        {"error": f"{kind!r} is not something to look up; kind is one of "
+                  f"bills, bill, acts, act, rules"}
+    )
+
+
 async def _server_info(guild, invoker, args):
     cats = []
     for cat in guild.categories:
@@ -215,60 +245,45 @@ async def _server_info(guild, invoker, args):
 # ---------- registry ----------
 
 REGISTRY = {
-    "get_standing_orders": {
+    # One door onto the record instead of five.
+    #
+    # get_standing_orders, list_acts, get_act, list_bills and get_bill were
+    # five tools over one filing cabinet, which is five chances to reach for
+    # the wrong one -- and the wrong one usually answers, plausibly, about
+    # the wrong thing. An enum is far harder to get wrong than a tool name,
+    # and the model picks the drawer rather than the door.
+    "lookup": {
         "tier": "minor",
-        "description": "The rules of procedure, full text: tiers, thresholds, "
-        "how votes close, and what is actually wired up so far.",
-        "parameters": {"type": "object", "properties": {}},
-        "handler": _get_standing_orders,
-    },
-    "list_acts": {
-        "tier": "minor",
-        "description": "Index of decisions on the record: number, title, "
-        "author, date.",
-        "parameters": {
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "description": "max entries, up to 50"}},
-        },
-        "handler": _list_acts,
-    },
-    "get_act": {
-        "tier": "minor",
-        "description": "Full text and details of one decision on the record, "
-        "by number.",
-        "parameters": {
-            "type": "object",
-            "properties": {"act_no": {"type": "integer"}},
-            "required": ["act_no"],
-        },
-        "handler": _get_act,
-    },
-    "list_bills": {
-        "tier": "minor",
-        "description": "Index of proposals: number, title, kind, status, "
-        "author. Status 'on_floor' means still open for votes.",
+        "description": "Read the record. `kind` picks what: 'bills' for the "
+        "index of proposals (add `status` to narrow it; 'on_floor' means "
+        "still open), 'bill' for one in full with `number`, 'acts' for the "
+        "index of decisions, 'act' for one in full with `number`, 'rules' "
+        "for the full standing orders. Call this before answering anything "
+        "about what is open, what was decided, or what the rules say. "
+        "Individual ballots are sealed and never come back from any of it.",
         "parameters": {
             "type": "object",
             "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["bills", "bill", "acts", "act", "rules"],
+                },
+                "number": {
+                    "type": "integer",
+                    "description": "the proposal or decision number, for 'bill' and 'act'",
+                },
                 "status": {
                     "type": "string",
                     "enum": ["on_floor", "passed", "failed", "all"],
-                }
+                    "description": "for 'bills' only",
+                },
+                "limit": {"type": "integer", "description": "for 'acts' only, up to 50"},
             },
+            "required": ["kind"],
         },
-        "handler": _list_bills,
+        "handler": _lookup,
     },
-    "get_bill": {
-        "tier": "minor",
-        "description": "Full details of one proposal: what, why, status, "
-        "notes. Individual ballots are sealed and never available.",
-        "parameters": {
-            "type": "object",
-            "properties": {"bill_no": {"type": "integer"}},
-            "required": ["bill_no"],
-        },
-        "handler": _get_bill,
-    },
+
     "server_info": {
         "tier": "minor",
         "description": "The server's structure: categories, channels, topics, member count.",
@@ -279,24 +294,48 @@ REGISTRY = {
 
 
 BILL_TOOLS = {
-    "propose_bill": {
-        "description": "File a proposal for the person you are talking to, in "
-        "their name. Use it the moment they say they want something changed: "
-        "draft the what and the why from what they said, file it, and tell "
-        "them the number. Do not ask them to confirm and do not send them to "
-        "the button. Filing decides nothing; the cooperative votes and you "
-        "have no say in it.",
+    # One door onto filing, for the same reason `lookup` is one onto
+    # reading: three tools that all put something to a vote is three
+    # chances to pick the wrong one, and picking `propose_removal` when
+    # somebody meant `propose_member` is not a recoverable mistake.
+    "propose": {
+        "description": "Put something to the cooperative, in the name of the "
+        "person you are talking to. Use it the moment they say they want "
+        "something: draft it from what they said, file it, tell them the "
+        "number. Do not ask them to confirm and do not send them to a "
+        "button. Filing decides nothing and is not agreeing -- the "
+        "cooperative votes and you have no say in it.\n"
+        "`kind` picks which:\n"
+        "- 'change' -- anything the house should decide. Needs `title`, "
+        "`what` (the operative text, what becomes true if it passes) and "
+        "`why` (their reasons, in their voice).\n"
+        "- 'invite' -- somebody not in the server, proposed into it. Needs "
+        "`who` and `why`. What passes is a single-use link sent privately to "
+        "whoever proposed them; it gives no vote and puts nobody in the "
+        "cooperative.\n"
+        "- 'removal' -- a member of the cooperative, proposed out of it. "
+        "Needs `who` and `why`. This is the only route: you cannot remove "
+        "one of them yourself and nor can anybody else, because it is a "
+        "fundamental vote. The subject cannot vote, keeps the whole window "
+        "to answer, and the tally is never published.",
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "a short name for the law"},
-                "what": {"type": "string", "description": "the operative text: what becomes law if it passes"},
-                "why": {"type": "string", "description": "their reasons, in their voice. A bill without reasons is not a bill"},
-                "priority": {"type": "boolean", "description": "true only if they ask you to chase people about it. It direct-messages everyone who has not voted, so it is for the ones that matter, not the ones they are keen on"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["change", "invite", "removal"],
+                },
+                "title": {"type": "string", "description": "for 'change': a short name for it"},
+                "what": {"type": "string", "description": "for 'change': what becomes true if it passes"},
+                "why": {"type": "string", "description": "their reasons, in their voice. Required for all three"},
+                "who": {"type": "string", "description": "for 'invite' and 'removal': the person, as people here would know them"},
+                "discord_id": {"type": "string", "description": "for 'invite': their Discord ID, digits only, if the proposer knows it"},
+                "priority": {"type": "boolean", "description": "for 'change': true only if they ask you to chase people about it. It direct-messages everyone who has not voted, so it is for the ones that matter, not the ones they are keen on"},
             },
-            "required": ["title", "what", "why"],
+            "required": ["kind", "why"],
         },
     },
+
     "close_floor": {
         "description": "Call time on a vote that is still open: count the "
         "ballots, rule it passed or failed, and do everything a close "
@@ -312,40 +351,6 @@ BILL_TOOLS = {
                 "bill_no": {"type": "integer", "description": "the bill's number; call list_bills if unsure"},
             },
             "required": ["bill_no"],
-        },
-    },
-    "propose_removal": {
-        "description": "Propose that a member of the cooperative be removed, "
-        "and open the ballot. This is the only route: you cannot kick one of "
-        "them yourself and nobody can, because removal is a fundamental vote. "
-        "The subject cannot vote and keeps the whole window to answer; the "
-        "tally is never published. File it when someone asks, and say what it "
-        "needs — filing is not agreeing, and you have no vote in it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "who": {"type": "string", "description": "name, nickname, mention or id"},
-                "why": {"type": "string", "description": "the case for removal, in the proposer's voice"},
-            },
-            "required": ["who", "why"],
-        },
-    },
-    "propose_member": {
-        "description": "Propose that somebody who is not here be invited "
-        "into the server, and open the ballot: yes, no, or abstain, "
-        "anonymous, tally sealed at close so nobody newly admitted learns "
-        "their margin. Use it as soon as someone names a person they want "
-        "here. If it passes you send a single-use invite link privately to "
-        "whoever proposed them. It is the door into the server and nothing "
-        "else: it gives no vote and does not put anyone in the cooperative.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "who is being proposed, as people here would know them"},
-                "discord_id": {"type": "string", "description": "their Discord ID, digits only, if the proposer knows it"},
-                "why": {"type": "string", "description": "why they should be in the server, in the proposer's voice"},
-            },
-            "required": ["name", "why"],
         },
     },
 }

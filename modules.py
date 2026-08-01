@@ -175,10 +175,8 @@ SPEC = {
         "settings": (),
         "builds": True,
         "commands": ("propose", "invite", "remove", "close", "bills"),
-        "tools": ("propose_bill", "propose_member", "propose_removal",
-                  "close_floor", "mark_carried_out", "set_nudges",
-                  "list_bills", "get_bill", "list_acts", "get_act",
-                  "get_standing_orders"),
+        "tools": ("propose", "close_floor", "mark_carried_out",
+                  "set_nudges", "lookup"),
     },
     "chat": {
         "name": "Conversation",

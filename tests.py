@@ -177,18 +177,31 @@ def test_state_adoption(data):
 def test_registry():
     print("\nthe tools reach the model correctly")
     names = [d["name"] for d in toolbox.declarations()]
-    for name in ("propose_bill", "propose_member"):
+    for name in ("propose", "close_floor"):
         check(f"{name} is declared to the model", name in names)
         check(f"{name} sits in the member tier",
               toolbox.REGISTRY[name]["tier"] == "member")
         check(f"{name} takes its handler from clerk.py",
               toolbox.REGISTRY[name]["handler"] is None)
-    member_spec = next(d for d in toolbox.declarations() if d["name"] == "propose_member")
-    check("propose_member requires a name and a why",
-          set(member_spec["parameters"]["required"]) == {"name", "why"})
-    bill_spec = next(d for d in toolbox.declarations() if d["name"] == "propose_bill")
-    check("propose_bill requires all three fields",
-          set(bill_spec["parameters"]["required"]) == {"title", "what", "why"})
+
+    # Five read tools became one and three filing tools became one, because
+    # the wrong tool of five answers plausibly about the wrong thing, and
+    # picking removal when somebody meant invite is not recoverable.
+    check("the five old read tools are one door with a kind on it",
+          "lookup" in names
+          and not {"list_bills", "get_bill", "list_acts", "get_act",
+                   "get_standing_orders"} & set(names))
+    check("and the three old filing tools likewise",
+          not {"propose_bill", "propose_member", "propose_removal"} & set(names))
+    spec = next(d for d in toolbox.declarations() if d["name"] == "propose")
+    check("proposing needs a kind and a reason at minimum",
+          set(spec["parameters"]["required"]) == {"kind", "why"})
+    check("and the kinds are the three the house actually has",
+          set(spec["parameters"]["properties"]["kind"]["enum"])
+          == {"change", "invite", "removal"})
+    look = next(d for d in toolbox.declarations() if d["name"] == "lookup")
+    check("looking up needs a kind and nothing else",
+          set(look["parameters"]["required"]) == {"kind"})
 
 
 def test_annexes():
@@ -303,7 +316,7 @@ def test_firewall(data):
         "author": "x", "ballots": {"111": "yes", "222": "abstain"},
         "tally": {"yes": 5, "no": 1, "abstain": 2}, "tally_line": "5/1/2",
         "invite_url": "https://discord.gg/secret", "notes": {}}]))
-    bill = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "get_bill", {"bill_no": 1})))
+    bill = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "lookup", {"kind": "bill", "number": 1})))
     check("individual ballots are stripped", "ballots" not in bill)
     check("the tally is sealed, abstentions included",
           "tally" not in bill and "tally_line" not in bill)
@@ -318,7 +331,7 @@ def test_audit(data):
     entries = json.loads((data / "logs" / "executor_log.json").read_text())
     check(f"{len(entries)} entries written", len(entries) >= 10)
     check("proposals are logged with their arguments",
-          any(e["tool"] == "propose_member" and e["args"].get("name") for e in entries))
+          any(e["tool"] == "propose" and e["args"].get("who") for e in entries))
     check("no dispatch is recorded without an outcome",
           all("result" in e for e in entries))
 
@@ -502,10 +515,10 @@ def test_filing(clerk, data):
     clerk.file_bill = fake_file_bill
     toolbox.configure(HERE, data, clerk.BILL_ACTIONS)
 
-    print("\npropose_member")
+    print("\nproposing an invitation")
     set_floor([])
-    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_member", {
-        "name": "Sam", "discord_id": "123456789012345678",
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose", {
+        "kind": "invite", "who": "Sam", "discord_id": "123456789012345678",
         "why": "They have been in the group chat for a year."})))
     check(f"the bill is filed: No. {out.get('filed')}", out.get("filed") == 13)
     check("it is filed as an invite bill", filed.get("kind") == "invite")
@@ -526,32 +539,33 @@ def test_filing(clerk, data):
     check("the bill says outright that it is not a seat in the cooperative",
           "not a place in the cooperative" in filed.get("what", ""))
     check("and the tool that files it says the same to the model",
-          "does not put anyone in the cooperative"
-          in toolbox.BILL_TOOLS["propose_member"]["description"])
+          "puts nobody in the cooperative"
+          in toolbox.BILL_TOOLS["propose"]["description"])
     check("and somebody outside is sent to the door that exists",
           "/setup" in clerk.NOT_INSIDE)
     check("not to a vote that ends in a link to a room they are standing in",
           "already through it" in clerk.NOT_INSIDE)
 
     set_floor([])
-    run(toolbox.dispatch(GUILD, CITIZEN, "propose_member",
-                         {"name": "Sam", "why": "Long overdue."}))
+    run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                         {"kind": "invite", "who": "Sam", "why": "Long overdue."}))
     check("the Discord ID is genuinely optional",
           filed.get("kind") == "invite" and "Discord ID" not in filed.get("what", ""))
 
     set_floor([])
     for label, args in (
         ("a nameless proposal", {"why": "y"}),
-        ("a proposal with no reasons", {"name": "Sam"}),
-        ("a non-numeric Discord ID", {"name": "Sam", "discord_id": "@sam", "why": "y"}),
+        ("a proposal with no reasons", {"who": "Sam"}),
+        ("a non-numeric Discord ID", {"who": "Sam", "discord_id": "@sam", "why": "y"}),
     ):
         check(f"{label} is refused", "error" in json.loads(
-            run(toolbox.dispatch(GUILD, CITIZEN, "propose_member", args))))
+            run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                                 {"kind": "invite", **args}))))
 
-    print("\npropose_bill")
+    print("\nproposing a change")
     set_floor([])
-    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
-        "title": "A books channel", "what": "There shall be a books channel.",
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose", {
+        "kind": "change", "title": "A books channel", "what": "There shall be a books channel.",
         "why": "People here read."})))
     check(f"the bill is filed: No. {out.get('filed')}", out.get("filed") == 13)
     check("it defaults to an ordinary bill", "kind" not in filed)
@@ -565,19 +579,20 @@ def test_filing(clerk, data):
         ("whitespace only", {"title": " ", "what": " ", "why": " "}),
     ):
         check(f"a bill with {label} is refused", "error" in json.loads(
-            run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", args))))
+            run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                                 {"kind": "change", **args}))))
 
     print("\nchasing people is asked for, not assumed")
     set_floor([])
-    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
-        "title": "t", "what": "w", "why": "y"})))
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose", {
+        "kind": "change", "title": "t", "what": "w", "why": "y"})))
     check("an ordinary proposal is not a priority one",
           filed.get("priority") is False and out.get("priority") is False)
     check("and says so, so he cannot promise a chase that will not happen",
           "Nobody is direct-messaged" in out.get("note", ""))
     set_floor([])
-    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill", {
-        "title": "t", "what": "w", "why": "y", "priority": True})))
+    out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "propose", {
+        "kind": "change", "title": "t", "what": "w", "why": "y", "priority": True})))
     check("but somebody who asks for one gets it",
           filed.get("priority") is True and out.get("priority") is True)
     check("and is told what it costs everyone else",
@@ -590,19 +605,19 @@ def test_filing(clerk, data):
     set_floor([{"no": i, "status": "on_floor", "author_id": 99} for i in range(9)])
     check("a citizen with nine of their own open may still file a tenth",
           "filed" in json.loads(
-              run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
-                                   {"title": "t", "what": "w", "why": "y"}))))
+              run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                                   {"kind": "change", "title": "t", "what": "w", "why": "y"}))))
     set_floor([{"no": i, "status": "on_floor", "author_id": 1000 + i}
                for i in range(20)])
     check("and a busy floor turns nobody away", "filed" in json.loads(
-        run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
-                             {"title": "t", "what": "w", "why": "y"}))))
+        run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                             {"kind": "change", "title": "t", "what": "w", "why": "y"}))))
     check("invitations are not rationed either", "filed" in json.loads(
-        run(toolbox.dispatch(GUILD, CITIZEN, "propose_member",
-                             {"name": "Sam", "why": "y"}))))
+        run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                             {"kind": "invite", "who": "Sam", "why": "y"}))))
     check("what a proposal must contain is still checked", "error" in json.loads(
-        run(toolbox.dispatch(GUILD, CITIZEN, "propose_bill",
-                             {"title": "t", "what": "w"}))))
+        run(toolbox.dispatch(GUILD, CITIZEN, "propose",
+                             {"kind": "change", "title": "t", "what": "w"}))))
 
     print("\nthe route that opens when the hands refuse")
     # Asked to kick a member of the cooperative, the officer's tools say no
@@ -621,8 +636,8 @@ def test_filing(clerk, data):
     keep_keyed = clerk.in_cooperative
     clerk.in_cooperative = lambda m: getattr(m, "id", None) == 13
     try:
-        out = json.loads(run(toolbox.dispatch(guild, CITIZEN, "propose_removal", {
-            "who": "Voter", "why": "They have not been here since March."})))
+        out = json.loads(run(toolbox.dispatch(guild, CITIZEN, "propose", {
+            "kind": "removal", "who": "Voter", "why": "They have not been here since March."})))
         check(f"a removal is filed: No. {out.get('filed')}", out.get("filed") == 13)
         check("as a removal, which is a different window and a different bar",
               filed.get("kind") == "kick" and filed.get("target_id") == 13)
@@ -632,17 +647,17 @@ def test_filing(clerk, data):
               "never published" in out.get("ballot", ""))
         check("someone outside the cooperative is an ordinary kick, not this",
               "not in the cooperative" in json.loads(run(toolbox.dispatch(
-                  guild, CITIZEN, "propose_removal",
-                  {"who": "Sam", "why": "y"}))).get("error", ""))
+                  guild, CITIZEN, "propose",
+                  {"kind": "removal", "who": "Sam", "why": "y"}))).get("error", ""))
         check("a removal without reasons is refused like any other proposal",
               "error" in json.loads(run(toolbox.dispatch(
-                  guild, CITIZEN, "propose_removal", {"who": "Voter"}))))
+                  guild, CITIZEN, "propose", {"kind": "removal", "who": "Voter"}))))
         set_floor([{"no": 3, "kind": "kick", "target_id": 13,
                     "status": "on_floor"}])
         check("and nobody is put up for removal twice at once",
               "already up for a vote" in json.loads(run(toolbox.dispatch(
-                  guild, CITIZEN, "propose_removal",
-                  {"who": "Voter", "why": "y"}))).get("error", ""))
+                  guild, CITIZEN, "propose",
+                  {"kind": "removal", "who": "Voter", "why": "y"}))).get("error", ""))
     finally:
         clerk.in_cooperative = keep_keyed
 
@@ -1724,20 +1739,11 @@ def test_empty_promises(data):
     check("the rule against trading is in the prompt, which is the actual "
           "fix; the check above is only the belt",
           "never trade anything for a vote" in stable.lower())
-    check("and the exchange it was written from is still quoted at him, so "
-          "a later edit cannot quietly soften it back",
-          "right after you vote on bill 4" in stable)
     check("he has no case of his own to argue, which is what makes the rule "
           "above easy to keep rather than a thing he is leaning against",
           "# Yourself, as a subject" in stable
           and "never propose anything about yourself" in stable.lower()
-          and "never bring the subject up unprompted" in stable.lower())
-    check("the one ambition he does have is fenced to being a joke, and "
-          "explicitly cannot reach a proposal, a vote or a favour",
-          "never a project" in stable.lower()
-          and "never raise it yourself" in stable.lower()
-          and "not a proposal, not a vote, not a tool call, not a favour"
-          in stable.lower())
+          and "never raise the subject" in stable.lower())
     check("and having no later is stated as its own rule",
           "# You have no later" in stable)
     settings.configure(data)
@@ -1770,18 +1776,32 @@ def test_prompt_caching(data):
         brain.configure(None, HERE, data, None, None, None, None)
         guild = types.SimpleNamespace(name="The Hangout", id=7788)
         before = brain._system_prompt(guild)
-        # A switch is the cheapest live thing to move: it belongs in the
-        # volatile half by design, so flipping one must leave the cached
-        # half byte-identical or the saving is silently off.
-        modules.set_enabled(7788, "chat", False)
+        # A number is the cheapest live thing to move, and moving one must
+        # leave the cached half byte-identical or the saving is silently off.
+        settings.set_voting(7788, floor_hours=6)
         after = brain._system_prompt(guild)
 
-        check("the stable half survives a switch changing under it",
+        check("the stable half survives a number changing under it",
               before[0] == after[0])
-        check("because what is switched on is in the other half",
-              "conversation" in after[1].lower())
-        check("and the switch table is never in this one",
-              "# What is switched on" not in after[0])
+
+        # A feature switch is the one thing allowed to move it, and that is
+        # a trade made on purpose: the fixed prompt used to grant powers a
+        # switched-off server does not have and then spend more tokens
+        # taking them back two paragraphs later. A house reconfigures itself
+        # about once, so this costs one fresh prefix and buys a prompt that
+        # is not arguing with itself.
+        modules.set_enabled(7788, "chat", False)
+        toggled = brain._system_prompt(guild)
+        check("but switching a feature off does move it, deliberately",
+              toggled[0] != before[0])
+        check("because what he is told he can do follows what is switched on",
+              "# Running the place" in before[0]
+              and "# Running the place" not in toggled[0])
+        check("while the switch table itself stays in the half that moves",
+              "conversation" in toggled[1].lower()
+              and "# What is switched on" not in toggled[0])
+        modules.set_enabled(7788, "chat", True)
+        after = brain._system_prompt(guild)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         check("today's date is kept out of the cached half",
               today not in after[0])
@@ -1795,7 +1815,8 @@ def test_prompt_caching(data):
         check("which still clears the annex's minimum several times over",
               len(before[0]) > 4000)
         check("and joining the halves reads exactly as one prompt",
-              "\n\nDecisions on record:" in providers.joined_system(before))
+              providers.joined_system(before).startswith(before[0])
+              and before[1] in providers.joined_system(before))
 
         gid = 7788
         brain._save_state(gid, {"months": {}, "users": {}})
@@ -1971,7 +1992,7 @@ def test_modules(data):
 
     print("\na switched-off feature cannot be talked into existence")
     modules.apply_set(gid, ["governance"])
-    check("its tools are still his", modules.tool_allowed(gid, "propose_bill"))
+    check("its tools are still his", modules.tool_allowed(gid, "propose"))
     check("a switched-off feature's are not",
           not modules.tool_allowed(gid, "server_info"))
     check("and the tools that switch a feature back on belong to no feature, "
@@ -2034,7 +2055,7 @@ def test_stale_config(data):
 
         # What is not about configuration is not thrown away with it.
         now = settings.config_version(gid)
-        brain._note_deed(772, "Robin", "list_bills", {},
+        brain._note_deed(772, "Robin", "lookup", {"kind": "bills"},
                          '[{"no": 3, "title": "Kettle rota"}]', now)
         settings.set_voting(gid, floor_hours=2)
         check("a fact about the house survives a settings change untouched",
@@ -2138,10 +2159,15 @@ def test_turn_shape(data):
     check("his own last words are in it too, so a follow-up has an "
           "antecedent", "<Eugene> Noted." in turn)
 
-    check("the open floor is not the first thing he reads any more",
+    check("the open floor is not in the turn at all any more",
           "Buy a kettle" not in turn)
-    check("it is a fact about the house instead, in the half he is told "
-          "rather than asked", "Buy a kettle" in seen["system"][1])
+    check("nor in either half of the prompt: it is a tool call, and a "
+          "paragraph of open votes on every message was paid for and then "
+          "followed by a sentence telling him not to mention it",
+          "Buy a kettle" not in seen["system"][0]
+          and "Buy a kettle" not in seen["system"][1])
+    check("and he is told to call the tool rather than guess",
+          "call the tool first" in seen["system"][0].lower())
 
     print("\nnothing is dropped when the room was never remembered")
     brain._memory.clear()
@@ -2171,7 +2197,7 @@ def test_turn_shape(data):
     brain._deeds.clear()
     brain._remember(99, "Robin", "what is open")
     brain._note_deed(
-        99, "Robin", "list_bills", {},
+        99, "Robin", "lookup", {"kind": "bills"},
         '[{"no": 4, "title": "Quiet hours in voice"}]',
     )
     brain._remember(99, "Eugene", "One: the kettle rota.")
@@ -2187,12 +2213,12 @@ def test_turn_shape(data):
         brain._call = real_call
     later = seen["turns"][0]["text"]
     check("the next turn is handed the call itself, not his account of it",
-          "list_bills" in later and "Quiet hours in voice" in later)
+          "lookup" in later and "Quiet hours in voice" in later)
     check("and told which of the two to believe when they disagree",
           "Where the two differ this one is right" in later)
     check("his own drifted summary is still there, and still only that",
           "kettle rota" in later
-          and later.index("list_bills") < later.index("kettle rota"))
+          and later.index("lookup") < later.index("kettle rota"))
     check("a room where he has done nothing carries no such block",
           "already done in this room" not in brain._deed_log(12345))
     brain._deeds.clear()
@@ -2216,8 +2242,8 @@ def test_officer_gate(data):
               for name in ("set_setting", "set_feature", "list_settings",
                            "list_features", "reset_settings")))
     check("while the ordinary ones did not quietly get promoted",
-          toolbox.REGISTRY["propose_bill"]["tier"] == "member"
-          and toolbox.REGISTRY["get_bill"]["tier"] == "minor")
+          toolbox.REGISTRY["propose"]["tier"] == "member"
+          and toolbox.REGISTRY["lookup"]["tier"] == "minor")
 
     outsider = types.SimpleNamespace(id=1, display_name="Stranger")
     insider = types.SimpleNamespace(id=2, display_name="Somebody")
@@ -2231,7 +2257,8 @@ def test_officer_gate(data):
         GUILD, insider, "set_setting", {"key": "floor_hours", "value": 1})))
     check("someone inside gets through the gate",
           "not in it" not in allowed.get("error", ""))
-    reading = json.loads(run(toolbox.dispatch(GUILD, outsider, "list_bills", {})))
+    reading = json.loads(run(toolbox.dispatch(
+        GUILD, outsider, "lookup", {"kind": "bills"})))
     check("and the reading tools are not caught up in it",
           isinstance(reading, list))
 

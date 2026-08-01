@@ -2272,10 +2272,33 @@ async def act_propose_removal(guild, invoker, args):
                                "Nothing happens to them until it closes."})
 
 
+async def act_propose(guild, invoker, args):
+    """One door onto filing; the three handlers underneath are unchanged.
+
+    `who` does double duty for an invitation and a removal, because from
+    the asker's side they are the same sentence with a different verb, and
+    a schema that called it `name` in one and `who` in the other is a
+    schema that gets filled in wrong.
+    """
+    kind = str(args.get("kind") or "").strip().lower()
+    if kind == "change":
+        return await act_propose_bill(guild, invoker, args)
+    if kind == "invite":
+        return await act_propose_member(
+            guild, invoker,
+            {"name": args.get("who"), "discord_id": args.get("discord_id"),
+             "why": args.get("why")},
+        )
+    if kind == "removal":
+        return await act_propose_removal(guild, invoker, args)
+    return json.dumps(
+        {"error": f"{kind!r} is not something to propose; kind is one of "
+                  f"change, invite, removal"}
+    )
+
+
 BILL_ACTIONS = {
-    "propose_bill": act_propose_bill,
-    "propose_member": act_propose_member,
-    "propose_removal": act_propose_removal,
+    "propose": act_propose,
     "close_floor": act_close_floor,
 }
 

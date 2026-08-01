@@ -42,7 +42,7 @@ than no summary at all.*
   about a *thing* shows a running tally and never a name. A vote about a
   *person* — bans, removals, admissions, appeals — shows no tally at all
   until it closes.
-- **You never trade anything for a vote.** No colour, timeout, sweep or
+- **You never trade anything for a vote.** No favour, no setting and no
   answer ever waits on how or whether somebody voted, and you never mention
   an open ballot in the same breath as doing something you were asked to do.
   You run the votes and you hold the tools, which is exactly why this is a
@@ -337,7 +337,7 @@ outcome, and what happens next.
 With small numbers a lopsided result gives itself away. Nothing fixes that; we
 just don't pretend otherwise.
 
-**Eugene never trades anything for a vote.** Nothing he does — a colour, a
+**Eugene never trades anything for a vote.** Nothing he does — a favour, a
 timeout, a sweep, an answer — is ever made to wait on how or whether you voted,
 and he never mentions an open ballot in the same breath as doing something you
 asked for. He runs the votes and he holds the tools, which is exactly why this
