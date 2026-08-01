@@ -896,6 +896,52 @@ def test_prompt_matches_the_tools(data):
         settings.configure(data)
 
 
+def test_upgrade_keeps_talking(clerk, data):
+    """A server already running does not go silent on a deploy.
+
+    Conversation defaults off now. That is right for a new install and
+    wrong for every server already using it: they never set `chat`
+    explicitly, so the new default would silence a clerk that had been
+    answering for months, on an upgrade nobody would connect to it.
+    """
+    print("\nan upgrade does not quietly switch the talking off")
+    import modules
+
+    store = data / "upgrade-store"
+    settings.configure(store)
+    keyed, mute, chosen = 7001, 7002, 7003
+    try:
+        settings.set_brain_key(keyed, "claude", "sk-test-key")
+        for gid in (keyed, mute, chosen):
+            check(f"before the upgrade {gid} reads as off by default",
+                  not modules.enabled(gid, "chat"))
+
+        settings.set_brain_key(chosen, "claude", "sk-test-two")
+
+        for gid in (keyed, mute, chosen):
+            clerk.keep_talking(types.SimpleNamespace(id=gid))
+
+        check("a server holding a key was talking, and still is",
+              modules.enabled(keyed, "chat"))
+        check("and it is written down as their choice, so switching it off "
+              "afterwards stays off",
+              modules.chosen(keyed).get("chat") is True)
+        check("a server with no key is left alone, because it was not "
+              "talking either way", not modules.enabled(mute, "chat"))
+
+        # The reason it is marked rather than inferred: switching it off
+        # stores nothing, because the stored value would equal the default.
+        # A migration that reran would read that as "never chose" and turn
+        # it back on, on every deploy, for ever.
+        modules.set_enabled(chosen, "chat", False)
+        clerk.keep_talking(types.SimpleNamespace(id=chosen))
+        check("and switching it off afterwards stays off, because the "
+              "migration runs once and says so rather than guessing again",
+              not modules.enabled(chosen, "chat"))
+    finally:
+        settings.configure(data)
+
+
 def test_privacy_surfaces(clerk, data):
     """The claims PRIVACY.md makes, checked against the code that makes
     them true. A privacy page is worth exactly as much as the thing it
@@ -2575,6 +2621,7 @@ def main():
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
             test_prompt_matches_the_tools(data)
+            test_upgrade_keeps_talking(clerk, data)
             test_privacy_surfaces(clerk, data)
             test_channel_choice(clerk, data)
             test_closing(clerk, data)

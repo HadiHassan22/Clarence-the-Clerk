@@ -4525,6 +4525,38 @@ async def furniture_loop():
             log.error(f"furniture check failed in {guild.id}: {e!r}")
 
 
+# Ran once per server, on the upgrade that flipped conversation's default.
+CHAT_MIGRATED = "chat_default_migrated"
+
+
+def keep_talking(guild):
+    """A server that was already talking does not go quiet on an upgrade.
+
+    Conversation used to default on and dormant; it defaults off now,
+    because a feature that is on and waiting on a key reads as broken when
+    nothing is. That is right for a new install and wrong for every server
+    already running: they never chose `chat` explicitly, so the new
+    default would silence a clerk that had been answering for months, on a
+    deploy nobody connected to it.
+
+    So: a server holding an AI key was talking, and keeps talking.
+
+    Once, and marked, because "never chose" and "chose the default" are the
+    same stored value: `set_enabled` drops an entry that matches the
+    default, so a house that deliberately switched conversation off looks
+    exactly like one that never touched it. Inferring again on every boot
+    would switch them back on every deploy, for ever.
+    """
+    if settings.get(guild.id, CHAT_MIGRATED):
+        return
+    settings.put(guild.id, **{CHAT_MIGRATED: True})
+    if brain.provider_name(guild.id) is None:
+        return
+    modules.set_enabled(guild.id, "chat", True)
+    log.info(f"guild {guild.id}: conversation kept on, since a key is set "
+             f"and it was talking before this upgrade")
+
+
 @bot.event
 async def on_ready():
     log.info(f"on duty as {bot.user} in {len(bot.guilds)} server(s) "
@@ -4533,6 +4565,7 @@ async def on_ready():
     bot._boot_announced = True
     for guild in houses():
         try:
+            keep_talking(guild)
             # A host that still carries a key in its environment hands it to
             # each server it serves, once, and is never read again.
             adopted = settings.adopt_env_keys(guild.id)
