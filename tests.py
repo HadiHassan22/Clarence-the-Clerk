@@ -776,6 +776,29 @@ def test_setup_rooms(clerk, data):
           and bindings.job_of("the-floor") == "votes")
     check("a room with no job announces none",
           bindings.job_of("💬・general") is None)
+    # A job that stops existing leaves its binding behind for ever,
+    # because nothing ever looks at the key again. That is not just
+    # untidy: bound_room_ids reads every value whatever the key, and that
+    # set is the rooms he treats as his own -- so rooms belonging to
+    # features that were removed are rooms he still answers and listens
+    # in, which is the one claim PRIVACY.md makes about him.
+    bindings.bind_channel(3333, "votes", 501)
+    settings.put(3333, rooms={**(settings.get(3333, "rooms") or {}),
+                              "wardrobe": 777, "polls": 778})
+    check("a binding for a job that no longer exists is still stored",
+          "wardrobe" in (settings.get(3333, "rooms") or {}))
+    check("and counts as one of his rooms until something drops it",
+          777 in bindings.bound_room_ids(3333))
+    gone = bindings.prune(dressed)
+    check("prune drops it and says which, rather than leaving it to rot",
+          any("wardrobe" in line for line in gone)
+          and any("no such job" in line for line in gone))
+    check("so it stops being a room he would answer in",
+          777 not in bindings.bound_room_ids(3333)
+          and 778 not in bindings.bound_room_ids(3333))
+    check("while a job that does exist is left exactly alone",
+          bindings.bound_channel_id(3333, "votes") == 501)
+
     check("adopting takes nothing that is already spoken for",
           bindings.adopt(3333, types.SimpleNamespace(id=999, name="votes")) is None
           and bindings.bound_channel_id(3333, "votes") == 501)

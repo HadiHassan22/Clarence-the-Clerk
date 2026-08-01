@@ -211,17 +211,31 @@ def ready(guild):
 
 
 def prune(guild):
-    """Drop bindings whose target no longer exists. Returns what it dropped,
-    so an admin can be told rather than left wondering why a room went quiet."""
+    """Drop bindings that no longer point at anything, or no longer point
+    at anything he does. Returns what it dropped, so an admin can be told
+    rather than left wondering why a room went quiet.
+
+    Two kinds of dead. A channel somebody deleted is the obvious one. The
+    other is a job that stopped existing: a server set up before a feature
+    was removed keeps a binding for it for ever, because nothing ever
+    looked at the key. That is not only untidy -- `bound_room_ids` is the
+    set of rooms he treats as his own, and it reads every value in the
+    table whatever the key, so four rooms belonging to features he no
+    longer has were four more rooms he would answer and listen in.
+    """
     if guild is None:
         return []
     dropped = []
-    for field, table, lookup in (
-        (_ROOMS_KEY, _table(guild.id, _ROOMS_KEY), guild.get_channel),
-        (_CATS_KEY, _table(guild.id, _CATS_KEY), guild.get_channel),
-        (_ROLES_KEY, _table(guild.id, _ROLES_KEY), guild.get_role),
+    for field, table, lookup, known in (
+        (_ROOMS_KEY, _table(guild.id, _ROOMS_KEY), guild.get_channel, ROOMS),
+        (_CATS_KEY, _table(guild.id, _CATS_KEY), guild.get_channel, CATEGORIES),
+        (_ROLES_KEY, _table(guild.id, _ROLES_KEY), guild.get_role, ROLES),
     ):
         for key, target_id in list(table.items()):
+            if key not in known:
+                _bind(guild.id, field, key, None)
+                dropped.append(f"{field}.{key} (no such job any more)")
+                continue
             if lookup(target_id) is None:
                 _bind(guild.id, field, key, None)
                 dropped.append(f"{field}.{key}")
