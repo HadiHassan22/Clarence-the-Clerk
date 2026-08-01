@@ -59,7 +59,6 @@ import roster
 import sanction
 import settings
 import slate
-import survey
 import toolbox
 import warden
 
@@ -4049,7 +4048,6 @@ def brain_lines(guild):
         who = settings.get(guild.id, f"{name}_key_set_by")
         lines.append(
             f"- {providers.label(name)}: {mark}, `{brain.model_name(guild.id, name)}`, "
-            f"long look on `{brain.deep_model_name(guild.id, name)}`, "
             f"key {settings.fingerprint(key)}"
             + (f", set by {who}" if who else "")
         )
@@ -4293,15 +4291,6 @@ class SetupPanel(StewardView):
     @discord.ui.button(label="What this place is", style=discord.ButtonStyle.secondary, row=1)
     async def house(self, interaction, button):
         await interaction.response.send_modal(HouseModal(interaction.guild))
-
-    @discord.ui.button(label="What needs doing", style=discord.ButtonStyle.primary, row=2)
-    async def survey_button(self, interaction, button):
-        await interaction.response.edit_message(
-            content=survey.render(look(interaction.guild), limit=1850)
-            + "\n-# `/survey deep: True` has him read this and say which of "
-              "it actually matters.",
-            view=StewardView(self.owner_id),
-        )
 
     @discord.ui.button(label="Start fresh…", style=discord.ButtonStyle.danger, row=2)
     async def fresh(self, interaction, button):
@@ -4747,20 +4736,6 @@ class BrainKeyModal(discord.ui.Modal):
         required=False,
         max_length=80,
     )
-    # Two models, because they are answering different questions at
-    # different prices. He replies to a mention in a sentence or two, which
-    # a cheap model does perfectly well and a frontier one does at several
-    # times the cost; the long look reads twenty findings at once and says
-    # which three matter, which is exactly what cheap models are worst at.
-    # One field for both means either every "morning" costs a fortune or
-    # the audit is answered by something that cannot hold it in its head.
-    deep = discord.ui.TextInput(
-        label="Model for the long look (blank for the best)",
-        style=discord.TextStyle.short,
-        required=False,
-        max_length=80,
-    )
-
     def __init__(self, guild, annex):
         # The annex is named in the title and the placeholders rather than
         # the field label, which discord.py has deprecated setting late.
@@ -4769,13 +4744,9 @@ class BrainKeyModal(discord.ui.Modal):
         self.annex = annex
         self.key.placeholder = providers.PROVIDERS[annex].key_hint
         self.model.placeholder = providers.default_model(annex)
-        self.deep.placeholder = providers.deep_model(annex)
         current = settings.model(guild.id, annex)
         if current:
             self.model.default = current
-        chosen = settings.deep_model(guild.id, annex)
-        if chosen:
-            self.deep.default = chosen
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -4792,8 +4763,6 @@ class BrainKeyModal(discord.ui.Modal):
             at=now_utc().isoformat(),
         )
         settings.set_model(self.guild.id, self.annex, model)
-        settings.set_deep_model(self.guild.id, self.annex,
-                                str(self.deep).strip())
         brain.forget_client(self.guild.id)
         log.info(
             f"{self.annex} key set for guild {self.guild.id} by "
@@ -4809,8 +4778,6 @@ class BrainKeyModal(discord.ui.Modal):
             f"Done. He is awake through {providers.label(self.annex)} on "
             f"`{model}`, and the key ({settings.fingerprint(key)}) stays here.\n"
             + (f"-# That wakes {', '.join(woken).lower()}.\n" if woken else "")
-            + f"-# The long look (`/survey deep: True`) uses "
-              f"`{brain.deep_model_name(self.guild.id, self.annex)}`.\n"
             + (
                 f"-# {' and '.join(providers.label(n) for n in others)} "
                 f"still on file; the Brain screen switches between them.\n"
@@ -4919,9 +4886,6 @@ async def open_brain(interaction, note=None):
         "heartbeat.",
         "-# Gemini is Google AI Studio · Grok is console.x.ai · Claude is "
         "console.anthropic.com. Each server pays for its own thinking.",
-        "-# Two models per key: a cheap one for talking, and a good one for "
-        "the long look (`/survey deep: True`), which is the only thing he "
-        "does that is worth a frontier model.",
         "",
         *brain_lines(guild),
     ]
@@ -5064,284 +5028,6 @@ async def open_slate(interaction, picked=(), note=None):
         body += ["", note]
     await interaction.response.edit_message(
         content="\n".join(body)[:1990], view=view
-    )
-
-
-# ---------- the long look ----------
-# The one thing he does by looking rather than by being asked a question.
-# `survey.py` holds every rule and is Discord-free; this is the walk round
-# the building that feeds it, and it is the only place in the clerk that
-# reads the whole server at once.
-#
-# All of it is free. Nothing below spends a token, and the report is the
-# same report whether or not this server has ever bought a key. What a
-# brain adds is judgement over the list, and that is asked for by name.
-
-
-def _quiet_days(channel):
-    """Days since anything was said, from the id of the last message.
-
-    Off the id rather than by fetching history: a Discord snowflake carries
-    its own timestamp, so this costs no API call at all and works for a
-    hundred channels as cheaply as for one. A channel nobody has ever
-    posted in reads as None rather than as infinitely quiet, because those
-    are different things and only one of them is a finding.
-    """
-    last = getattr(channel, "last_message_id", None)
-    if not last:
-        return None
-    try:
-        when = discord.utils.snowflake_time(last)
-    except (ValueError, OverflowError, TypeError):
-        return None
-    return max(0, (now_utc() - when).days)
-
-
-def _arrivals_facts(guild):
-    """What already greets people here.
-
-    Discord's own join notices are a flag on the guild and cost nothing to
-    read. Another bot doing the same job is not visible from here and this
-    does not pretend otherwise -- what it can see, it says.
-    """
-    flags = getattr(guild, "system_channel_flags", None)
-    system = guild.system_channel
-    # discord.py already inverts this one for us: Discord's own bit is
-    # SUPPRESS_JOIN_NOTIFICATIONS, and `join_notifications` reads True when
-    # the notices are on. Reading it as the raw suppression bit gets the
-    # answer backwards, which is a finding that fires for every server that
-    # has already turned Discord's greeting off.
-    greets = bool(system is not None and flags is not None
-                  and flags.join_notifications)
-    mine = bindings.channel(guild, "welcome")
-    return {
-        "on": modules.enabled(guild.id, "welcome"),
-        "room": mine.name if mine is not None else None,
-        "discord_greets": greets,
-        "discord_room": system.name if system is not None else None,
-    }
-
-
-def gather(guild):
-    """Everything `survey.py` needs, as plain data.
-
-    The split is the same one the rest of the clerk uses: the walk is here
-    because it needs a guild, and every judgement about what the walk found
-    is over there because judgements should be testable without one.
-    """
-    me = guild.me
-    coop = cooperative_role(guild)
-    inside = cooperative_members(guild)
-    registry = role_registry()
-
-    outranked = []
-    if me is not None:
-        outranked = [r.name for r in guild.roles
-                     if r > me.top_role and not r.is_default()][:8]
-
-    channels = []
-    for channel in guild.text_channels:
-        channels.append({
-            "id": channel.id,
-            "name": channel.name,
-            "claims": bindings.job_of(channel.name),
-            "archived": channel.name.startswith("archived_"),
-            "quiet_days": _quiet_days(channel),
-            "messages": None,
-        })
-
-    room_health, room_owners = {}, {}
-    for job in bindings.ROOMS:
-        found = bindings.channel(guild, job)
-        owner = next((k for k in modules.keys()
-                      if job in modules.spec(k)["rooms"]), None)
-        room_owners[job] = ({"key": owner,
-                             "enabled": modules.enabled(guild.id, owner)}
-                            if owner else None)
-        if found is not None and me is not None:
-            allowed = found.permissions_for(me)
-            room_health[job] = {"cannot_post": not allowed.send_messages}
-
-    bills = load_json(BILLS, [])
-    open_bills = [b for b in bills if b.get("status") == "on_floor"]
-    stale = [f"No. {b['no']} {b['title']}" for b in open_bills
-             if b.get("ends_at")
-             and datetime.fromisoformat(b["ends_at"]) < now_utc() - timedelta(hours=1)]
-    filed = [b.get("filed_at") for b in bills if b.get("filed_at")]
-    quiet_floor = None
-    if filed:
-        quiet_floor = (now_utc() - datetime.fromisoformat(max(filed))).days
-
-    ghosts, orphans, unworn = [], [], []
-    for role_id, entry in registry.items():
-        role = guild.get_role(int(role_id))
-        if role is None:
-            ghosts.append(str(role_id))
-            continue
-        if guild.get_member(entry.get("creator_id") or 0) is None:
-            orphans.append(role.name)
-        if not role.members:
-            unworn.append(role.name)
-
-    states = {}
-    for key in modules.keys():
-        states[key] = {
-            "name": modules.name(key),
-            "state": module_state(guild, key),
-            "blockers": module_blockers(guild, key),
-        }
-
-    optional = [job for job in modules.wanted_rooms(guild.id)
-                if bindings.channel(guild, job) is None
-                and job not in modules.required_rooms(guild.id)]
-
-    return {
-        "guild": {
-            "name": guild.name,
-            "members": guild.member_count,
-            "described": bool(settings.get(guild.id, "house")),
-            # "talking" keeps one finding honest: an empty floor in a dead
-            # server is not a governance problem, it is a dead server.
-            "talking": any(c["quiet_days"] is not None and c["quiet_days"] < 7
-                           for c in channels),
-        },
-        "me": {
-            "missing_permissions": builder.missing_permissions(guild),
-            "outranked_by": outranked,
-            "message_content": intents.message_content,
-        },
-        "chat_on": modules.enabled(guild.id, "chat"),
-        "arrivals": _arrivals_facts(guild),
-        "modules": states,
-        "bindings": {"rooms": {j: bindings.bound_channel_id(guild.id, j)
-                               for j in bindings.ROOMS}},
-        "room_health": room_health,
-        "room_owners": room_owners,
-        "optional_unbound": optional,
-        "channels": channels,
-        "categories": [{"name": c.name, "channels": len(c.channels)}
-                       for c in guild.categories],
-        "cooperative": {
-            "size": len(inside),
-            "away": sum(
-                1 for m in inside
-                if roster.away_reason(m, numbers(guild)["away_days"])
-            ),
-        },
-        "record": {
-            "outstanding": [i.get("title", "?") if isinstance(i, dict) else str(i)
-                            for i in duties.outstanding(bills, closing_report)],
-            "stale_open": stale,
-            "floor_quiet_days": quiet_floor,
-        },
-        "colours": {"registered_but_gone": ghosts, "owner_left": orphans,
-                    "unworn": unworn},
-        "brain": {
-            "provider": brain.provider_name(guild.id),
-            "spent": brain.spend_usd(guild.id),
-            "budget": settings.budget_usd(guild.id),
-            "deep_better": brain.deep_is_better(guild.id),
-        },
-        "slate": {"stranded_from": slate.owner() if slate.stranded(guild.id)
-                  else None},
-    }
-
-
-def look(guild):
-    """The findings, for nothing."""
-    return survey.inspect(gather(guild))
-
-
-async def act_survey(guild, invoker, args):
-    """The same findings the command prints, for the model to judge.
-
-    Ungated by feature on purpose: "what is wrong with my server" is a
-    question worth answering in a server that has switched almost
-    everything off, and the answer is often that they switched something
-    off.
-    """
-    grade = str(args.get("grade") or "all").strip().lower()
-    findings = look(guild)
-    if grade in survey.GRADES:
-        findings = [f for f in findings if f["grade"] == grade]
-    return json.dumps({
-        "tally": survey.tally(look(guild)),
-        "findings": survey.brief(findings),
-        "note": "worked out in code, not remembered; current as of now. "
-                "Say which few matter, not all of them.",
-    })
-
-
-SURVEY_ACTIONS = {"survey_server": act_survey}
-
-
-@bot.tree.command(
-    name="survey",
-    description="What is broken here, what is missing, and what wants tidying",
-)
-@app_commands.describe(
-    deep="Have him read the findings and say what actually matters. Costs.",
-    question="Something specific to ask about them, e.g. what needs cleaning",
-)
-@app_commands.guild_only()
-async def slash_survey(interaction: discord.Interaction,
-                       deep: bool = False, question: str = ""):
-    """The long look.
-
-    Free by default and free by design: every finding is worked out in
-    plain Python over facts already in memory, so a house with no key, or
-    one whose bill has run out for the month, gets exactly the same list.
-
-    `deep: True` is the other half, and it is the one thing in the clerk
-    that deliberately reaches for an expensive model. The list is
-    exhaustive rather than considered -- nineteen true things in no
-    meaningful order -- and turning that into "do these three, ignore the
-    rest, and here is why" is judgement over a lot of context at once,
-    which is the job cheap models are worst at and the reason a good one
-    is worth a few cents here and nowhere else.
-    """
-    if not keyed_in(interaction):
-        return await refuse(interaction, "That one is for people who are in.")
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    findings = look(interaction.guild)
-    if not deep:
-        tail = ("\n-# `/survey deep: True` has me read this and say what "
-                "actually matters." if brain.enabled(interaction.guild.id)
-                else "")
-        return await interaction.followup.send(
-            survey.render(findings, limit=1850) + tail, ephemeral=True
-        )
-    denial = brain.may_spend(interaction.guild.id, interaction.user.id)
-    if denial:
-        return await interaction.followup.send(
-            survey.render(findings, limit=1800) + f"\n-# {denial}",
-            ephemeral=True,
-        )
-    try:
-        answer, cost = await brain.long_look(
-            interaction.guild, survey.brief(findings), asked=question or None
-        )
-    except Exception as e:
-        log.error(f"long look failed: {e!r}")
-        return await interaction.followup.send(
-            survey.render(findings, limit=1850)
-            + "\n-# The annex was unreachable, so that is the list without "
-              "my read on it.",
-            ephemeral=True,
-        )
-    log.info(f"long look in {interaction.guild.id} by "
-             f"{interaction.user.display_name}: ${cost:.4f}, "
-             f"{len(findings)} finding(s)")
-    counts = survey.tally(findings)
-    head = " · ".join(f"{survey.MARKS[g]} {counts[g]}" for g in survey.GRADES
-                      if counts[g])
-    await interaction.followup.send(
-        f"## The long look at {interaction.guild.name}\n"
-        f"-# {head} · `{brain.deep_model_name(interaction.guild.id)}` · "
-        f"${cost:.3f}\n\n"
-        + (answer or "He had nothing to add.")[:1700]
-        + "\n-# `/survey` on its own prints the findings themselves, free.",
-        ephemeral=True,
     )
 
 
@@ -6226,8 +5912,7 @@ async def slash_model(interaction: discord.Interaction,
             + (f" ({standing})." if standing else
                " — not one of the named rungs, so it stays untouched "
                "unless you pick one.")
-            + f"\n{rungs}\n-# `/model tier: opus` moves him. The long look "
-              f"(`/survey deep: True`) has its own model and is not touched.",
+            + f"\n{rungs}\n-# `/model tier: opus` moves him.",
         )
 
     wanted = tiers[tier.value]
@@ -6268,9 +5953,7 @@ async def slash_model(interaction: discord.Interaction,
         + f"-# ${price_in:.2f} in and ${price_out:.2f} out per million, and "
           f"the counter now bills at that rate. "
           f"${brain.spend_usd(guild.id):.2f} of "
-          f"${settings.budget_usd(guild.id):.0f} spent this month.\n"
-        + f"-# The long look still uses "
-          f"`{brain.deep_model_name(guild.id, 'claude')}`.",
+          f"${settings.budget_usd(guild.id):.0f} spent this month.",
         ephemeral=True,
     )
     await update_health(guild)
@@ -6347,7 +6030,7 @@ async def setup_hook():
     people.configure(DATA)
     toolbox.configure(
         HERE, DATA,
-        {**COLOR_ACTIONS, **BILL_ACTIONS, **DUTY_ACTIONS, **SURVEY_ACTIONS,
+        {**COLOR_ACTIONS, **BILL_ACTIONS, **DUTY_ACTIONS,
          **powers.ACTIONS_TABLE},
         in_cooperative=in_cooperative, numbers=numbers,
     )

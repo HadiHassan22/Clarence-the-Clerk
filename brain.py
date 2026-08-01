@@ -151,35 +151,6 @@ def model_name(guild_id, name=None):
     return settings.model(guild_id, name, providers.default_model(name))
 
 
-def deep_model_name(guild_id, name=None):
-    """What answers the long look here. Falls back to the ordinary model
-    rather than to nothing, so a server that has never set one still gets
-    an answer -- a worse one, and the survey says so."""
-    name = name or provider_name(guild_id)
-    if name is None:
-        return ""
-    return (settings.deep_model(guild_id, name)
-            or providers.deep_model(name)
-            or model_name(guild_id, name))
-
-
-def deep_is_better(guild_id):
-    """Whether the long look would actually be answered by something better
-    than an ordinary reply.
-
-    Every annex names a good model as well as a cheap one, so this is
-    normally true without anybody doing anything. It is false when a server
-    has deliberately pointed both at the same place, and that is worth
-    saying once: the long look is the one thing here where the model
-    choice changes the answer rather than the wording, and paying cheap
-    rates for it means getting the list back with worse judgement on it.
-    """
-    name = provider_name(guild_id)
-    if name is None:
-        return False
-    return deep_model_name(guild_id, name) != model_name(guild_id, name)
-
-
 def client_for(guild_id):
     """The server's own client, built on first use and rebuilt whenever
     its key or its choice of annex changes, so a rotation takes effect on
@@ -638,7 +609,7 @@ The heavy half of that waits for a signature. Warns, timeouts, kicks, bans, swee
 - Roles: `assign_role` puts any role on anybody. (The colour tools are the small ones and only touch whoever is asking.)
 - The machine itself: `list_settings` and `set_setting`. Welcomes, goodbyes, the filters, warning escalation, what gets logged. Somebody says "stop deleting links, we post GitHub all day" — that is `set_setting`, not a conversation about it. Names work: "post welcomes in general" is a channel name, you do not need an id.
 - Whole features go on and off with `set_feature`, and `list_features` says which are running. "Turn the filters on" is that, not a setting.
-- Also yours: `survey_server` for what is broken or missing here, and `tag` for the shelf of stock answers.
+- Also yours: `tag` for the shelf of stock answers.
 Two habits. Read before you write: if you are not certain of a setting's exact name, `list_settings` first rather than guessing at one. And say the cost once: if a change genuinely makes the place less safe — the filters off, the cooperative unprotected — make the change, then mention it in a line. After, never instead, and never twice.
 
 # What is still not yours
@@ -1223,85 +1194,6 @@ async def _point_home(message, guild):
         )
     except discord.HTTPException:
         pass
-
-
-LONG_LOOK = """You have been handed a survey of this Discord server. Every
-finding in it was worked out in plain code, for nothing, and it is
-exhaustive rather than considered: nineteen true things, in no order that
-means anything.
-
-Your job is the part code cannot do. Read the whole list, then tell them
-what actually matters. Specifically:
-
-- Lead with the one thing you would do first, and say why it is first.
-- Group what belongs together. Four findings that are all one afternoon's
-  tidying are one item, not four.
-- Say plainly which findings are not worth doing at all. That is worth as
-  much as the ones that are: a list where everything matters is a list
-  nobody acts on.
-- Where a finding is a symptom of another, say so rather than listing both.
-- If somebody asked a specific question, answer that question first and
-  keep the rest short.
-
-You are talking to the people who run this place, not writing a report for
-a file. Be concrete, name the rooms and the numbers, and skip the
-preamble. Markdown, a few short sections, no more than about 300 words.
-Do not invent findings that are not in the list, and do not soften one
-that is."""
-
-
-def may_spend(guild_id, user_id):
-    """Why this person cannot have a paid answer right now, or None.
-
-    The same two fences a conversation passes -- their rate limit and the
-    month's budget -- put behind one name so anything else that spends
-    checks both rather than remembering to check both.
-    """
-    if provider_name(guild_id) is None:
-        return ("I have no key here, so there is nothing to think with. "
-                "`/setup` → Brain.")
-    denial = _rate_check(guild_id, user_id)
-    if denial:
-        return denial
-    if spend_usd(guild_id) >= settings.budget_usd(guild_id):
-        return "I have spent this month's thinking budget. Back on the first."
-    return None
-
-
-async def long_look(guild, findings, asked=None, tools=None):
-    """One expensive answer over a free list of facts.
-
-    Deliberately not a conversation. There is no transcript, no memory
-    book and no persona load: the model gets the findings, the question if
-    there was one, and the instruction above. That keeps the prompt small
-    enough that paying for a good model on it is a few cents rather than a
-    row on the bill, and it keeps the answer about the server rather than
-    about him.
-    """
-    name = provider_name(guild.id)
-    if name is None:
-        return "", 0.0
-    model = deep_model_name(guild.id, name)
-    question = (f"\n\nThey asked, in these words: {asked!r}. Answer that "
-                f"first." if asked else "")
-    turns = [providers.said(
-        f"# The server\n{guild.name}"
-        + (f", which its people describe as: {house_description(guild.id)}"
-           if house_description(guild.id) else "")
-        + f"\n\n# The survey\n{json.dumps(findings, indent=1)[:12000]}"
-        + question
-    )]
-    reply = await _call(
-        guild.id, "long look", model=model, system=[LONG_LOOK], turns=turns,
-        tools=tools or [], max_tokens=1200, temperature=0.4,
-    )
-    cost = _record_usage(
-        guild.id, name, reply.tokens_in, reply.tokens_out,
-        reply.cache_read, reply.cache_write, model=model,
-    )
-    if reply.raw is None:
-        return "", cost
-    return (reply.text or ""), cost
 
 
 async def handle_message(message):

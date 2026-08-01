@@ -813,26 +813,6 @@ OFFICER_TOOLS = {
             "required": ["channel", "text"],
         },
     },
-    "survey_server": {
-        "description": "Look over the whole server and report what is "
-        "broken, what is not what the house thinks it is, what wants "
-        "tidying, and what has never been set up. Call this for 'what needs "
-        "cleaning', 'what is missing', 'what have we not finished', 'is "
-        "anything wrong'. It costs nothing and it is always current, so "
-        "call it rather than guessing from what you remember. Findings are "
-        "graded broken / wrong / untidy / missing; say which few actually "
-        "matter rather than reciting the list.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "grade": {
-                    "type": "string",
-                    "enum": ["broken", "wrong", "untidy", "missing", "all"],
-                    "description": "one grade, or all of them",
-                },
-            },
-        },
-    },
     "set_feature": {
         "description": "Switch one of the ten features on or off for this "
         "server: governance, polls, colours, chat, memory, pulse, "

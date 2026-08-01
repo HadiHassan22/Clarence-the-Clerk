@@ -114,10 +114,6 @@ if `requirements.txt` is not installed.
 - `modules.py`: what he does here, in twelve switchable parts, and the
   single description of the governance layout. Discord-free, so all of it
   is testable on a laptop.
-- `survey.py`: the long look. Every rule is a function of a plain dict of
-  facts, and `clerk.gather()` is the only thing that touches a `Guild`.
-  Keep it that way: an audit nobody can run without a live server is one
-  nobody can check.
 - `slate.py`: whose history is on this disk, and clearing it by scope.
   Anything new that gets written to the data root belongs in one of its
   scopes, or it will follow the daemon to the next server it serves.

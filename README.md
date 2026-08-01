@@ -37,10 +37,6 @@ Design history and scopes: [governance-design.md](governance-design.md),
   `/setup` so both do exactly the same thing.
 - **`settings.py`**: per-server settings, keyed by guild id: the AI
   keys, the model, the budget.
-- **`survey.py`**: the long look. Every rule that decides what is broken,
-  what is not what the house thinks it is, what wants tidying and what has
-  never been set up. Discord-free, so the whole audit runs against a
-  made-up server on a laptop.
 - **`slate.py`**: whose history is on this disk, and how to clear it.
   Stamps the data directory with the server it belongs to, says so out
   loud when that stops matching, and knows what each kind of forgetting
@@ -153,9 +149,6 @@ a conversation:
 - **`/whatdoyouknow`** — everything he has picked up about you, and
   `forget: True` to delete the lot. Yours alone; nobody can run it on
   anybody else.
-- **`/survey`** — what is broken here, what is missing, what wants
-  tidying. Free, and the same list whether or not the server has a key.
-  `deep: True` has him read it and say which of it actually matters.
 - **`/house`** — every feature and whether it is running, then the
   settings underneath them: welcomes, filters, warnings, the log.
   Read-only, and free; the changing is done by asking him.
@@ -168,8 +161,7 @@ back on. `/setup` is the administrators', and so is one command:
   `opus`. Run it bare and he says where he is and what else there is; give
   it a rung and he checks the server's own key can reach that model before
   he moves. The monthly counter re-prices itself to match, so an opus month
-  is billed as one. The long look (`/survey deep: True`) keeps its own
-  model and is not touched.
+  is billed as one.
 
 ## What he does here, in ten parts
 
@@ -199,8 +191,6 @@ channel, because most servers already have something for this — Discord's
 own join notices, or a bot they had before this one — and a second hello
 in a room nobody chose is worse than no hello. `/setup` → Apply binds a
 channel you already have if one is obviously it, and **never creates one**.
-If Discord is also greeting people, `/survey` says so and names both rooms;
-which one to keep is yours.
 
 Every default is what the clerk already did before there were modules, so
 upgrading changes nothing and each switch above is a real switch rather
@@ -228,58 +218,6 @@ feature that is off · ⬜ off.
 
 `/house` prints the same list to anyone in the cooperative, free, without
 consulting the model.
-
-## The long look
-
-Give him the run of the server and ask what needs doing. `/survey`, or the
-**What needs doing** button on the setup panel, or just say it — *what
-needs cleaning*, *what have we not finished*, *is anything wrong here*.
-
-He walks the whole place once and grades what he finds:
-
-| | |
-|---|---|
-| 🔴 **broken** | cannot work until somebody acts — a missing permission, a role above his, a bound room he is not allowed to post in, a feature switched on and waiting |
-| 🟠 **wrong** | works, but not the way the house thinks — two channels claiming the same job with the binding on the empty one, a colour register that has drifted, a vote past its window and still open |
-| 🧹 **untidy** | works, is correct, and there is cruft — empty categories, rooms nobody has used in two months, a full archive |
-| ⬜ **missing** | nothing is wrong, something has simply never been set up — an optional room, a cooperative of one, decisions passed and not carried out |
-
-**All of the looking is free.** Every rule is plain Python over facts
-already in memory: no model, no tokens, no network. A server with no key
-gets exactly the same list. A feature somebody deliberately switched off is
-never a finding — that was a decision, and an audit that grades every
-choice a fault is one people learn to close.
-
-### Opus mode
-
-`/survey deep: True` is the other half, and the only thing in the clerk
-that deliberately reaches for an expensive model. The free list is
-exhaustive rather than considered — nineteen true things in no meaningful
-order — and turning that into *do these three, ignore the rest, here is
-why* is judgement over a lot of context at once, which is the job cheap
-models are worst at.
-
-So each key carries two models. The **Brain** screen has a field for each:
-
-```
-Model for talking      claude-haiku-4-5     ← a mention, answered in a sentence
-Model for the long look claude-opus-5       ← twenty findings, answered with judgement
-```
-
-Both have sensible defaults per annex (`gemini-3.1-pro`, `grok-4`,
-`claude-opus-5`), so it works without anybody setting anything, and either
-can be overruled. Add a question and he answers that first:
-
-```
-/survey deep: True question: what needs cleaning
-```
-
-It is one call over a small prompt — the findings, the question, and
-nothing else: no transcript, no house book, no persona. That is what keeps
-a frontier model on it worth a few cents rather than a line on the bill,
-and it keeps the answer about the server rather than about him. It obeys
-the same two fences a conversation does, the rate limit and the month's
-budget, and when either says no you still get the free list.
 
 ## Starting again
 

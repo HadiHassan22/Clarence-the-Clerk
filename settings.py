@@ -231,23 +231,6 @@ def set_model(guild_id, provider_name, name):
     put(guild_id, **{model_field(provider_name): name})
 
 
-def deep_field(provider):
-    return f"{provider}_deep_model"
-
-
-def deep_model(guild_id, provider_name, default=""):
-    """The model this server wants for the long look, or the default. Kept
-    apart from the chat model on purpose: they are answering different
-    questions at different prices, and one field for both means either
-    every "morning" costs a fortune or the audit is answered by something
-    that cannot hold nineteen findings in its head at once."""
-    return get(guild_id, deep_field(provider_name)) or default
-
-
-def set_deep_model(guild_id, provider_name, name):
-    put(guild_id, **{deep_field(provider_name): name or None})
-
-
 def budget_usd(guild_id):
     value = get(guild_id, "budget_usd")
     return float(value) if value is not None else DEFAULT_BUDGET_USD

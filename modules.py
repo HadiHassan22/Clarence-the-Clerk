@@ -379,7 +379,7 @@ ORDER = ("governance", "polls", "colours", "chat", "memory", "pulse",
 # configured. Switching every feature off must still leave the way to
 # switch one back on.
 UNGATED_TOOLS = ("list_settings", "set_setting", "reset_settings",
-                 "set_feature", "list_features", "survey_server")
+                 "set_feature", "list_features")
 
 
 def keys():

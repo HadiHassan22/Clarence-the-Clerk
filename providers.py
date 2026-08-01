@@ -121,7 +121,6 @@ class Gemini:
     # The one for the long look. Never used for chat: a clerk who answers
     # in a sentence does not need it, and the bill for having it answer
     # every "morning" is not one anybody agreed to.
-    deep_model = os.environ.get("CLERK_GEMINI_DEEP", "gemini-3.1-pro")
     price_in = 0.25
     price_out = 1.50
     # Gemini caches long repeated prefixes by itself, with nothing to ask
@@ -241,7 +240,6 @@ class Grok:
     key_hint = "console.x.ai → API keys"
     base = os.environ.get("CLERK_GROK_BASE", "https://api.x.ai/v1").rstrip("/")
     default_model = os.environ.get("CLERK_GROK_MODEL", "grok-4-fast")
-    deep_model = os.environ.get("CLERK_GROK_DEEP", "grok-4")
     price_in = 0.20
     price_out = 0.50
     # Like Gemini, cached automatically and for free; only the discount on
@@ -465,7 +463,6 @@ class Claude:
     # job this size. A house that wants one types it into the model field in
     # `/setup`, or sets CLERK_CLAUDE_MODEL.
     default_model = os.environ.get("CLERK_CLAUDE_MODEL", "claude-haiku-4-5")
-    deep_model = os.environ.get("CLERK_CLAUDE_DEEP", "claude-opus-5")
     # The three rungs, named. Anthropic keeps three tiers in the field at a
     # time, and a house choosing between them is choosing a price rather
     # than a model id, so `/model` takes the name and looks the id up here.
@@ -641,15 +638,6 @@ def label(name):
 def default_model(name):
     provider = PROVIDERS.get(name)
     return provider.default_model if provider else ""
-
-
-def deep_model(name):
-    """What this annex offers for the one job worth paying for. A server
-    that would rather use something else says so; a server that has said
-    nothing gets this rather than nothing, because a long look answered by
-    the cheap model is the same list with worse judgement on it."""
-    provider = PROVIDERS.get(name)
-    return getattr(provider, "deep_model", "") if provider else ""
 
 
 def build(name, api_key):
