@@ -369,7 +369,7 @@ def _roster_now(guild):
         return ""
     away = sum(
         1 for m in guild.members
-        if not m.bot and keyed(m) and roster.is_away(m, away_days)
+        if not m.bot and keyed(m) and roster.is_away(guild.id, m, away_days)
     )
     aside = f", {away} away and not counted" if away else ""
     return (

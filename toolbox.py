@@ -197,7 +197,8 @@ async def _server_info(guild, invoker, args):
             "counted": size,
             "away": sum(
                 1 for m in guild.members
-                if not m.bot and keyed(m) and roster.is_away(m, away_days)
+                if not m.bot and keyed(m)
+                and roster.is_away(guild.id, m, away_days)
             ),
             "normal_needs": roster.required(size, "normal", share),
             "fundamental_needs": roster.required(size, "fundamental", share),

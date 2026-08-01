@@ -101,9 +101,25 @@ CONFIG_FLOOR_HOURS = float(CONFIG.get("voting", {}).get("floor_hours", 48))
 DATA = Path(os.environ.get("CLERK_DATA_DIR", HERE))
 DATA.mkdir(parents=True, exist_ok=True)
 
-STATE = DATA / "clerk_state.json"
-BILLS = DATA / "bills.json"
-ACTS = DATA / "acts.json"
+# The record, per server. It sat at the top of the data directory from when
+# there was only ever one house, which meant moving the daemon to a second
+# server meant arriving with the first one's proposals and its numbering.
+# `state_file` adopts the old path once, so an upgrade in place keeps its
+# history instead of starting at Proposal No. 1.
+def _gid(guild):
+    return guild.id if hasattr(guild, "id") else int(guild)
+
+
+def state_path(guild):
+    return settings.state_file(_gid(guild), "clerk_state.json", legacy_root=DATA)
+
+
+def bills_path(guild):
+    return settings.state_file(_gid(guild), "bills.json", legacy_root=DATA)
+
+
+def acts_path(guild):
+    return settings.state_file(_gid(guild), "acts.json", legacy_root=DATA)
 
 
 def numbers(guild=None):
@@ -405,8 +421,8 @@ def resolve_guild(message):
     return None
 
 
-def bill_by(field, value):
-    for bill in load_json(BILLS, []):
+def bill_by(guild, field, value):
+    for bill in load_json(bills_path(guild), []):
         if bill.get(field) == value:
             return bill
     return None
@@ -415,25 +431,27 @@ def bill_by(field, value):
 _state_lock = asyncio.Lock()
 
 
-async def update_bill(bill):
+async def update_bill(guild, bill):
     """Serialized read-modify-write: concurrent ballots must not clobber."""
     async with _state_lock:
-        bills = load_json(BILLS, [])
+        path = bills_path(guild)
+        bills = load_json(path, [])
         for i, b in enumerate(bills):
             if b["no"] == bill["no"]:
                 bills[i] = bill
                 break
-        save_json(BILLS, bills)
+        save_json(path, bills)
 
 
-async def next_bill_number():
+async def next_bill_number(guild):
     """Monotonic, never derived from list length."""
     async with _state_lock:
-        state = load_json(STATE, {})
-        seed = max((b["no"] for b in load_json(BILLS, [])), default=0)
+        path = state_path(guild)
+        state = load_json(path, {})
+        seed = max((b["no"] for b in load_json(bills_path(guild), [])), default=0)
         number = max(state.get("bill_counter", 0), seed) + 1
         state["bill_counter"] = number
-        save_json(STATE, state)
+        save_json(path, state)
         return number
 
 
@@ -580,7 +598,7 @@ class NoteModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        bill = bill_by("no", self.bill_no)
+        bill = bill_by(interaction.guild, "no", self.bill_no)
         if bill is None or bill["status"] != "on_floor":
             return await interaction.followup.send("This vote has closed.", ephemeral=True)
         if interaction.user.id == bill["author_id"]:
@@ -614,7 +632,7 @@ class NoteModal(discord.ui.Modal):
                 "message_id": message.id,
                 "first_at": now_utc().isoformat(),
             }
-        await update_bill(bill)
+        await update_bill(interaction.guild, bill)
         await interaction.followup.send(
             "Noted. You can edit it until the vote closes.", ephemeral=True
         )
@@ -625,7 +643,7 @@ class NotesView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def _open(self, interaction, kind):
-        bill = bill_by("notes_message_id", interaction.message.id)
+        bill = bill_by(interaction.guild, "notes_message_id", interaction.message.id)
         if bill is None or bill["status"] != "on_floor":
             return await interaction.response.send_message(
                 "This vote has closed.", ephemeral=True
@@ -823,7 +841,7 @@ async def repaint_open_ballots(guild):
     the furniture restamp and for the same reason: a deploy that changes
     how a ballot describes itself should reach the votes already open,
     not just the next one filed."""
-    for bill in load_json(BILLS, []):
+    for bill in load_json(bills_path(guild), []):
         if bill.get("status") == "on_floor":
             await refresh_ballot(guild, bill)
 
@@ -869,7 +887,7 @@ async def maybe_autoclose(guild, bill):
         # so it is not an early close either.
         return False
     bill["closed_early"] = "settled"
-    await update_bill(bill)
+    await update_bill(guild, bill)
     await post_closing_report(guild, bill)
     return True
 
@@ -905,7 +923,7 @@ async def cast_ballot(interaction, choice=None, index=None):
     `index` of the button pressed, which only means anything once the
     proposal has been found, since the options live on the proposal.
     """
-    bill = bill_by("ballot_message_id", interaction.message.id)
+    bill = bill_by(interaction.guild, "ballot_message_id", interaction.message.id)
     if bill is None or bill["status"] != "on_floor":
         return await interaction.response.send_message(
             "This vote has closed.", ephemeral=True
@@ -933,7 +951,7 @@ async def cast_ballot(interaction, choice=None, index=None):
     if choice is None:
         if uid in ballots:
             del ballots[uid]
-            await update_bill(bill)
+            await update_bill(interaction.guild, bill)
             await interaction.response.send_message(
                 "Ballot retracted.", ephemeral=True
             )
@@ -942,7 +960,7 @@ async def cast_ballot(interaction, choice=None, index=None):
             "You have no ballot to retract.", ephemeral=True
         )
     ballots[uid] = choice
-    await update_bill(bill)
+    await update_bill(interaction.guild, bill)
     note = (
         "Counted as present and undecided; it goes to neither side."
         if choice == "abstain"
@@ -1082,7 +1100,7 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
     floor = floor_for(guild, {"audience": audience})
     if floor is None:
         return None
-    number = await next_bill_number()
+    number = await next_bill_number(guild)
     ends_at = now_utc() + timedelta(
         hours=floor_hours or numbers(guild)["floor_hours"]
     )
@@ -1141,9 +1159,10 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
     ballot = await floor.send(ballot_content(guild, record), view=view)
     record["ballot_message_id"] = ballot.id
 
-    bills = load_json(BILLS, [])
+    path = bills_path(guild)
+    bills = load_json(path, [])
     bills.append(record)
-    save_json(BILLS, bills)
+    save_json(path, bills)
     log.info(f"proposal filed: no. {number} ({title!r}, {kind}) by {author.display_name}")
     return record
 
@@ -1354,7 +1373,7 @@ class KickTargetView(discord.ui.View):
                 "You may simply leave; the door works in both directions.",
                 ephemeral=True,
             )
-        for b in load_json(BILLS, []):
+        for b in load_json(bills_path(guild), []):
             if (
                 b.get("kind") == "kick"
                 and b.get("target_id") == member.id
@@ -1425,7 +1444,7 @@ async def publish_act(guild, bill, decided=None):
     record = room(guild, "decisions")
     if record is None:
         return ""
-    acts = load_json(ACTS, [])
+    acts = load_json(acts_path(guild), [])
     act_no = len(acts) + 1
     acts.append(
         {
@@ -1439,7 +1458,7 @@ async def publish_act(guild, bill, decided=None):
             "passed_at": bill["closed_at"],
         }
     )
-    save_json(ACTS, acts)
+    save_json(acts_path(guild), acts)
     bill["act"] = act_no
     await record.send(view=Card([f"## Decision {act_no}: {bill['title']}"]))
     for piece in chunk_text(bill["what"]):
@@ -1551,7 +1570,7 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
 
     await seal_chamber(guild, bill)
 
-    await update_bill(bill)
+    await update_bill(guild, bill)
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
 
 
@@ -1804,7 +1823,7 @@ async def close_multi(guild, bill):
         )
         bill["ballot_message_id"] = ballot.id
 
-    await update_bill(bill)
+    await update_bill(guild, bill)
     log.info(f"runoff opened: proposal no. {bill['no']} ({tally_line})")
 
 
@@ -1818,7 +1837,7 @@ async def check_floor():
     # still deserves to be closed rather than left open forever.
     if not module_live(guild, "governance"):
         return
-    for bill in load_json(BILLS, []):
+    for bill in load_json(bills_path(guild), []):
         if bill.get("status") != "on_floor" or "ends_at" not in bill:
             continue
         if datetime.fromisoformat(bill["ends_at"]) <= now_utc():
@@ -1920,8 +1939,9 @@ async def send_nudges(guild, silent=False):
     Sent privately on purpose: who has and has not voted is not something to
     put in a channel, and a nudge in public is a shaming.
     """
-    bills = load_json(BILLS, [])
-    for bill, user_id in duties.nudges_due(bills, lambda b: nudge_roll(guild, b)):
+    bills = load_json(bills_path(guild), [])
+    for bill, user_id in duties.nudges_due(guild.id, bills,
+                                            lambda b: nudge_roll(guild, b)):
         member = guild.get_member(user_id)
         if member is not None and not silent:
             try:
@@ -1931,7 +1951,7 @@ async def send_nudges(guild, silent=False):
                 log.info(f"could not nudge {member.display_name}: {e!r}")
         # Written down either way. A door that will not open is not one to
         # keep knocking on every quarter of an hour.
-        duties.mark_said(duties.nudge_key(bill, user_id))
+        duties.mark_said(guild.id, duties.nudge_key(bill, user_id))
 
 
 AWAY_GONE = (
@@ -1948,11 +1968,12 @@ async def tell_away(guild, silent=False):
     """The rules of procedure promise that Eugene marks people Away and tells
     them he did. He was doing the first half."""
     members = [m for m in guild.members if not m.bot and in_cooperative(m)]
-    gone, back, quiet_now = duties.away_changes(members, roster.away_reason)
+    gone, back, quiet_now = duties.away_changes(
+        guild.id, members, lambda m: roster.away_reason(guild.id, m))
     told = [(m, AWAY_GONE) for m in gone] + [(m, AWAY_BACK) for m in back]
     if not silent:
         for member, line in told:
-            if duties.muted(member.id):
+            if duties.muted(guild.id, member.id):
                 continue
             try:
                 await member.send(line)
@@ -1960,7 +1981,7 @@ async def tell_away(guild, silent=False):
                 log.info(f"could not tell {member.display_name} about the roster: {e!r}")
     if told:
         log.info(f"roster: {len(gone)} gone quiet, {len(back)} back")
-    duties.record_quiet(quiet_now)
+    duties.record_quiet(guild.id, quiet_now)
 
 
 def outstanding_content(items, limit=1900):
@@ -2001,9 +2022,9 @@ async def update_outstanding(guild, silent=False):
     channel = room(guild, "decisions")
     if channel is None:
         return []
-    items = duties.outstanding(load_json(BILLS, []), closing_report)
+    items = duties.outstanding(load_json(bills_path(guild), []), closing_report)
     content = outstanding_content(items)
-    state = load_json(STATE, {})
+    state = load_json(state_path(guild), {})
     message = None
     if state.get("outstanding_message_id"):
         try:
@@ -2021,15 +2042,15 @@ async def update_outstanding(guild, silent=False):
             pass
         # Re-read rather than reuse: the send and the pin above are awaits,
         # and something else may have written to the state file in between.
-        state = load_json(STATE, {})
+        state = load_json(state_path(guild), {})
         state["outstanding_message_id"] = message.id
-        save_json(STATE, state)
+        save_json(state_path(guild), state)
     elif message.content != content:
         await message.edit(content=content)
     # The list is silent; once a week, if it is not empty, one line points at
     # it. That is the whole of the chasing.
-    if items and not silent and duties.chase_due():
-        duties.mark_chased()
+    if items and not silent and duties.chase_due(guild.id):
+        duties.mark_chased(guild.id)
         await channel.send(
             f"-# {len(items)} decision(s) still want doing. The list is pinned."
         )
@@ -2046,7 +2067,7 @@ async def duty_loop():
     # server should not be woken up by a fortnight of it at once.
     if not module_live(guild, "governance"):
         return
-    settling = duties.opening_pass()
+    settling = duties.opening_pass(guild.id)
     for duty in (send_nudges, tell_away, update_outstanding):
         try:
             await duty(guild, silent=settling)
@@ -2055,7 +2076,7 @@ async def duty_loop():
             log.error(f"duty {duty.__name__} failed: {e!r}")
             await health_log(guild, f"⚠️ `{duty.__name__}` failed: `{e!r}`")
     if settling:
-        duties.mark_started()
+        duties.mark_started(guild.id)
         log.info("duty ledger opened; from here on he speaks up")
 
 
@@ -2141,7 +2162,7 @@ async def close_floor(guild, invoker, bill_no):
     an {"error": ...} refusal, or the closing report. Both the conversation
     and `/close` come through here, so the early-close guard is written
     once and neither route can drift from the other."""
-    bill = bill_by("no", bill_no)
+    bill = bill_by(guild, "no", bill_no)
     if bill is None:
         return {"error": f"no Proposal No. {bill_no} on record"}
     if bill.get("status") != "on_floor":
@@ -2212,7 +2233,7 @@ async def act_propose_removal(guild, invoker, args):
     if target.id == invoker.id:
         return json.dumps({"error": "they may simply leave; the door works in "
                                     "both directions"})
-    for b in load_json(BILLS, []):
+    for b in load_json(bills_path(guild), []):
         if (b.get("kind") == "kick" and b.get("target_id") == target.id
                 and b.get("status") == "on_floor"):
             return json.dumps({"error": f"already up for a vote, No. {b['no']}"})
@@ -2264,7 +2285,7 @@ async def act_set_nudges(guild, invoker, args):
     if isinstance(on, str):
         on = on.strip().lower() not in ("false", "no", "off", "0")
     on = True if on is None else bool(on)
-    duties.set_muted(invoker.id, on=not on)
+    duties.set_muted(guild.id, invoker.id, on=not on)
     log.info(f"nudges {'on' if on else 'off'} for {invoker.display_name}")
     return json.dumps(
         {
@@ -2284,7 +2305,7 @@ async def act_mark_carried_out(guild, invoker, args):
         bill_no = int(args.get("bill_no"))
     except (TypeError, ValueError):
         return json.dumps({"error": "which decision? give the number"})
-    bill = bill_by("no", bill_no)
+    bill = bill_by(guild, "no", bill_no)
     if bill is None:
         return json.dumps({"error": f"no Proposal No. {bill_no} on record"})
     if bill.get("status") != "passed":
@@ -2302,7 +2323,7 @@ async def act_mark_carried_out(guild, invoker, args):
         "by_id": invoker.id,
         "at": now_utc().isoformat(),
     }
-    await update_bill(bill)
+    await update_bill(guild, bill)
     log.info(f"decision {bill_no} marked carried out by {invoker.display_name}")
     return json.dumps(
         {
@@ -3855,7 +3876,8 @@ async def slash_bills(interaction: discord.Interaction):
         return await refuse(interaction, NOT_INSIDE)
 
     open_bills = sorted(
-        (b for b in load_json(BILLS, []) if b.get("status") == "on_floor"),
+        (b for b in load_json(bills_path(interaction.guild), [])
+         if b.get("status") == "on_floor"),
         key=lambda b: b["no"],
     )
     if not open_bills:
@@ -4020,11 +4042,12 @@ async def slash_model(interaction: discord.Interaction,
 
 # ---------- pinned buttons ----------
 
-async def ensure_button_message(channel, state_key, content, view, restamp=False):
+async def ensure_button_message(guild, channel, state_key, content, view,
+                                restamp=False):
     if channel is None:
         log.warning(f"channel for {state_key} missing; button not posted")
         return
-    state = load_json(STATE, {})
+    state = load_json(state_path(guild), {})
     msg_id = state.get(state_key)
     if msg_id:
         try:
@@ -4037,7 +4060,7 @@ async def ensure_button_message(channel, state_key, content, view, restamp=False
             pass
     message = await channel.send(content, view=view)
     state[state_key] = message.id
-    save_json(STATE, state)
+    save_json(state_path(guild), state)
     log.info(f"button posted in #{channel.name}")
 
 
@@ -4051,9 +4074,9 @@ async def start_web():
         return
 
     async def healthz(request):
-        bills = load_json(BILLS, [])
         ready = bot.is_ready()
         guild = home_guild() if ready else None
+        bills = load_json(bills_path(guild), []) if guild else []
         return web.json_response(
             {
                 "status": "ok",
@@ -4063,7 +4086,7 @@ async def start_web():
                 "ready": ready,
                 "latency_ms": round(bot.latency * 1000) if ready else None,
                 "open_bills": sum(1 for b in bills if b.get("status") == "on_floor"),
-                "acts": len(load_json(ACTS, [])),
+                "acts": len(load_json(acts_path(guild), [])) if guild else 0,
             }
         )
 
@@ -4135,12 +4158,12 @@ async def ensure_furniture(guild, restamp=False):
     deploys refresh buttons and wording) and periodically (verify only)."""
     if module_live(guild, "governance"):
         await ensure_button_message(
+            guild,
             room(guild, "proposals"),
             "bill_message_id",
             "*Say what should change, and why. Eugene files it and the "
             "cooperative votes. Authorship is public; rules do not have "
-            "anonymous authors. A poll is the other thing — the same question "
-            "put to the whole server, deciding nothing.*",
+            "anonymous authors.*",
             SubmitBillView(),
             restamp=restamp,
         )
@@ -4168,10 +4191,10 @@ async def on_ready():
         if not getattr(bot, "_boot_announced", False):
             bot._boot_announced = True
             await repaint_open_ballots(guild)
-            state = load_json(STATE, {})
+            state = load_json(state_path(guild), {})
             if state.get("announced_commit") != COMMIT:
                 state["announced_commit"] = COMMIT
-                save_json(STATE, state)
+                save_json(state_path(guild), state)
                 await health_log(guild, f"🟢 On duty. Commit `{COMMIT}`.")
     if not check_floor.is_running():
         check_floor.start()
@@ -4188,7 +4211,7 @@ async def on_message(message: discord.Message):
     # Being around is what keeps you on the roster; nobody should have to
     # file paperwork to prove they still exist.
     if message.guild is not None:
-        roster.touch(message.author.id)
+        roster.touch(message.guild.id, message.author.id)
     # Conversation off means he does not read the room at all, which is
     # also what stops him learning people: `memory` stands on `chat` for
     # exactly this reason. Resolved the way brain.py resolves it, because a

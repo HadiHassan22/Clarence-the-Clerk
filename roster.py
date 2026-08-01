@@ -26,6 +26,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import settings
+
 AUTO_AWAY_DAYS = 14
 AWAY_ROLE = "away"
 
@@ -35,40 +37,52 @@ AWAY_ROLE = "away"
 # number a two-thirds rule would have produced anyway.
 TIERS = {"normal": None, "fundamental": 0.75}
 
-_path = None
+# Per server, like everything else he writes down. It was one file at the
+# top of the data directory, which meant one person's last-seen time was
+# shared by every server the daemon kept: being around in one house took
+# you off Away in another, where nobody had seen you for a fortnight.
+_root = None
 
 
 def configure(data: Path):
-    global _path
-    _path = data / "roster.json"
+    global _root
+    _root = Path(data)
 
 
-def _load():
-    if _path is None or not _path.exists():
+def _path(guild_id):
+    if _root is None:
+        return None
+    return settings.state_file(guild_id, "roster.json", legacy_root=_root)
+
+
+def _load(guild_id):
+    path = _path(guild_id)
+    if path is None or not path.exists():
         return {"seen": {}}
     try:
-        return json.loads(_path.read_text())
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return {"seen": {}}
 
 
-def _save(state):
-    if _path is None:
+def _save(guild_id, state):
+    path = _path(guild_id)
+    if path is None:
         return
-    tmp = _path.with_suffix(".json.tmp")
+    tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(_path)
+    tmp.replace(path)
 
 
-def touch(user_id):
+def touch(guild_id, user_id):
     """Record that somebody is around; called whenever they speak."""
-    state = _load()
+    state = _load(guild_id)
     state.setdefault("seen", {})[str(user_id)] = datetime.now(timezone.utc).isoformat()
-    _save(state)
+    _save(guild_id, state)
 
 
-def last_seen(user_id):
-    raw = _load().get("seen", {}).get(str(user_id))
+def last_seen(guild_id, user_id):
+    raw = _load(guild_id).get("seen", {}).get(str(user_id))
     if not raw:
         return None
     try:
@@ -77,7 +91,7 @@ def last_seen(user_id):
         return None
 
 
-def away_reason(member, away_days=AUTO_AWAY_DAYS):
+def away_reason(guild_id, member, away_days=AUTO_AWAY_DAYS):
     """Why somebody is out of the count, or None if they are still in it.
 
     Two ways in, and the difference matters to exactly one caller: `role` is a
@@ -87,7 +101,7 @@ def away_reason(member, away_days=AUTO_AWAY_DAYS):
     """
     if any(r.name.lower() == AWAY_ROLE for r in getattr(member, "roles", [])):
         return "role"
-    seen = last_seen(member.id)
+    seen = last_seen(guild_id, member.id)
     if seen is None:
         # Nobody seen since records began counts as present. A fresh state
         # file should not quietly empty the roster and drop every threshold
@@ -97,25 +111,22 @@ def away_reason(member, away_days=AUTO_AWAY_DAYS):
     return "quiet" if quiet else None
 
 
-def is_away(member, away_days=AUTO_AWAY_DAYS):
+def is_away(guild_id, member, away_days=AUTO_AWAY_DAYS):
     """Away by choice (an 'away' role) or by absence. Never a judgement."""
-    return away_reason(member, away_days) is not None
+    return away_reason(guild_id, member, away_days) is not None
 
 
 def active(guild, belongs, exclude=(), away_days=AUTO_AWAY_DAYS):
     """Every id a vote is counted against, sorted so it is stable.
 
-    `belongs` decides who is even a candidate, and it is the caller's to
-    choose because it is not always the cooperative: a poll open to the
-    whole server is counted against the whole server. It is always the same
-    test the ballot itself admits people by, so the denominator can never
-    hold somebody the buttons would turn away.
+    `belongs` is always the same test the ballot itself admits people by,
+    so the denominator can never hold somebody the buttons would turn away.
     """
     return sorted(
         m.id
         for m in guild.members
         if not m.bot and belongs(m) and m.id not in exclude
-        and not is_away(m, away_days)
+        and not is_away(guild.id, m, away_days)
     )
 
 

@@ -488,7 +488,7 @@ def test_filing(clerk, data):
 
     def set_floor(bills):
         open_bills[:] = bills
-        clerk.save_json(clerk.BILLS, bills)
+        clerk.save_json(clerk.bills_path(GUILD), bills)
 
     async def fake_file_bill(guild, author, **kwargs):
         filed.clear()
@@ -852,7 +852,7 @@ def test_closing(clerk, data):
     STUBS = ("bill_by", "close_bill", "post_closing_report", "find_channel", "room")
     original = {name: getattr(clerk, name) for name in STUBS}
     try:
-        clerk.bill_by = lambda field, value: live.get(value)
+        clerk.bill_by = lambda guild, field, value: live.get(value)
         clerk.close_bill = fake_close
         clerk.post_closing_report = lambda guild, bill: _async(clerk.closing_report(bill))
         clerk.find_channel = lambda guild, needle: None
@@ -920,7 +920,7 @@ def test_close_floor_split(clerk, data):
     STUBS = ("bill_by", "close_bill", "post_closing_report", "find_channel", "room")
     original = {name: getattr(clerk, name) for name in STUBS}
     try:
-        clerk.bill_by = lambda field, value: live.get(value)
+        clerk.bill_by = lambda guild, field, value: live.get(value)
         clerk.close_bill = fake_close
         clerk.post_closing_report = lambda guild, bill: _async(clerk.closing_report(bill))
         clerk.find_channel = lambda guild, needle: None
@@ -1019,7 +1019,7 @@ def test_roster(data):
               for n in range(1, 40)))
 
     everyone = lambda m: True  # noqa: E731
-    guild = types.SimpleNamespace(members=[
+    guild = types.SimpleNamespace(id=1, members=[
         fake_member(1), fake_member(2), fake_member(3, roles=["Away"]),
         fake_member(4, bot=True),
     ])
@@ -1031,9 +1031,9 @@ def test_roster(data):
           roster.active(guild, everyone, exclude={1}) == [2])
 
     check("somebody unseen still counts, so a fresh state file cannot "
-          "empty the house", roster.is_away(fake_member(7)) is False)
-    roster.touch(7)
-    check("and speaking keeps them in", roster.is_away(fake_member(7)) is False)
+          "empty the house", roster.is_away(1, fake_member(7)) is False)
+    roster.touch(1, 7)
+    check("and speaking keeps them in", roster.is_away(1, fake_member(7)) is False)
 
 
 def test_voting(clerk, data):
@@ -1179,7 +1179,7 @@ def test_numbers_bite(clerk, data):
               clerk.vote_state(guild, dict(bill, tier="fundamental"))["need"] == 8)
 
         settings.set_voting(guild.id, away_days=1)
-        roster.touch(3)
+        roster.touch(1, 3)
         check("and a house that wants a shorter quiet spell gets one",
               clerk.numbers(guild)["away_days"] == 1)
 
@@ -1381,9 +1381,9 @@ def test_duties(data):
     now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
 
     check("a fresh ledger means the first round only takes stock",
-          duties.opening_pass())
-    duties.mark_started(now=now)
-    check("and only the first", duties.opening_pass() is False)
+          duties.opening_pass(1))
+    duties.mark_started(1, now=now)
+    check("and only the first", duties.opening_pass(1) is False)
 
     def proposal(no, opened_hours_ago, window=48, ballots=None, **extra):
         opened = now - timedelta(hours=opened_hours_ago)
@@ -1401,25 +1401,25 @@ def test_duties(data):
 
     fresh = proposal(1, opened_hours_ago=1)
     check("a vote nobody has had time to see yet is left alone",
-          duties.nudges_due([fresh], roll, now=now) == [])
+          duties.nudges_due(1, [fresh], roll, now=now) == [])
 
     halfway = proposal(2, opened_hours_ago=30)
     check("halfway through, everyone who has not voted is nudged",
-          who(duties.nudges_due([halfway], roll, now=now)) == [1, 2, 3])
+          who(duties.nudges_due(1, [halfway], roll, now=now)) == [1, 2, 3])
 
     voted = proposal(3, opened_hours_ago=30, ballots={"2": "yes"})
     check("and whoever has voted is not",
-          who(duties.nudges_due([voted], roll, now=now)) == [1, 3])
+          who(duties.nudges_due(1, [voted], roll, now=now)) == [1, 3])
 
     check("a vote about to close is left to close and report itself",
-          duties.nudges_due([proposal(4, 47.5)], roll, now=now) == [])
+          duties.nudges_due(1, [proposal(4, 47.5)], roll, now=now) == [])
     check("and one that already closed is not chased at all",
-          duties.nudges_due([proposal(5, 30, status="passed")], roll, now=now) == [])
+          duties.nudges_due(1, [proposal(5, 30, status="passed")], roll, now=now) == [])
 
-    for _bill, uid in duties.nudges_due([halfway], roll, now=now):
-        duties.mark_said(duties.nudge_key(halfway, uid), now=now)
+    for _bill, uid in duties.nudges_due(1, [halfway], roll, now=now):
+        duties.mark_said(1, duties.nudge_key(halfway, uid), now=now)
     check("nothing is ever said twice",
-          duties.nudges_due([halfway], roll, now=now) == [])
+          duties.nudges_due(1, [halfway], roll, now=now) == [])
 
     runoff = dict(
         halfway, round=2,
@@ -1427,52 +1427,52 @@ def test_duties(data):
         ends_at=(now + timedelta(hours=18)).isoformat(),
     )
     check("but a runoff is a fresh vote and gets its own nudge",
-          who(duties.nudges_due([runoff], roll, now=now)) == [1, 2, 3])
+          who(duties.nudges_due(1, [runoff], roll, now=now)) == [1, 2, 3])
     just_reopened = dict(
         runoff,
         round_opened_at=(now - timedelta(hours=1)).isoformat(),
         ends_at=(now + timedelta(hours=47)).isoformat(),
     )
     check("measured from when the round opened, not when it was filed",
-          duties.nudges_due([just_reopened], roll, now=now) == [])
+          duties.nudges_due(1, [just_reopened], roll, now=now) == [])
 
-    duties.set_muted(3, on=True)
+    duties.set_muted(1, 3, on=True)
     check("somebody who asked to be left alone is",
-          who(duties.nudges_due([voted], roll, now=now)) == [1])
-    duties.set_muted(3, on=False)
+          who(duties.nudges_due(1, [voted], roll, now=now)) == [1])
+    duties.set_muted(1, 3, on=False)
     check("and can ask for them back",
-          who(duties.nudges_due([voted], roll, now=now)) == [1, 3])
+          who(duties.nudges_due(1, [voted], roll, now=now)) == [1, 3])
 
-    duties.mark_said("ancient", now=now - timedelta(days=200))
-    check("the ledger holds what it was told", duties.said("ancient"))
-    duties.mark_said("recent", now=now)
+    duties.mark_said(1, "ancient", now=now - timedelta(days=200))
+    check("the ledger holds what it was told", duties.said(1, "ancient"))
+    duties.mark_said(1, "recent", now=now)
     check("and forgets what is far too old to matter",
-          duties.said("ancient") is False and duties.said("recent"))
+          duties.said(1, "ancient") is False and duties.said(1, "recent"))
 
     print("\nthe roster letting somebody go, out loud")
     reasons = {11: "quiet", 12: None, 13: "role"}
     members = [fake_member(11), fake_member(12), fake_member(13)]
     reason_for = lambda m: reasons[m.id]  # noqa: E731
 
-    gone, back, quiet_now = duties.away_changes(members, reason_for)
+    gone, back, quiet_now = duties.away_changes(1, members, reason_for)
     check("somebody the roster has just let go is told",
           [m.id for m in gone] == [11])
     check("somebody who marked themselves Away already knows",
           13 not in [m.id for m in gone])
-    duties.record_quiet(quiet_now)
-    gone, back, quiet_now = duties.away_changes(members, reason_for)
+    duties.record_quiet(1, quiet_now)
+    gone, back, quiet_now = duties.away_changes(1, members, reason_for)
     check("and is told exactly once", (gone, back) == ([], []))
 
     reasons[11] = None
-    gone, back, quiet_now = duties.away_changes(members, reason_for)
+    gone, back, quiet_now = duties.away_changes(1, members, reason_for)
     check("coming back is worth a word too", [m.id for m in back] == [11])
-    duties.record_quiet(quiet_now)
+    duties.record_quiet(1, quiet_now)
 
     reasons[12] = "quiet"
-    _gone, _back, quiet_now = duties.away_changes(members, reason_for)
-    duties.record_quiet(quiet_now)
+    _gone, _back, quiet_now = duties.away_changes(1, members, reason_for)
+    duties.record_quiet(1, quiet_now)
     reasons[12] = "role"
-    gone, back, _quiet = duties.away_changes(members, reason_for)
+    gone, back, _quiet = duties.away_changes(1, members, reason_for)
     check("going quiet and then marking yourself Away is not coming back",
           back == [])
 
@@ -1493,10 +1493,10 @@ def test_duties(data):
     check("and it says which decision it was", items[0]["act"] == 4)
 
     check("the first tap on the shoulder is due straight away",
-          duties.chase_due(now=now))
-    duties.mark_chased(now=now)
-    check("not again the next day", duties.chase_due(now=now + timedelta(days=1)) is False)
-    check("but a week later, yes", duties.chase_due(now=now + timedelta(days=8)))
+          duties.chase_due(1, now=now))
+    duties.mark_chased(1, now=now)
+    check("not again the next day", duties.chase_due(1, now=now + timedelta(days=1)) is False)
+    check("but a week later, yes", duties.chase_due(1, now=now + timedelta(days=8)))
 
 
 def test_duty_actions(clerk, data):
@@ -1505,7 +1505,7 @@ def test_duty_actions(clerk, data):
 
     duties.configure(data)
     toolbox.configure(HERE, data, clerk.DUTY_ACTIONS)
-    clerk.save_json(clerk.BILLS, [
+    clerk.save_json(clerk.bills_path(GUILD), [
         {"no": 7, "title": "A books channel", "what": "There shall be one.",
          "status": "passed", "kind": "ordinary", "act": 3},
         {"no": 8, "title": "Rejected", "what": "No.", "status": "failed"},
@@ -1513,14 +1513,15 @@ def test_duty_actions(clerk, data):
 
     out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "set_nudges", {"on": False})))
     check("asking to be left alone is honoured at once, with no argument",
-          out.get("nudges") == "off" and duties.muted(CITIZEN.id))
+          out.get("nudges") == "off" and duties.muted(1, CITIZEN.id))
     out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "set_nudges", {"on": True})))
     check("and asking for them back works the same way",
-          out.get("nudges") == "on" and duties.muted(CITIZEN.id) is False)
+          out.get("nudges") == "on" and duties.muted(1, CITIZEN.id) is False)
 
     listed = lambda: [  # noqa: E731
         i["no"] for i in
-        duties.outstanding(clerk.load_json(clerk.BILLS, []), clerk.closing_report)
+        duties.outstanding(clerk.load_json(clerk.bills_path(GUILD), []),
+                           clerk.closing_report)
     ]
     check("a decision that passed and has not happened is on the list",
           listed() == [7])
@@ -1528,7 +1529,7 @@ def test_duty_actions(clerk, data):
                                           {"bill_no": 7})))
     check("it can be marked done", out.get("bill") == 7)
     check("under the name of whoever said so",
-          clerk.bill_by("no", 7)["carried_out"]["by"] == "Robin")
+          clerk.bill_by(GUILD, "no", 7)["carried_out"]["by"] == "Robin")
     check("and it comes off the list", listed() == [])
     check("marking it twice is not an error, just nothing",
           "note" in json.loads(run(toolbox.dispatch(
