@@ -2534,184 +2534,6 @@ def test_dynamic_thresholds(data):
         roster.configure(data)
 
 
-def test_people(data):
-    """Notes about a person, owned by that person. The interesting cases
-    are all about the owning: a delete that quietly rebuilds is not a
-    delete, and a profile somebody else can read is a file on them."""
-    print("\nwhat he knows about you is yours")
-    import people
-
-    people.configure(data / "people-store")
-
-    check("somebody unknown has no profile and that is not an error",
-          people.profile(1) == {} and people.summary(1) == "Nothing yet.")
-
-    check("a note is filed", people.note(1, "Horsy", "argues for sport") is None)
-    people.note(1, "Horsy", "up late, always")
-    check("and comes back under their name",
-          len(people.profile(1)["notes"]) == 2
-          and people.profile(1)["display"] == "Horsy")
-    check("the same thing said twice is filed once",
-          people.note(1, "Horsy", "argues for sport") == "already known")
-    check("and so is the same thing said longer, which is how a profile "
-          "fills up with one fact",
-          people.note(1, "Horsy", "argues for sport, always has")
-          == "already known")
-    check("an empty note is not a note", people.note(1, "Horsy", "   ") == "empty")
-    check("but a note that genuinely adds something is not swallowed by a "
-          "shorter one it happens to contain",
-          people.note(1, "Horsy", "up late on weeknights, never weekends")
-          is None)
-
-    for i in range(people.PROFILE_CAP + 6):
-        people.note(1, "Horsy", f"distinct observation number {i}")
-    check("a profile is a sketch, not a file: it stops at the cap",
-          len(people.profile(1)["notes"]) == people.PROFILE_CAP)
-    check("and it is the recent ones that survive",
-          "number " + str(people.PROFILE_CAP + 5)
-          in people.profile(1)["notes"][-1]["text"])
-
-    people.note(2, "Berri", "runs the book club")
-    seen = people.digest([2])
-    check("the digest leads with whoever is in the room",
-          seen.index("Berri") < seen.index("Horsy"))
-    check("and tells him not to read it out or cross-reference it",
-          "never tell one person what you know about another" in seen)
-
-    gone = people.forget_person(2)
-    check("striking a profile takes the notes", gone == 1
-          and people.profile(2)["notes"] == [])
-    check("and it stops him learning, or the delete was decoration",
-          people.is_closed(2) is True
-          and people.note(2, "Berri", "something new")
-          == "they asked him to stop")
-    check("somebody who was struck is out of the digest entirely",
-          "Berri" not in people.digest([2]))
-    check("and he says plainly that there is nothing rather than nothing at all",
-          "asked me to stop" in people.summary(2))
-    check("coming back is theirs to ask for too", people.reopen(2) is True
-          and people.note(2, "Berri", "back again") is None)
-    check("and nothing struck comes back with them",
-          [n["text"] for n in people.profile(2)["notes"]] == ["back again"])
-
-    known, notes, closed = people.counts()
-    check(f"the counts add up: {known} known, {notes} notes, {closed} closed",
-          known == 2 and notes == people.PROFILE_CAP + 1 and closed == 0)
-
-
-def test_one_memory_store(data):
-    """Two shelves, one store, and one set of rules about deleting.
-
-    The book used to be a second file with a second cap and its own idea of
-    who owned what, which is how `[preference] Horsy: prefers green` could
-    survive Horsy asking to be forgotten. The cases that matter are all
-    about that seam: what lands where, what a strike reaches, and what the
-    old file turns into on the way up.
-    """
-    print("\none store for what he remembers")
-    import people
-
-    store = data / "one-store"
-    people.configure(store)
-
-    horsy = types.SimpleNamespace(id=1, name="horsy", display_name="Horsy",
-                                  bot=False)
-    berri = types.SimpleNamespace(id=2, name="berri", display_name="Berri",
-                                  bot=False)
-    robot = types.SimpleNamespace(id=3, name="eugene", display_name="Eugene",
-                                  bot=True)
-    guild = types.SimpleNamespace(members=[horsy, berri, robot])
-    asker = types.SimpleNamespace(id=1, display_name="Horsy")
-
-    def remembering(about, text, who=asker):
-        return run(toolbox._remember(
-            guild, who, {"kind": "fact", "about": about, "text": text}))
-
-    print("\nwhat lands where")
-    said = remembering("Horsy", "argues for sport")
-    check("a memory that names somebody lands under that somebody",
-          "filed under Horsy" in said
-          and any("argues for sport" in n["text"]
-                  for n in people.profile(1)["notes"]))
-    check("and not on the house shelf as well",
-          not any("argues for sport" in n["text"] for n in people.house_notes()))
-
-    said = remembering("the server", "the rota argument is a running joke")
-    check("a memory about the place lands on the house shelf",
-          "house shelf" in said
-          and any("rota argument" in n["text"] for n in people.house_notes()))
-
-    said = remembering("Somebody Who Left", "used to run the film nights")
-    check("a name that matches nobody here is not a person, so it goes to "
-          "the house rather than being thrown away",
-          any("Somebody Who Left: used to run" in n["text"]
-              for n in people.house_notes()))
-
-    check("the house shelf is not a person and never counts as one",
-          people.counts()[0] == 1)
-
-    print("\nand what a strike reaches")
-    people.note_house("Horsy brought the good snacks to the last meeting")
-    gone = people.forget_person(1, display="Horsy")
-    check("forgetting somebody takes their notes and their name off the "
-          "house shelf together, which is the whole reason for one store",
-          gone == 2
-          and people.profile(1)["notes"] == []
-          and not any("Horsy" in n["text"] for n in people.house_notes()))
-    check("and the rest of the house shelf is left alone",
-          any("rota argument" in n["text"] for n in people.house_notes()))
-
-    people.note_house("the kettle vote already ran for three days")
-    people.note(4, "Al", "runs the film nights")
-    people.forget_person(4, display="Al")
-    check("a short name is swept as a word and not as a substring, so "
-          "somebody called Al does not take 'already' with them",
-          any("already ran" in n["text"] for n in people.house_notes()))
-    check("a strike also stops him learning, so the next pulse cannot "
-          "quietly start the profile again",
-          people.note(1, "Horsy", "argues for sport") == "they asked him to stop")
-    check("and the tool says so rather than reporting a silent nothing",
-          "asked you to stop" in remembering("Horsy", "argues for sport"))
-
-    people.note(2, "Berri", "never awake before noon")
-    said = run(toolbox._forget(guild, asker, {"query": "noon"}))
-    check("`forget` cannot reach another person's notes -- there is no "
-          "argument that would name them",
-          "Nothing struck" in said
-          and len(people.profile(2)["notes"]) == 1)
-    said = run(toolbox._forget(guild, asker, {"query": "rota"}))
-    check("but anybody may strike a note about the place",
-          "struck 1" in said
-          and not any("rota argument" in n["text"] for n in people.house_notes()))
-
-    print("\nand the book an older install left behind")
-    moved = data / "old-book"
-    moved.mkdir(parents=True, exist_ok=True)
-    (moved / "clerk_memory.json").write_text(json.dumps([
-        {"id": 1, "kind": "preference", "about": "Horsy",
-         "text": "prefers a green ball role", "learned_at": "2026-07-31"},
-        {"id": 2, "kind": "lore", "about": "the server",
-         "text": "the kettle vote ran for three days", "learned_at": "2026-07-31"},
-    ]))
-    people.configure(moved)
-    toolbox._adopt_memory_book(moved)
-    shelf = " ".join(n["text"] for n in people.house_notes())
-    check("the old book is folded in rather than dropped",
-          "green ball" in shelf and "kettle vote" in shelf)
-    check("and its subject stays in the sentence, so a note about somebody "
-          "is still about them",
-          "Horsy: prefers a green ball role" in shelf)
-    check("the file is set aside rather than deleted, so a migration "
-          "nobody watched can still be checked",
-          not (moved / "clerk_memory.json").exists()
-          and (moved / "clerk_memory.json.migrated").exists())
-    toolbox._adopt_memory_book(moved)
-    check("and folding it twice does not double the shelf",
-          len(people.house_notes()) == 2)
-
-    people.configure(data / "people-store")
-
-
 def test_empty_promises(data):
     """He has no later. A reply that promises to do a thing and does not do
     it is the one failure a member cannot see -- it reads as handled -- so
@@ -2780,14 +2602,6 @@ def test_empty_promises(data):
           in stable.lower())
     check("and having no later is stated as its own rule",
           "# You have no later" in stable)
-    check("he is told to be straight about learning people, since the whole "
-          "of what makes that fair is being able to see it and delete it",
-          "# Knowing people" in stable
-          and "not only from what is said to you" in stable
-          and "no argument, no asking why" in stable)
-    check("and that a deletion takes both shelves, so he cannot tell "
-          "somebody they are forgotten and quote them an hour later",
-          "house shelf together" in stable)
     settings.configure(data)
 
 
@@ -2800,7 +2614,7 @@ def test_prompt_caching(data):
     would catch."""
     print("\npaying for the standing orders once instead of every time")
     import brain
-    import people
+    import modules
     import providers
 
     blocks = providers._cached_system_blocks(["STABLE", "VOLATILE"])
@@ -2816,17 +2630,20 @@ def test_prompt_caching(data):
     settings.configure(data / "cache-store")
     try:
         brain.configure(None, HERE, data, None, None, None, None)
-        people.configure(data / "cache-people")
         guild = types.SimpleNamespace(name="The Hangout", id=7788)
         before = brain._system_prompt(guild)
-        people.note_house("Hadi is allergic to shellfish", kind="fact")
+        # A switch is the cheapest live thing to move: it belongs in the
+        # volatile half by design, so flipping one must leave the cached
+        # half byte-identical or the saving is silently off.
+        modules.set_enabled(7788, "polls", False)
         after = brain._system_prompt(guild)
 
-        check("the stable half survives the house shelf changing under it",
+        check("the stable half survives a switch changing under it",
               before[0] == after[0])
-        check("because the shelf is in the other half",
-              "shellfish" in after[1])
-        check("and never in this one", "shellfish" not in after[0])
+        check("because what is switched on is in the other half",
+              "polls" in after[1].lower())
+        check("and the switch table is never in this one",
+              "# What is switched on" not in after[0])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         check("today's date is kept out of the cached half",
               today not in after[0])
@@ -2937,18 +2754,34 @@ def test_modules(data):
     check("switched back on, the override is dropped rather than pinned",
           modules.enabled(gid, "governance") and modules.chosen(gid) == {})
 
-    changed, knock = modules.set_enabled(gid, "chat", False)
-    check("switching conversation off takes memory with it",
-          changed and set(knock) == {"memory"})
-    check("and it reads as off however its own switch is set",
-          not modules.enabled(gid, "memory"))
-    check("but the panel can still tell a knocked-out module from a chosen one",
-          modules.switched_on(gid, "memory")
-          and modules.status(gid, "memory") == "blocked"
-          and modules.status(gid, "chat") == "off")
-    _changed, knock = modules.set_enabled(gid, "memory", True)
-    check("and switching one back on brings up what it stands on",
-          modules.enabled(gid, "chat") and knock == ["chat"])
+    # No shipped module stands on another today, so the dependency rules are
+    # exercised against one invented for the purpose. Testing them through
+    # whichever module happens to have a `needs` this month is how these
+    # checks quietly stopped testing anything the last time one was cut.
+    modules.SPEC["_dependant"] = {
+        "name": "Dependant", "blurb": "", "default": True, "rooms": {},
+        "roles": (), "needs": ("chat",), "brain": True, "settings": (),
+        "builds": False, "commands": (), "tools": (),
+    }
+    try:
+        changed, knock = modules.set_enabled(gid, "chat", False)
+        check("switching off what another module stands on takes it too",
+              changed and set(knock) == {"_dependant"})
+        check("and it reads as off however its own switch is set",
+              not modules.enabled(gid, "_dependant"))
+        check("but the panel can still tell a knocked-out module from a chosen one",
+              modules.switched_on(gid, "_dependant")
+              and modules.status(gid, "_dependant") == "blocked"
+              and modules.status(gid, "chat") == "off")
+        _changed, knock = modules.set_enabled(gid, "_dependant", True)
+        check("and switching one back on brings up what it stands on",
+              modules.enabled(gid, "chat") and knock == ["chat"])
+        modules.reset(gid)
+
+        check("and a selection that names a dependant brings its dependency too",
+              modules.apply_set(gid, ["_dependant"]) and modules.enabled(gid, "chat"))
+    finally:
+        modules.SPEC.pop("_dependant", None)
     modules.reset(gid)
 
     print("\nthe whole roll set at once, which is what the menu submits")
@@ -2957,8 +2790,6 @@ def test_modules(data):
           "polls" in off and "colours" in off)
     check("what the selection left standing is still standing",
           modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
-    check("and a selection that names a dependant brings its dependency too",
-          modules.apply_set(gid, ["memory"]) and modules.enabled(gid, "chat"))
     modules.reset(gid)
 
     print("\ndormant is not off: it names the gap instead")
@@ -3828,8 +3659,6 @@ def main():
         settings.configure(data)  # back to the shared store for what follows
         test_roster(data)
         test_duties(data)
-        test_people(data)
-        test_one_memory_store(data)
         test_modules(data)
         test_slate(data)
         test_warden_settings(data)

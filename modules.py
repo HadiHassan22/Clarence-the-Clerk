@@ -38,7 +38,7 @@ needs is *dormant*: it does nothing either, but the reason is a gap
 rather than a decision, and the panel names the gap. Conflating the two
 is how a bot ends up silently not doing the thing you asked for.
 
-**A dependency is not a suggestion.** `memory` needs `chat`,
+**A dependency is not a suggestion.** A module that names another
 because both are things he does with a brain he may not have. Switching
 `chat` off switches them off in fact, whatever their own flag says, and
 `enabled()` is the only function that gets to answer that question.
@@ -205,7 +205,7 @@ ROOM_PLAN = {
 # Every default is what the clerk already did before there were modules, so
 # an upgrade in place changes nothing and every switch below is a real
 # switch rather than a quiet change of behaviour. That is why `moderation`
-# starts off -- its filters were off by default already -- and why `chat` and `memory` start on even though a
+# starts off -- its filters were off by default already -- and why `chat` starts on even though a
 # server with no AI key sees nothing from any of them. On with no key is
 # dormant, and dormant says so.
 
@@ -272,20 +272,6 @@ SPEC = {
         "builds": True,
         "commands": (),
         "tools": ("server_info",),
-    },
-    "memory": {
-        "name": "Memory of people",
-        "blurb": "Short notes on the people here, owned and deletable by "
-                 "each of them.",
-        "default": True,
-        "rooms": {},
-        "roles": (),
-        "needs": ("chat",),
-        "brain": True,
-        "settings": (),
-        "builds": False,
-        "commands": ("whatdoyouknow",),
-        "tools": ("remember", "forget", "what_you_know", "forget_about_me"),
     },
     "moderation": {
         "name": "Moderation",
@@ -358,7 +344,7 @@ SPEC = {
 # Display order for every list a human reads: what he is for, then what he
 # can be talked into, then the housekeeping. Not alphabetical -- the first
 # three are the reason to install him and belong at the top.
-ORDER = ("governance", "polls", "colours", "chat", "memory",
+ORDER = ("governance", "polls", "colours", "chat",
          "moderation", "welcome", "log", "health")
 
 # Tools that belong to no module because they are how a module is
@@ -436,7 +422,7 @@ def set_enabled(guild_id, key, on):
 
     `knock_on` names the modules this drags with it, so the reply can say
     so rather than leaving somebody to notice next week: switching `chat`
-    off takes `memory` with it in fact, and switching one of
+    off takes its dependants with it in fact, and switching one of
     those on is meaningless while `chat` is off, so it turns `chat` on too.
     """
     if key not in SPEC:

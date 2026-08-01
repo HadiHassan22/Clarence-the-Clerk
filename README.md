@@ -44,8 +44,6 @@ Design history and scopes: [governance-design.md](governance-design.md),
 - **`duties.py`**: the short list of things the clerk says without being
   asked, and the ledger that stops him saying any of them twice. Costs
   nothing: no line of it consults the model.
-- **`people.py`**: who he knows. Short notes on each person, owned by that
-  person, readable and deletable by them and by nobody else.
 - **`warden.py`**: the house rules he keeps without a vote — every
   setting a conversation can change, with its type and its bounds, plus
   the filters, the level curve and the case book. Imports nothing from
@@ -142,9 +140,6 @@ a conversation:
 - **`/bills`** — what is open for a vote right now. The cooperative sees
   everything; anyone else in the room sees the open polls.
 - **`/role`** — make or manage your colour.
-- **`/whatdoyouknow`** — everything he has picked up about you, and
-  `forget: True` to delete the lot. Yours alone; nobody can run it on
-  anybody else.
 - **`/house`** — every feature and whether it is running, then the
   settings underneath them: welcomes, filters, warnings, the log.
   Read-only, and free; the changing is done by asking him.
@@ -172,7 +167,6 @@ either with nothing else at all.
 | Polls | advisory questions put to the whole server | on |
 | Colour roles | self-service colours, yours or anyone's | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
-| Memory of people | short notes on the people here, each owned by them | on¹ |
 | Moderation | the filters, warnings, and the hands | off |
 | Arrivals | greetings, goodbyes, an arrival role | on, until pointed at a room |
 | Audit log | deletes, edits, arrivals, every moderation action | on |
@@ -343,8 +337,7 @@ API before they are saved, and kept in the server's own settings file at
 pays for its own thinking and has its own monthly budget, spend counter and
 rate limits.
 
-Setting one wakes Conversation and Memory of people together, and the
-reply says which. **Details** says what is configured.
+Setting one wakes Conversation. **Details** says what is configured.
 `/setup` is restricted to administrators.
 
 ## The numbers the server votes by
@@ -440,31 +433,6 @@ anything:
 Everything he starts is written into `duties.json` before it is said, so
 nothing is ever said twice — including things that could not be
 delivered, because a DM that bounces is not one to keep retrying.
-
-## What he learns about people
-
-He builds short notes on the people here from ordinary conversation, not
-only from messages aimed at him — twelve notes each at most, the oldest
-falling off, so it stays a sketch rather than a file. It is what makes him
-know that one person argues for sport and another is never up before noon.
-
-Three limits, and they are the point rather than the small print:
-
-- **It is yours.** `/whatdoyouknow` shows you every note he holds on you,
-  and `forget: True` deletes the lot. Ask him in a channel and he does the
-  same thing without argument.
-- **Deleting means deleted.** A strike also stops him learning about you,
-  so it is not quietly rebuilt on the next pulse. Run the command again
-  when you want him to start over.
-- **Nobody reads anybody else's.** There is no parameter for whose profile
-  to fetch, so there is nothing to talk him into. He is also told never to
-  read notes aloud, never to tell one person what he knows about another,
-  and never to use any of it to guess how somebody voted.
-
-He only ever learns where he is allowed to speak. The `chat` room keeps
-him out of every other room entirely — listening included — and so does
-the fallback: a room outside the governance category is one he neither
-answers in nor reads.
 
 ## Installing it on someone else's server
 

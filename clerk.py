@@ -51,7 +51,6 @@ import brain
 import builder
 import duties
 import modules
-import people
 import powers
 import providers
 import roster
@@ -3652,60 +3651,9 @@ async def act_mark_carried_out(guild, invoker, args):
     )
 
 
-async def act_what_you_know(guild, invoker, args):
-    """What he has about the person asking. Never about anybody else, and
-    the handler is where that is enforced rather than the prompt: `who` is
-    not a parameter, so there is nothing to talk him into."""
-    if people.is_closed(invoker.id):
-        return json.dumps({
-            "about": invoker.display_name,
-            "notes": [],
-            "learning": False,
-            "note": "They asked you to stop, and you did. Say so.",
-        })
-    profile = people.profile(invoker.id)
-    return json.dumps({
-        "about": invoker.display_name,
-        "notes": [n["text"] for n in profile.get("notes", [])],
-        "learning": True,
-        "note": "Read it back plainly if they asked. It is theirs to delete "
-                "with forget_about_me, and you never argue about that.",
-    })
-
-
-async def act_forget_about_me(guild, invoker, args):
-    """Strike everything about the asker, and stop.
-
-    Member-tier and instant, like every other thing here that acts on the
-    asker inside their own powers. Nobody may strike anybody else's: there
-    is no id to pass, so there is nothing to get wrong.
-    """
-    on = args.get("learning")
-    if isinstance(on, str):
-        on = on.strip().lower() not in ("false", "no", "off", "0")
-    if on:
-        people.reopen(invoker.id)
-        log.info(f"{invoker.display_name} let him start learning again")
-        return json.dumps({
-            "learning": True,
-            "note": "Starting again from here. Nothing old came back.",
-        })
-    gone = people.forget_person(invoker.id, display=invoker.display_name)
-    log.info(f"{invoker.display_name} struck their profile ({gone} note(s))")
-    return json.dumps({
-        "struck": gone,
-        "learning": False,
-        "note": "Gone -- their notes and their name off the house shelf "
-                "with them -- and you have stopped learning about them. No "
-                "argument, no asking why, and do not offer to keep any of it.",
-    })
-
-
 DUTY_ACTIONS = {
     "set_nudges": act_set_nudges,
     "mark_carried_out": act_mark_carried_out,
-    "what_you_know": act_what_you_know,
-    "forget_about_me": act_forget_about_me,
 }
 
 # ---------- installing Eugene in a server ----------
@@ -5506,58 +5454,6 @@ async def slash_house(interaction: discord.Interaction, group: str = None):
     await interaction.response.send_message("\n".join(lines)[:1990], ephemeral=True)
 
 
-@bot.tree.command(
-    name="whatdoyouknow",
-    description="Everything Eugene has picked up about you, and a way to delete it",
-)
-@app_commands.describe(
-    forget="Strike the lot. He stops learning about you until you say otherwise."
-)
-@app_commands.guild_only()
-async def slash_whatdoyouknow(interaction: discord.Interaction,
-                              forget: bool = False):
-    """Your own profile, and nobody else's, ever.
-
-    He learns people from ordinary conversation now, which is a real thing
-    to do to somebody. The two things that make it fair are that you can
-    read exactly what he has and delete it, and both live here. There is no
-    argument and no "are you sure": a delete somebody has to justify is not
-    one they really have.
-    """
-    if not in_room(interaction.user):
-        return await refuse(interaction, NOT_INSIDE)
-    # Deleting still works with the feature off: notes he took while it was
-    # on are still his to hold and still yours to strike. Only the reading
-    # and the learning stop.
-    if not forget and await refuse_unless(interaction, "memory"):
-        return
-    if forget:
-        gone = people.forget_person(interaction.user.id)
-        log.info(f"{interaction.user.display_name} struck their profile "
-                 f"({gone} note(s))")
-        return await interaction.response.send_message(
-            f"Struck {gone} note(s), and I have stopped learning about you. "
-            f"Nothing of you goes in the book until you run this with "
-            f"`forget: False`.",
-            ephemeral=True,
-        )
-    if people.is_closed(interaction.user.id):
-        # Coming back is the same command without the flag, and it takes
-        # effect rather than explaining how to make it take effect.
-        people.reopen(interaction.user.id)
-        log.info(f"{interaction.user.display_name} let him start learning again")
-        return await interaction.response.send_message(
-            "You had asked me to stop, so I had nothing. I will start "
-            "again from here — run this with `forget: True` whenever you "
-            "want it gone.",
-            ephemeral=True,
-        )
-    await interaction.response.send_message(
-        f"**What I have about you**\n{people.summary(interaction.user.id)}",
-        ephemeral=True,
-    )
-
-
 @bot.tree.command(name="role", description="Make or manage your colour role")
 @app_commands.guild_only()
 async def slash_role(interaction: discord.Interaction):
@@ -5752,7 +5648,6 @@ async def setup_hook():
     # folds any old memory book into this store on the way up, and a store
     # that has not been told where it lives accepts the writes and drops
     # them on the floor.
-    people.configure(DATA)
     toolbox.configure(
         HERE, DATA,
         {**COLOR_ACTIONS, **BILL_ACTIONS, **DUTY_ACTIONS,

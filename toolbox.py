@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import modules
-import people
 
 log = logging.getLogger("toolbox")
 
@@ -47,37 +46,9 @@ def configure(here: Path, data: Path, actions=None, in_cooperative=None,
     _paths["log"] = data / "logs" / "executor_log.json"
     _paths["log"].parent.mkdir(parents=True, exist_ok=True)
     _adopt_legacy_log(data)
-    _adopt_memory_book(data)
     _paths["in_cooperative"] = in_cooperative
     _paths["numbers"] = numbers
     _actions.update(actions or {})
-
-
-def _adopt_memory_book(data: Path):
-    """Fold an old `clerk_memory.json` into the one store, once.
-
-    No name resolution: there is no guild here at startup, and waiting for
-    one would mean the two shelves coexisting for an indeterminate while,
-    which is the state this change exists to end. So the whole book lands on
-    the house shelf with its subject kept in the sentence, and the file is
-    renamed rather than deleted -- a migration that cannot be checked
-    afterwards is one nobody can trust.
-    """
-    book = data / "clerk_memory.json"
-    if not book.exists():
-        return
-    try:
-        entries = json.loads(book.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning(f"old memory book unreadable, left alone: {e!r}")
-        return
-    if isinstance(entries, list) and entries:
-        folk, house = people.absorb_book(entries)
-        log.info(
-            f"folded the old memory book into people.json: {folk} under a "
-            f"person, {house} on the house shelf"
-        )
-    book.replace(book.with_suffix(".json.migrated"))
 
 
 def _adopt_legacy_log(data: Path):
@@ -183,82 +154,6 @@ async def _get_bill(guild, invoker, args):
             b["notes"] = sorted(notes, key=lambda n: n.get("first_at") or "")
             return json.dumps(b)
     return json.dumps({"error": f"no Proposal No. {bill_no} on record"})
-
-
-# ---------- the memory book ----------
-
-# The memory book used to live here: its own file, its own cap, its own
-# ownership rules. It is `people.py` now, both shelves in one store, and
-# these two handlers are the doors onto it. What that bought is written up
-# there; the short version is that a memory about a person is now under that
-# person, so asking to be forgotten forgets all of it.
-MEM_KINDS = people.KINDS
-
-
-def _who_is(guild, about):
-    """The member that free text names, or None. Same bargain the heartbeat
-    makes when it files what it learned: a name that matches nobody here is
-    not a person, and a note about them belongs to the house."""
-    wanted = (about or "").strip().lower()
-    if not wanted or wanted in ("the server", "the house", "here", "us"):
-        return None
-    for m in getattr(guild, "members", ()) or ():
-        if getattr(m, "bot", False):
-            continue
-        names = {
-            (getattr(m, "display_name", "") or "").lower(),
-            (getattr(m, "name", "") or "").lower(),
-        }
-        if wanted in names:
-            return m
-    return None
-
-
-async def _remember(guild, invoker, args):
-    kind = args.get("kind", "fact")
-    about = (args.get("about") or "").strip()
-    text = (args.get("text") or "").strip()
-    source = f"filed during conversation with {invoker.display_name}"
-    who = _who_is(guild, about)
-    if who is not None:
-        why_not = people.note(who.id, who.display_name, text, source=source)
-        if why_not == "they asked him to stop":
-            return (
-                f"Nothing filed: {who.display_name} asked you to stop "
-                f"learning about them, and that still holds."
-            )
-        if why_not:
-            return f"nothing filed ({why_not})"
-        return f"filed under {who.display_name}: {text}"
-    line = people.house_line(about, text)
-    why_not = people.note_house(line, kind=kind, source=source)
-    if why_not:
-        return f"nothing filed ({why_not})"
-    return f"filed on the house shelf [{kind}] {line}"
-
-
-async def _forget(guild, invoker, args):
-    """Strike a memory. Python-enforced, and the enforcement is structural
-    rather than a test on a column: a note about somebody is stored under
-    their id, so the only shelf this can reach is the asker's own and the
-    house's. There is no argument to pass that would reach anybody else's."""
-    query = (args.get("query") or "").strip()
-    if not query:
-        return json.dumps({"error": "a query is required"})
-    low = query.lower()
-    struck = people.forget_house(low)
-    mine = people.profile(invoker.id)
-    kept = [n for n in mine.get("notes", []) if low not in n["text"].lower()]
-    if len(kept) != len(mine.get("notes", [])):
-        struck += len(mine["notes"]) - len(kept)
-        people.replace_notes(invoker.id, kept)
-    if not struck:
-        return (
-            "Nothing struck. Either nothing matches, or it is a note about "
-            "somebody else: only they can have one of those removed, with "
-            "`forget_about_me`."
-        )
-    return f"struck {struck} memor{'y' if struck == 1 else 'ies'}"
 
 
 async def _server_info(guild, invoker, args):
@@ -378,38 +273,6 @@ REGISTRY = {
         "description": "The server's structure: categories, channels, topics, member count.",
         "parameters": {"type": "object", "properties": {}},
         "handler": _server_info,
-    },
-    "remember": {
-        "tier": "minor",
-        "description": "File a memory: a fact about a member, a running joke, "
-        "a preference, or house lore. Name a person in `about` and it is "
-        "kept under that person, theirs to read and delete; anything else "
-        "goes on the house shelf. Use for things still worth knowing in a "
-        "month; never for votes or private matters.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "kind": {"type": "string", "enum": list(MEM_KINDS)},
-                "about": {
-                    "type": "string",
-                    "description": "who or what it concerns; a display name, or 'the server'",
-                },
-                "text": {"type": "string", "description": "the memory, one sentence"},
-            },
-            "required": ["kind", "about", "text"],
-        },
-        "handler": _remember,
-    },
-    "forget": {
-        "tier": "minor",
-        "description": "Strike memories matching a query. Reaches the house "
-        "shelf and the asker's own notes, never anybody else's.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-        "handler": _forget,
     },
 }
 
@@ -624,32 +487,6 @@ BILL_TOOLS = {
 }
 
 DUTY_TOOLS = {
-    "what_you_know": {
-        "description": "Everything you have picked up about the person you "
-        "are talking to. Use it whenever they ask what you know about them, "
-        "what you remember, or whether you are keeping notes — and answer "
-        "honestly and in full, including that you learn from ordinary "
-        "conversation rather than only from things said to you. It only ever "
-        "returns the asker's own; there is no way to look anybody else up "
-        "and you never speculate about what you might hold on someone else.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "forget_about_me": {
-        "description": "Strike everything you know about the person you are "
-        "talking to and stop learning about them. Use it the instant they "
-        "ask, in any wording — no argument, no asking why, no offering to "
-        "keep the harmless parts, no 'are you sure'. Pass learning=true only "
-        "when someone who previously stopped you asks you to start again.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "learning": {
-                    "type": "boolean",
-                    "description": "true only to start again at their request; omit to strike and stop",
-                },
-            },
-        },
-    },
     "set_nudges": {
         "description": "Turn the private reminders on or off for the person "
         "you are talking to. Use it the moment they say they want you to stop "
@@ -815,7 +652,7 @@ OFFICER_TOOLS = {
     },
     "set_feature": {
         "description": "Switch one of the features on or off for this "
-        "server: governance, polls, colours, chat, memory, "
+        "server: governance, polls, colours, chat, "
         "moderation, welcome, log, health. This is the "
         "master switch -- 'turn the filters on', 'stop greeting people', "
         "'we do not want the log'. A feature that is off does nothing and "
