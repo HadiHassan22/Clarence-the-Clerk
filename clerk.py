@@ -4453,16 +4453,23 @@ async def setup_hook():
     # ballot on the floor with dead buttons and no way to say so.
     bot.add_view(MultiBallotView())
     bot.add_view(NotesView())
-    # Global, because he is not one server's any more. A GUILD_ID in the
-    # environment is now only a convenience for whoever is working on him:
-    # a guild sync appears at once, where a global one takes Discord up to
-    # an hour to publish.
+    # One or the other, never both. A command registered globally *and*
+    # to a guild shows up twice in that guild's picker, and both copies
+    # persist -- so doing both to be safe is the one option that is
+    # visibly wrong to everybody in the server.
+    #
+    # GUILD_ID means "just this server, and now": a guild sync appears
+    # immediately where a global one takes Discord up to an hour. Unset it
+    # to serve every server he is invited to.
     if DEV_GUILD_ID:
         where = discord.Object(id=DEV_GUILD_ID)
         bot.tree.copy_global_to(guild=where)
         await bot.tree.sync(guild=where)
-        log.info(f"commands synced to guild {DEV_GUILD_ID} for development")
-    await bot.tree.sync()
+        log.info(f"commands synced to guild {DEV_GUILD_ID} only "
+                 f"(GUILD_ID is set); unset it to publish globally")
+    else:
+        await bot.tree.sync()
+        log.info("commands synced globally; Discord may take up to an hour")
 
 
 async def ensure_furniture(guild, restamp=False):
