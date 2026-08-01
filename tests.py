@@ -190,31 +190,6 @@ def test_registry():
     check("propose_bill requires all three fields",
           set(bill_spec["parameters"]["required"]) == {"title", "what", "why"})
 
-    # The colour caps were typed into these descriptions by hand -- "five at
-    # most" -- while the shipped cap was one. A single request carried both
-    # numbers, the true one in the system prompt and the false one here,
-    # and the model believed the tool: it offered a member a second colour
-    # and was refused by its own harness in front of them. The descriptions
-    # quote the house now, from the same place every other reader reads.
-    def described(name, guild_id=None):
-        return next(d for d in toolbox.declarations(guild_id)
-                    if d["name"] == name)["description"]
-
-    stored = (toolbox.REGISTRY["create_color_role"]["description"]
-              + toolbox.REGISTRY["wear_color_role"]["description"])
-    check("no colour tool stores a limit typed in by hand",
-          "five" not in stored and "{make}" in stored and "{wear}" in stored)
-    check("the limit a tool quotes is the one the house enforces",
-          f"make {settings.voting()['role_create_max']} of their own"
-          in described("create_color_role"))
-    settings.configure_voting(role_create_max=4, role_wear_max=3)
-    check("a house that moves a cap has moved what the tool says it is",
-          "make 4 of their own" in described("create_color_role")
-          and "3 at a time" in described("wear_color_role"))
-    settings.configure_voting(role_create_max=1, role_wear_max=5)
-    check("and a description with no figure in it is passed through whole",
-          "{" not in described("propose_bill"))
-
 
 def test_annexes():
     """The Claude annex, on the bench: everything but the network.
@@ -879,7 +854,7 @@ def test_setup_rooms(clerk, data):
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
                  ["🖋️・propose", "🗳️・votes", "🏛️・decisions", "📊・polls",
-                  "🎭・roles", "🩺・bot-health", "💬・eugene-chat"])]
+                  "🩺・bot-health", "💬・eugene-chat"])]
     dressed = guild_for(3333)
     dressed.text_channels = built
     made, bound, _skipped = run(clerk.make_missing_rooms(dressed))
@@ -921,8 +896,7 @@ def test_setup_rooms(clerk, data):
     check("the room a name announces is the same one either route reads",
           bindings.job_of("🗳️・votes") == "votes"
           and bindings.job_of("votes") == "votes"
-          and bindings.job_of("the-floor") == "votes"
-          and bindings.job_of("🎭・roles") == "wardrobe")
+          and bindings.job_of("the-floor") == "votes")
     check("a room with no job announces none",
           bindings.job_of("💬・general") is None)
     check("adopting takes nothing that is already spoken for",
@@ -946,7 +920,7 @@ def test_setup_rooms(clerk, data):
           "everyone else",
           sorted(shut) == ["bot-health", "propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
-          == ["decisions", "eugene-chat", "polls", "roles"])
+          == ["decisions", "eugene-chat", "polls"])
     health_ow = dict(seen)["bot-health"]
     check("the health room grants nobody anything: administrators read it "
           "because Discord lets them past an overwrite, so there is no role "
@@ -1182,378 +1156,6 @@ def test_close_floor_split(clerk, data):
     finally:
         for name, real in original.items():
             setattr(clerk, name, real)
-
-
-def test_role_cap(clerk, data):
-    """One colour of your own. The cap is read in one place and worded in
-    another, and both have to read properly at a limit of one."""
-    print("\none colour of your own")
-    keep = clerk.load_json(clerk.ROLES, {})
-    cap = settings.voting()["role_create_max"]
-    wear = settings.voting()["role_wear_max"]
-    try:
-        clerk.save_json(clerk.ROLES, {})
-        check("with no role of your own you are not at the cap",
-              clerk.at_create_cap(99) is False)
-
-        clerk.save_json(clerk.ROLES, {"500": {"creator_id": 99}})
-        check("the first role reaches it", clerk.at_create_cap(99) is True)
-        check("and it is your own roles that count, not the server's",
-              clerk.at_create_cap(1234) is False)
-
-        # The cap is consulted before a role is made and nowhere else, so
-        # somebody who made several under the old limit keeps all of them.
-        clerk.save_json(clerk.ROLES, {"500": {"creator_id": 99},
-                                      "501": {"creator_id": 99}})
-        check("somebody who already made two still has two: nothing is reaped",
-              len(clerk.created_by(99)) == 2)
-        check("they are only refused a third", clerk.at_create_cap(99) is True)
-
-        line = clerk.role_cap_line()
-        check(f"the refusal reads as English at a cap of one: {line!r}",
-              "1 role" not in line and "a role" in line
-              and not any(c.isdigit() for c in line))
-        check("and is addressed to whoever hit it", line.startswith("You already"))
-        check("Eugene says the same thing about somebody else",
-              clerk.role_cap_line("Hadi").startswith("Hadi already made"))
-
-        settings.configure_voting(role_create_max=5)
-        check("were the cap ever raised, two of five is not at it",
-              clerk.at_create_cap(99) is False)
-        check("and the wording says the number plainly",
-              clerk.role_cap_line() == "You already made 5 roles. "
-                                       "One has to go to make room.")
-        settings.configure_voting(role_create_max=0)
-        check("a house that wants no colour roles at all says so in a number, "
-              "and the refusal still reads as English",
-              clerk.role_cap_line() == "You cannot make roles here; this "
-                                       "house has the cap at nought.")
-
-        # Wearing has its own cap and its own sentences, and the same
-        # obligation: at a limit of one, "wearing 1 already" reads as a bug
-        # rather than a rule, and that is what every one of these said.
-        settings.configure_voting(role_create_max=1, role_wear_max=1)
-        colour = types.SimpleNamespace(name="Horsy")
-        check("one colour worn at a time is what he ships with",
-              settings.voting()["role_wear_max"] == 1)
-        line = clerk.wear_cap_line("You are", None, [colour])
-        check(f"being at it reads as English, not as a figure: {line!r}",
-              "wearing 1" not in line and "already wearing one" in line)
-        check("and it names what is in the way, so there is nothing to ask",
-              "Horsy" in line)
-        check("Eugene says the same of somebody else",
-              clerk.wear_cap_line("Sam is").startswith(
-                  "Sam is already wearing one"))
-        check("and the panel in the room promises this house's own caps",
-              clerk.wardrobe_blurb()
-              == "Make one, wear one at a time, yours or anyone's.")
-
-        settings.configure_voting(role_create_max=3, role_wear_max=5)
-        check("raised, the panel says the numbers plainly",
-              clerk.wardrobe_blurb()
-              == "Make up to 3, wear up to 5 at once, yours or anyone's.")
-        check("and so does the refusal, naming every colour in the way",
-              clerk.wear_cap_line("Sam is", None, [colour])
-              == "Sam is already wearing 5 (Horsy), which is the limit. "
-                 "One has to come off first.")
-
-        settings.configure_voting(role_wear_max=0)
-        check("a house that wants no colour worn at all still reads as "
-              "English, in the panel and in the refusal",
-              "nought" in clerk.wardrobe_blurb()
-              and "nought" in clerk.wear_cap_line())
-    finally:
-        settings.configure_voting(role_create_max=cap, role_wear_max=wear)
-        clerk.save_json(clerk.ROLES, keep)
-
-
-def _wardrobe(clerk):
-    """A house with two colour roles in it: one Hadi made and is not
-    wearing, one somebody else made. The exact arrangement the hands got
-    wrong in front of a member."""
-    made = []
-
-    class Role:
-        def __init__(self, rid, name, value, position):
-            self.id, self.name, self.position = rid, name, position
-            self.colour = types.SimpleNamespace(value=value)
-            self.members = []
-            self.mention = f"<@&{rid}>"
-
-        async def edit(self, **kw):
-            if "name" in kw:
-                self.name = kw["name"]
-            if "colour" in kw:
-                self.colour = types.SimpleNamespace(value=int(kw["colour"]))
-            return self
-
-        async def delete(self, **kw):
-            made.remove(self)
-
-    hers = Role(500, "horsy role", 0xFFA500, 3)   # Hadi's, orange, taken off
-    theirs = Role(501, "horse", 0x00FF00, 2)      # somebody else's
-    made.extend([hers, theirs])
-
-    class Member:
-        def __init__(self, uid, name):
-            self.id, self.display_name = uid, name
-            self.roles = []
-            self.bot = False
-
-        async def add_roles(self, *roles, **kw):
-            for r in roles:
-                if r not in self.roles:
-                    self.roles.append(r)
-                    r.members.append(self)
-
-        async def remove_roles(self, *roles, **kw):
-            for r in roles:
-                if r in self.roles:
-                    self.roles.remove(r)
-                    r.members.remove(self)
-
-    hadi = Member(99, "Hadi")
-    other = Member(7, "Ricky")
-
-    async def create_role(name, colour, **kw):
-        made.append(Role(600 + len(made), name, colour.value, 1))
-        return made[-1]
-
-    guild = types.SimpleNamespace(
-        id=1, name="The Hangout", roles=made, members=[hadi, other],
-        text_channels=[], channels=[], premium_subscriber_role=None,
-        get_role=lambda rid: next((r for r in made if r.id == int(rid)), None),
-        get_member=lambda uid: {99: hadi, 7: other}.get(uid),
-        create_role=create_role,
-    )
-    clerk.save_json(clerk.ROLES, {"500": {"creator_id": 99},
-                                  "501": {"creator_id": 7}})
-    return guild, hadi, other, hers, theirs
-
-
-def test_colour_hands(clerk, data):
-    """What the hands hand back, which is what he then says out loud.
-
-    Every line of this is a sentence a member actually read. He was told a
-    role of his was somebody else's, that orange was tomato red, that he
-    had a colour when he was not wearing one, and -- after the recolour
-    finally worked -- "Done, purple now" while he stayed grey. None of it
-    was the model inventing things for fun: each one was a gap in what came
-    back through the tool, filled in with a guess.
-    """
-    print("\nwhat the colour tools hand back")
-    keep = clerk.load_json(clerk.ROLES, {})
-    try:
-        guild, hadi, ricky, hers, theirs = _wardrobe(clerk)
-
-        # ---- the listing: named colours, and made-versus-worn ----
-        seen = json.loads(run(clerk.act_list_colors(guild, hadi, {})))
-        entry = next(r for r in seen["wardrobe"] if r["name"] == "horsy role")
-        check("a colour goes out by its name, not as hex to be guessed at",
-              entry["colour"] == "orange" and entry["hex"] == "#ffa500")
-        check("with the hex kept beside it for anyone who wants it",
-              entry["hex"] == "#ffa500")
-        check("what somebody made is reported", seen["roles_they_made"] == ["horsy role"])
-        check("and what they are wearing is a different field, because they "
-              "are different things", seen["roles_they_are_wearing"] == [])
-        check("the caps come with it, so he never offers a role they cannot have",
-              seen["may_make"] == settings.voting()["role_create_max"]
-              and seen["can_make_another"] is False)
-        check("somebody else's role is named as theirs",
-              next(r for r in seen["wardrobe"] if r["name"] == "horse")
-              ["made_by_them"] is False)
-
-        # ---- the two failures that used to share one sentence ----
-        missing = run(clerk.act_edit_color(
-            guild, hadi, {"role": "sky", "color": "purple"}))
-        check("a name nobody has is reported as a name nobody has",
-              "no colour role called 'sky'" in missing)
-        check("and the real spellings come back with it, so the next call "
-              "gets it right instead of the next message",
-              "'horsy role'" in missing and "'horse'" in missing)
-
-        not_his = run(clerk.act_edit_color(
-            guild, hadi, {"role": "horse", "color": "purple"}))
-        check("a role somebody else made says who made it, by name",
-              "made by Ricky" in not_his and "not by Hadi" in not_his)
-        check("and says what Hadi can do instead", "may wear it" in not_his)
-        check("the two answers are not the same sentence any more",
-              missing != not_his)
-
-        # ---- the recolour, and the colour that never showed ----
-        done = run(clerk.act_edit_color(
-            guild, hadi, {"role": "horsy role", "color": "purple"}))
-        check("his own role recolours", hers.colour.value == 0x800080)
-        check("and the report names the colour it now is",
-              "purple" in done)
-        check("a colour nobody can see is not a colour: it goes back on him",
-              hers in hadi.roles)
-        check("and the report says so, so he can tell them",
-              "not wearing it" in done)
-
-        # ---- at the cap, the refusal names what they already have ----
-        refused = run(clerk.act_create_color(
-            guild, hadi, {"name": "purple thing", "color": "purple"}))
-        check("somebody at the cap is refused",
-              "already made" in refused)
-        check("and told which role is theirs, rather than left to invent one",
-              "'horsy role'" in refused)
-        check("with recolouring offered and deleting explicitly not",
-              "Recolouring" in refused and "without being asked" in refused)
-
-        # ---- shedding something you are not wearing ----
-        run(clerk.act_shed_color(guild, hadi, {"role": "horsy role"}))
-        empty = run(clerk.act_shed_color(guild, hadi, {"role": "horsy role"}))
-        check("taking off what is already off says exactly that",
-              "not wearing horsy role" in empty
-              and "not wearing any colour role" in empty)
-
-        # ---- for somebody else, which is the whole of the ask ----
-        # "give Dio the -.- role" used to be answered with an apology about
-        # only being able to act on the person speaking. He can act on
-        # anybody now, so the rules that are left are about ownership, not
-        # about who is in front of him.
-        on_ricky = run(clerk.act_wear_color(
-            guild, hadi, {"role": "horse", "member": "Ricky"}))
-        check("a colour asked for on somebody else goes on them",
-              theirs in ricky.roles and theirs not in hadi.roles)
-        check("and the report names the person it went on",
-              "Ricky is now wearing" in on_ricky)
-
-        nobody = run(clerk.act_wear_color(
-            guild, hadi, {"role": "horsy role", "member": "Dio"}))
-        check("a name nobody here goes by is reported, not guessed at",
-              "could not work out who 'Dio' is" in nobody
-              and hers not in ricky.roles)
-
-        not_yours = run(clerk.act_shed_color(
-            guild, hadi, {"role": "horse", "member": "Ricky"}))
-        check("stripping a colour off somebody is refused unless you made it",
-              theirs in ricky.roles and "not Hadi's to take off" in not_yours)
-
-        run(clerk.act_wear_color(
-            guild, hadi, {"role": "horsy role", "member": "Ricky"}))
-        mine_back = run(clerk.act_shed_color(
-            guild, hadi, {"role": "horsy role", "member": "Ricky"}))
-        check("but the person who made a role can take it back off anyone",
-              hers not in ricky.roles and "Ricky took off" in mine_back)
-
-        cap = settings.voting()["role_create_max"]
-        settings.configure_voting(role_create_max=3)
-        try:
-            made_for = run(clerk.act_create_color(
-                guild, ricky, {"name": "sea thing", "color": "sea green",
-                               "member": "Hadi"}))
-        finally:
-            settings.configure_voting(role_create_max=cap)
-        gift = next(r for r in guild.roles if r.name == "sea thing")
-        check("a colour made for somebody else is worn by them",
-              gift in hadi.roles and gift not in ricky.roles)
-        check("and is still the asker's role, counting against their cap and "
-              "not against the cap of whoever wears it",
-              clerk.role_registry()[str(gift.id)]["creator_id"] == 7)
-        check("the report says who it was made for",
-              "for Hadi" in made_for)
-
-        # ---- a role deleted in Discord's own settings frees the cap ----
-        guild.roles.remove(hers)
-        check("the registry still has the entry, because nothing pruned it",
-              "500" in clerk.role_registry())
-        check("but a cap counts roles that exist, not entries left behind",
-              clerk.at_create_cap(99, guild) is False)
-        check("while a caller with no guild to check against is unchanged",
-              clerk.at_create_cap(99) is True)
-    finally:
-        clerk.save_json(clerk.ROLES, keep)
-
-
-def test_colour_picking(clerk, data):
-    """Nobody should need to know hex to pick a colour, and nobody should be
-    able to make a second role wearing a name that is already taken."""
-    print("\npicking a colour without knowing hex")
-    keep = clerk.load_json(clerk.ROLES, {})
-    try:
-        check("a colour said in words is a colour",
-              clerk.parse_colour("sea green").value == 0x2E8B57)
-        spellings = {clerk.parse_colour(s).value
-                     for s in ("sky blue", "Sky Blue", "sky-blue", "SKYBLUE")}
-        check("and however it is spaced, cased or hyphenated it is the one "
-              "colour", spellings == {0x87CEEB})
-        check("hex still works, with or without the hash",
-              clerk.parse_colour("#ff9d2e").value
-              == clerk.parse_colour("ff9d2e").value == 0xFF9D2E)
-        for bad in ("puce", "", "#gggggg", None):
-            try:
-                clerk.parse_colour(bad)
-                check(f"{bad!r} should not have parsed", False)
-            except ValueError:
-                pass
-        check("and nothing it cannot read is guessed at", True)
-        check("black is nudged off pure black, which Discord reads as no "
-              "colour at all and paints grey",
-              clerk.parse_colour("black").value != 0x000000)
-        check("a colour can be said back in the word it came in",
-              clerk.colour_name(0x2E8B57) == "seagreen")
-        check("and one with no name says nothing rather than guessing",
-              clerk.colour_name(0x123456) is None)
-
-        check("the menu fits inside what Discord will show",
-              len(clerk.PALETTE) <= 25)
-        check("every swatch is a colour that could also have been typed",
-              all(name in clerk.COLOUR_NAMES for _, name, _ in clerk.PALETTE))
-        check("and no colour is offered twice",
-              len({name for _, name, _ in clerk.PALETTE}) == len(clerk.PALETTE))
-
-        def picker(selected=(), written=""):
-            swatch = types.SimpleNamespace(
-                component=types.SimpleNamespace(values=list(selected)))
-            return swatch, written
-
-        check("picking from the menu is enough",
-              clerk.picked_colour(*picker(selected=["teal"])).value == 0x008080)
-        check("typing is enough on its own",
-              clerk.picked_colour(*picker(written="hot pink")).value == 0xFF69B4)
-        check("and what somebody troubled to type beats a menu they may "
-              "never have opened",
-              clerk.picked_colour(
-                  *picker(selected=["teal"], written="crimson")).value == 0xDC143C)
-        check("saying nothing at all is not an error, it is no answer",
-              clerk.picked_colour(*picker()) is None)
-        try:
-            clerk.picked_colour(*picker(written="banana"))
-            check("a typed nonsense colour should have been refused", False)
-        except ValueError:
-            check("a typed nonsense colour is refused, not silently ignored", True)
-
-        def role(rid, name):
-            return types.SimpleNamespace(id=rid, name=name)
-
-        mine, theirs, staff = role(1, "Gremlin"), role(2, "Moss"), role(3, "Moderator")
-        guild = types.SimpleNamespace(roles=[mine, theirs, staff])
-        clerk.save_json(clerk.ROLES, {"1": {"creator_id": 99},
-                                      "2": {"creator_id": 7}})
-
-        check("a name already in use is found before anything is made",
-              clerk.name_taken(guild, "Gremlin") is mine)
-        check("and case and stray spaces do not smuggle a duplicate past it",
-              clerk.name_taken(guild, "  gremlin ") is mine)
-        check("a name nobody holds is free", clerk.name_taken(guild, "Vetch") is None)
-        check("a role does not collide with itself when it is being edited",
-              clerk.name_taken(guild, "Gremlin", ignoring=mine) is None)
-        check("but it still collides with everybody else",
-              clerk.name_taken(guild, "Moss", ignoring=mine) is theirs)
-        check("roles that are not colours are counted too: two roles with "
-              "one name are indistinguishable whoever made them",
-              clerk.name_taken(guild, "Moderator") is staff)
-
-        check("your own is a nudge to edit it, not a refusal to explain",
-              "Edit that one" in clerk.taken_line(mine, 99))
-        check("somebody else's colour points at wearing it",
-              "wear it" in clerk.taken_line(theirs, 99))
-        check("and a server role just says the name is spoken for",
-              "already a role in this server" in clerk.taken_line(staff, 99))
-    finally:
-        clerk.save_json(clerk.ROLES, keep)
 
 
 def _async(value):
@@ -2405,54 +2007,6 @@ def test_chat_room(data):
         settings.configure(data)
 
 
-def test_colour_words(clerk, data):
-    """The prompt quotes the colour limits at members as rules, so the number
-    Eugene says has to be the number the buttons enforce."""
-    print("\nthe colour rule, in the words he says it in")
-    import brain
-
-    had = "role_limits" in brain._deps
-    keep = brain._deps.get("role_limits")
-    try:
-        brain._deps.pop("role_limits", None)
-        fallback = brain._colour_limits()
-        check(f"never configured, he still has a sentence: {fallback!r}",
-              "of their own" in fallback and "worn at once" in fallback)
-
-        brain._deps["role_limits"] = {"create": 1, "wear": 5}
-        check("one made is one colour, not one colours",
-              brain._colour_limits() == "one colour of their own, five worn at once")
-        brain._deps["role_limits"] = {"create": 5, "wear": 5}
-        check("five made is plural",
-              brain._colour_limits() == "five colours of their own, five worn at once")
-        brain._deps["role_limits"] = {"create": 1, "wear": 1}
-        check("and one worn is singular too, wherever it appears",
-              brain._colour_limits() == "one colour of their own, one worn at once")
-        brain._deps["role_limits"] = {"create": 12, "wear": 12}
-        check("a number past the ones he spells out is still said",
-              brain._colour_limits() == "12 colours of their own, 12 worn at once")
-
-        # The limits are the house's now, so the one thing worth pinning is
-        # that he reads the house's copy rather than a number handed to him
-        # once at boot -- a cap raised at noon has to reach the sentence he
-        # says at one minute past.
-        brain._deps.pop("role_limits", None)
-        brain._deps["numbers"] = lambda guild=None: settings.voting()
-        check("what clerk.py enforces is what he tells people",
-              brain._colour_limits() == "one colour of their own, five worn at once")
-        settings.configure_voting(role_create_max=3, role_wear_max=2)
-        check("and a house that moves a cap has moved what he says it is, "
-              "without a redeploy",
-              brain._colour_limits() == "three colours of their own, two worn at once")
-    finally:
-        settings.configure_voting(role_create_max=1, role_wear_max=5)
-        brain._deps.pop("numbers", None)
-        if had:
-            brain._deps["role_limits"] = keep
-        else:
-            brain._deps.pop("role_limits", None)
-
-
 def test_dynamic_thresholds(data):
     """What a vote needs is a share of a roster that moves, so no count is
     written down anywhere -- not in the rules, not in the prompt. These pin
@@ -2737,9 +2291,8 @@ def test_modules(data):
           == len({x for s in modules.SPEC.values() for x in s["tools"]}))
 
     print("\na fresh server is the clerk as he was before there were modules")
-    check("governance, polls and colours are on out of the box",
-          all(modules.enabled(gid, k)
-              for k in ("governance", "polls", "colours")))
+    check("governance and polls are on out of the box",
+          all(modules.enabled(gid, k) for k in ("governance", "polls")))
     check("and the filters are not, which is what they were already",
           not modules.enabled(gid, "moderation"))
     check("nothing is stored until somebody chooses something",
@@ -2787,7 +2340,7 @@ def test_modules(data):
     print("\nthe whole roll set at once, which is what the menu submits")
     on, off = modules.apply_set(gid, ["governance", "health"])
     check("what was on and is not any more is named",
-          "polls" in off and "colours" in off)
+          "polls" in off and "chat" in off)
     check("what the selection left standing is still standing",
           modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
     modules.reset(gid)
@@ -2812,12 +2365,12 @@ def test_modules(data):
           and modules.live(gid, "chat", brain=True))
 
     print("\nthe structure is generated, so it cannot describe another server")
-    modules.apply_set(gid, ["governance", "polls", "colours", "health"])
+    modules.apply_set(gid, ["governance", "polls", "health"])
     plan = dict(modules.structure(gid, only_buildable=True))
     check("every room he makes is in one category, and there is one category",
           list(plan) == ["governance"]
           and plan["governance"] == ["proposals", "votes", "decisions",
-                                     "polls", "wardrobe", "health"])
+                                     "polls", "health"])
     check("who may read a room is written on the room, not on a second "
           "category filing it",
           list(modules.CATEGORIES) == ["governance"]
@@ -2840,7 +2393,7 @@ def test_modules(data):
     check("its tools are still his", modules.tool_allowed(gid, "propose_bill"))
     check("a switched-off feature's are not",
           not modules.tool_allowed(gid, "moderate_member")
-          and not modules.tool_allowed(gid, "create_color_role"))
+          and not modules.tool_allowed(gid, "open_poll"))
     check("and the tools that switch a feature back on belong to no feature, "
           "so switching everything off is not a locked door",
           all(modules.of_tool(name) is None
@@ -3686,8 +3239,6 @@ def main():
             test_health_room_is_private(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
-            test_role_cap(clerk, data)
-            test_colour_hands(clerk, data)
             test_voting(clerk, data)
             test_voting_numbers(data)
             test_open_polls(clerk, data)
@@ -3697,8 +3248,6 @@ def main():
             test_eligibility(clerk)
             test_duty_actions(clerk, data)
             test_chat_room(data)
-            test_colour_words(clerk, data)
-            test_colour_picking(clerk, data)
             test_dynamic_thresholds(data)
             test_empty_promises(data)
             test_prompt_caching(data)

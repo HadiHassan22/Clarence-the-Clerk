@@ -9,7 +9,6 @@ How it works, in one breath: anyone in the cooperative files a proposal
 moment its result can no longer change rather than when a clock runs out;
 what passes becomes a numbered decision in the permanent record, and
 Eugene keeps a standing list of the ones nobody has carried out yet.
-Members also get self-service colour roles.
 
 The rules: [standing-orders.md](standing-orders.md) — ordinary rules,
 rewritable at the top tier, and the only document Eugene is given.
@@ -139,7 +138,6 @@ a conversation:
 - **`/close <number>`** — call time on a vote that has had its run.
 - **`/bills`** — what is open for a vote right now. The cooperative sees
   everything; anyone else in the room sees the open polls.
-- **`/role`** — make or manage your colour.
 - **`/house`** — every feature and whether it is running, then the
   settings underneath them: welcomes, filters, warnings, the log.
   Read-only, and free; the changing is done by asking him.
@@ -165,7 +163,6 @@ either with nothing else at all.
 |---|---|---|
 | Governance | proposals, anonymous ballots, the permanent record | on |
 | Polls | advisory questions put to the whole server | on |
-| Colour roles | self-service colours, yours or anyone's | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
 | Moderation | the filters, warnings, and the hands | off |
 | Arrivals | greetings, goodbyes, an arrival role | on, until pointed at a room |
@@ -229,9 +226,8 @@ reading what each scope costs:
 | Scope | What goes |
 |---|---|
 | The record | every proposal and decision; **numbering starts again at 1** |
-| What he knows | his notes on every person, and the house shelf |
 | What he has said | the ledgers that stop him repeating himself |
-| The roster | last-seen times, and who made which colour role |
+| The roster | last-seen times |
 | The case book | warnings, cases, saved answers |
 | His own posts | the message ids of what he keeps pinned |
 | The install | bindings, feature switches, voting numbers, the house line |
@@ -239,8 +235,7 @@ reading what each scope costs:
 Two things it never does. **It never touches an AI key** — that is the one
 thing in the store that costs money to replace and cannot be read back off
 Discord. And **it never deletes anything in Discord**: no channel, no role,
-no message. Forgetting the colour-role registry does not delete the roles,
-it means he stops knowing whose they are, and the reply says so.
+no message.
 
 `install.py` asks the same question when you point it at a server the disk
 does not already belong to, and only then — a first install has nothing to
@@ -357,8 +352,6 @@ them at once with.
 | `public_quorum_share` | the share of the server that must vote for an open poll to count | 0.2 |
 | `kick_min_yes` | the fewest yes votes a removal can ever pass on | 3 |
 | `away_days` | a quiet spell this long takes you out of the count | 14 |
-| `role_create_max` | colour roles one person may make | 1 |
-| `role_wear_max` | colour roles one person may wear at once | 1 |
 
 Each is held inside a range where the rest of the machinery still means
 what it says, so a share cannot be set above everybody and a window cannot

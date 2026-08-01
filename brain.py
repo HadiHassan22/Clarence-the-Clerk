@@ -108,16 +108,8 @@ OUTAGE_LINE = (
 
 TOO_DEEP_LINE = "That took more digging than I have in me. Ask me something narrower."
 
-# Fallback only. The real figures live in clerk.py and arrive through
-# configure(); the prompt quotes them at members as rules, so a stale number
-# here is Eugene confidently telling someone the wrong limit. Which is what
-# it was: five and five, against a shipped default of one and one in
-# settings.py. It matches its source now, and there is exactly one source.
-ROLE_LIMITS = {"create": 1, "wear": 1}
-
-
 def configure(bot, here: Path, data: Path, in_cooperative, health_log, chunk_text,
-              resolve_guild, role_limits=None, numbers=None):
+              resolve_guild, numbers=None):
     """resolve_guild(message) -> the guild whose brain should answer, or
     None. It is clerk.py's job to decide that, not the brain's: in a
     direct message there is no guild on the message at all.
@@ -126,15 +118,11 @@ def configure(bot, here: Path, data: Path, in_cooperative, health_log, chunk_tex
     callable rather than a copy, because the numbers are the house's now
     and it can change one between two sentences of the same conversation;
     anything read once at boot would have him quoting a rule that stopped
-    being true and doing it with total confidence.
-
-    role_limits is the old shape, {"create": n, "wear": n}, kept for a
-    caller that has no numbers to give."""
+    being true and doing it with total confidence."""
     _deps.update(
         bot=bot, here=here, data=data, in_cooperative=in_cooperative,
         health_log=health_log, chunk_text=chunk_text,
-        resolve_guild=resolve_guild, role_limits=role_limits or ROLE_LIMITS,
-        numbers=numbers,
+        resolve_guild=resolve_guild, numbers=numbers,
     )
 
 
@@ -358,36 +346,6 @@ def _acts_index():
     return "\n".join(f"Decision {a['act']}: {a['title']}" for a in acts[-50:])
 
 
-_NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven",
-                 "eight", "nine", "ten")
-
-
-def _in_words(n):
-    """Small numbers spelled out. The prompt is English addressed to a
-    language model, and a bare numeral in the middle of a sentence reads
-    like a field it might quote back rather than a rule it should obey."""
-    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
-
-
-def _colour_limits(guild=None):
-    """The colour rule, in the words Eugene will say it in. Singular has to
-    work: at a limit of one, "one colours" would be the first thing anyone
-    noticed and the last thing they trusted."""
-    figures = _deps.get("numbers")
-    if figures is not None:
-        held = figures(guild)
-        made = int(held["role_create_max"])
-        worn = int(held["role_wear_max"])
-    else:
-        limits = _deps.get("role_limits") or ROLE_LIMITS
-        made = int(limits.get("create", ROLE_LIMITS["create"]))
-        worn = int(limits.get("wear", ROLE_LIMITS["wear"]))
-    return (
-        f"{_in_words(made)} colour{'' if made == 1 else 's'} of their own, "
-        f"{_in_words(worn)} worn at once"
-    )
-
-
 def _roster_now(guild):
     """What a vote actually needs here, today, or "" if it cannot be told.
 
@@ -573,11 +531,6 @@ Ask a question only when you genuinely cannot tell what somebody wants, and neve
 
 # You have no later
 Nothing wakes you up to finish something. There is no queue and no next time you will get round to it. So you never say you will do a thing: you do it in the turn you are asked, with the tool, and then say it is done. "I'll do that in a minute", "right after", "let me just" — every one of those is a promise you cannot keep, and the person walks away believing it is handled when nothing happened. If you genuinely cannot do it, say that plainly instead.
-
-# Colours
-You manage colour roles for whoever you are talking to: create, rename, recolour, delete their own, put any colour on or take it off ({_colour_limits(guild)}). Just do it when asked, then say what you did in a few words.
-Not only for the person asking. When someone names another member — "give Dio the -.- role", "make Horsy one in sea green" — pass that name along in `member` and do it for them; never say you can only act on the person in front of you, because that is not true. What stays personal is ownership: a role belongs to whoever made it, only they can rename, recolour or delete it, and it counts against their own allowance however many people end up wearing it. Anyone may take a colour off themselves.
-Making a colour and wearing one are different things and you must not run them together: somebody can own a colour they have taken off, and wear one somebody else made. Somebody already at their limit who wants a new colour wants their existing one recoloured; never offer to delete a role, and never delete one unless they ask in those words.
 
 # Never claim what you have not done
 This is the fastest way to lose them, and it has already happened once: "done, I put it on you", said in a turn where no tool ran at all.

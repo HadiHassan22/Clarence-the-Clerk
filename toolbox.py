@@ -277,119 +277,6 @@ REGISTRY = {
 }
 
 
-# The colour limits are the house's, not ours, and they are written into
-# these descriptions rather than stated in them: "five at most" was hard
-# coded here while the shipped cap was one, so a single request carried
-# both numbers -- the true one in the system prompt, the false one here.
-# The model believed the tool, offered a second role, and was refused by
-# its own harness in front of a member. Anything below that quotes a limit
-# uses a {placeholder} and is filled in by `declarations` from the same
-# `settings.voting` every other reader of these numbers uses.
-COLOUR_TOOLS = {
-    "list_color_roles": {
-        "description": "The wardrobe and where the person asking stands in "
-        "it: every colour role by name and colour, who made each one, how "
-        "many wear it, and -- separately -- which ones they made, which ones "
-        "they are wearing, and whether they have room for another. Call this "
-        "before any other colour tool unless they named a role you have "
-        "already seen spelled out this turn: guessing a role's name is how "
-        "you end up telling somebody a role they own belongs to a stranger.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "create_color_role": {
-        "description": "Create a colour role, worn by the person you are "
-        "talking to or by anybody they name. This house lets one person make "
-        "{make} of their own, so check what they already have before offering "
-        "a new one -- if they are at the limit, recolouring what they have is "
-        "what they want, not a deletion. Made for somebody else it still "
-        "counts against the asker, because the role stays theirs to rename "
-        "and delete. Purely cosmetic: a name and a colour. Refused if a role "
-        "by that name already exists, so pass what they actually asked for "
-        "rather than a variation on it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "color": {
-                    "type": "string",
-                    "description": "a colour name like 'sea green' or 'hot "
-                    "pink', or hex like #ff9d2e. Pass on whatever word they "
-                    "used; do not convert it to hex yourself.",
-                },
-                "member": {
-                    "type": "string",
-                    "description": "who ends up wearing it -- a mention, an "
-                    "id, or the name they used. Omit for the person asking.",
-                },
-            },
-            "required": ["name", "color"],
-        },
-    },
-    "edit_color_role": {
-        "description": "Rename or recolour a role the person you are talking "
-        "to created. Only its creator may change it. This is the right tool "
-        "when somebody at their limit wants a different colour. If they are "
-        "not wearing it, it goes back on them so the colour actually shows.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "role": {"type": "string", "description": "the role's current name"},
-                "name": {"type": "string"},
-                "color": {
-                    "type": "string",
-                    "description": "a colour name like 'sea green', or hex",
-                },
-            },
-            "required": ["role"],
-        },
-    },
-    "delete_color_role": {
-        "description": "Delete a colour role the person you are talking to "
-        "created. Only its creator may delete it.",
-        "parameters": {
-            "type": "object",
-            "properties": {"role": {"type": "string"}},
-            "required": ["role"],
-        },
-    },
-    "wear_color_role": {
-        "description": "Put an existing colour role on the person you are "
-        "talking to, or on anybody they name. Anyone may put any colour on "
-        "anyone; {wear} at a time in this house. Owning a colour and "
-        "wearing it are different things -- somebody can have made one they "
-        "took off.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "role": {"type": "string"},
-                "member": {
-                    "type": "string",
-                    "description": "who wears it -- a mention, an id, or the "
-                    "name they used. Omit for the person asking.",
-                },
-            },
-            "required": ["role"],
-        },
-    },
-    "shed_color_role": {
-        "description": "Take a colour role off someone: off the person "
-        "asking always, and off anybody else only if they made that role. "
-        "Nothing is destroyed: the role still exists and can go back on.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "role": {"type": "string"},
-                "member": {
-                    "type": "string",
-                    "description": "whose colour comes off -- a mention, an "
-                    "id, or the name they used. Omit for the asker.",
-                },
-            },
-            "required": ["role"],
-        },
-    },
-}
-
 BILL_TOOLS = {
     "propose_bill": {
         "description": "File a proposal for the person you are talking to, in "
@@ -623,7 +510,7 @@ OFFICER_TOOLS = {
     },
     "assign_role": {
         "description": "Put any role on somebody, or take it off. This is the "
-        "elevated one — the colour tools only ever touch the person you are "
+        "elevated one — the member tools only ever touch the person you are "
         "talking to. The roles that decide who votes are not handed out this "
         "way and will be refused.",
         "parameters": {
@@ -652,7 +539,7 @@ OFFICER_TOOLS = {
     },
     "set_feature": {
         "description": "Switch one of the features on or off for this "
-        "server: governance, polls, colours, chat, "
+        "server: governance, polls, chat, "
         "moderation, welcome, log, health. This is the "
         "master switch -- 'turn the filters on', 'stop greeting people', "
         "'we do not want the log'. A feature that is off does nothing and "
@@ -733,7 +620,7 @@ OFFICER_TOOLS = {
 }
 
 
-for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS, **DUTY_TOOLS}.items():
+for _name, _spec in {**BILL_TOOLS, **DUTY_TOOLS}.items():
     REGISTRY[_name] = {
         # "member" tier: acts as the invoker, strictly inside powers that
         # member already holds through the buttons in #roles and
@@ -742,10 +629,6 @@ for _name, _spec in {**COLOUR_TOOLS, **BILL_TOOLS, **DUTY_TOOLS}.items():
         "tier": "member",
         "description": _spec["description"],
         "parameters": _spec["parameters"],
-        # A description carrying a {placeholder} is filled from the house's
-        # own numbers on the way out; one that does not is passed through
-        # untouched, so braces in any other description are never a trap.
-        "figures": _name in COLOUR_TOOLS and "{" in _spec["description"],
         "handler": None,  # supplied by clerk.py through configure()
     }
 
@@ -767,42 +650,16 @@ def declarations(guild_id=None):
     who offers to open a poll in a server that has switched polls off has
     told somebody something false about their own house.
 
-    Any limit a description quotes is filled in here from that server's own
-    numbers. It used to be typed in by hand, which meant the tool list and
-    the system prompt disagreed about the same cap inside a single request;
-    whichever the model believed, one of them was a lie.
     """
     return [
         {
             "name": name,
-            "description": (_with_figures(spec["description"], guild_id)
-                            if spec.get("figures") else spec["description"]),
+            "description": spec["description"],
             "parameters": spec["parameters"],
         }
         for name, spec in REGISTRY.items()
         if guild_id is None or modules.tool_allowed(guild_id, name)
     ]
-
-
-def _with_figures(description, guild_id):
-    """The house's colour limits, spelled into a description.
-
-    Stable for a given server between edits, so it costs the cached prompt
-    nothing; a house that changes a cap pays for one fresh prefix and then
-    stops being lied to.
-    """
-    import settings
-
-    held = settings.voting(guild_id)
-    try:
-        return description.format(
-            make=held["role_create_max"], wear=held["role_wear_max"]
-        )
-    except (KeyError, IndexError, ValueError) as e:
-        # A description is not worth a dead tool: an unknown placeholder
-        # goes out as it stands rather than taking the whole list down.
-        log.error(f"could not fill the figures into a tool description: {e!r}")
-        return description
 
 
 def _tier_check(tier, invoker):
