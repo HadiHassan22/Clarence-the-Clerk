@@ -14,6 +14,7 @@ the floor still want a sandbox server. See CONTRIBUTING.md.
 import asyncio
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -816,6 +817,83 @@ def test_setup_rooms(clerk, data):
     run(clerk.make_missing_rooms(guild_for(3636)))
     check("and governance on its own gets exactly its three",
           sorted(n for n, _ow in seen) == ["decisions", "propose", "votes"])
+
+
+def test_prompt_matches_the_tools(data):
+    """The prompt may never name a tool he has not been handed.
+
+    This is the failure that read as stupidity and was not. The old prompt
+    said, unconditionally, "Roles: `assign_role` puts any role on anybody"
+    -- but `assign_role` belonged to the moderation module, so in a server
+    with moderation off he was told he had a tool that was never declared.
+    Asked to put a role on somebody he answered "the moderation feature is
+    off here, so I can't assign roles": confident, accurate about the wrong
+    thing, and a refusal where a different tool he *did* have would have
+    done it.
+
+    So: for every combination of features, every tool the prompt names has
+    to be one `declarations()` actually hands over for that combination.
+    """
+    print("\nhe is never told about a tool he has not been given")
+    import brain
+    import modules
+    import toolbox
+    from itertools import product
+
+    store = data / "prompt-tools-store"
+    settings.configure(store)
+    brain.configure(None, HERE, store, None, None, None, None)
+    gid = 6060
+    guild = types.SimpleNamespace(name="Book Club", id=gid)
+    keys = modules.keys()
+    try:
+        every = set(toolbox.REGISTRY)
+        for combination in product((False, True), repeat=len(keys)):
+            for key, on in zip(keys, combination):
+                modules.set_enabled(gid, key, on)
+            stable, volatile = brain._system_prompt(guild)
+            named = set(re.findall(r"`([a-z_]{4,})`", stable + volatile))
+            # Only judge words that are tool-shaped; prose may quote a
+            # setting name, and those are checked below.
+            named &= every | {n for n in named if n in every}
+            handed = {d["name"] for d in toolbox.declarations(gid)}
+            on_now = [k for k, o in zip(keys, combination) if o]
+            ghost = {n for n in named if n in every} - handed
+            check(f"with {on_now or ['nothing']} on, the prompt names no "
+                  f"tool he was not handed", not ghost)
+        # And the stricter half: a name in the prompt that is not a tool at
+        # all. `get_standing_orders` survived here for one commit after it
+        # was folded into `lookup`, which would have had him calling a tool
+        # that no longer existed.
+        for key in keys:
+            modules.set_enabled(gid, key, True)
+        stable, volatile = brain._system_prompt(guild)
+        named = set(re.findall(r"`([a-z_]{4,})`", stable + volatile))
+        settings_names = set(settings.VOTING_RULES)
+        unknown = named - every - settings_names - {"lookup"}
+        check("and every tool-shaped name in it is a tool that exists",
+              not unknown, )
+        if unknown:
+            print(f"        unknown: {sorted(unknown)}")
+
+        # The same trap one level down: a description that tells him to
+        # call something is a claim about the tool list too.
+        stale = set()
+        for spec in toolbox.REGISTRY.values():
+            # A tool's own parameter names are fair game in its own
+            # description; what is not is naming another tool.
+            mine = set(spec["parameters"].get("properties") or {})
+            for word in re.findall(r"`([a-z_]{4,})`", spec["description"]):
+                if word not in every and word not in settings_names \
+                        and word not in mine:
+                    stale.add(word)
+        check("and no tool's own description names a tool that is gone",
+              not stale)
+        if stale:
+            print(f"        stale in descriptions: {sorted(stale)}")
+    finally:
+        modules.reset(gid)
+        settings.configure(data)
 
 
 def test_privacy_surfaces(clerk, data):
@@ -1846,7 +1924,7 @@ def test_empty_promises(data):
 
     settings.configure(data / "promise-store")
     brain.configure(None, HERE, data, None, None, None, None)
-    stable, _ = brain._system_prompt(
+    stable, volatile = brain._system_prompt(
         types.SimpleNamespace(name="The Hangout", id=4141)
     )
     check("the rule against trading is in the prompt, which is the actual "
@@ -1859,6 +1937,41 @@ def test_empty_promises(data):
           and "never raise the subject" in stable.lower())
     check("and having no later is stated as its own rule",
           "# You have no later" in stable)
+
+    # The voice is the whole reason anybody likes him, and it is the first
+    # thing a prompt diet quietly eats. What is pinned is not "be funny" --
+    # it is the four places where being funny reads as not taking somebody
+    # seriously, because those are what makes the rest safe to turn up.
+    check("he is told to take the opening rather than ration it to one",
+          "# Puns" in stable and "whenever there is one" in stable)
+    check("but never instead of the answer, which is the failure mode",
+          "a joke instead of an answer is neither" in stable)
+    check("and never where it reads as not taking somebody seriously: "
+          "upset, standing, removals, votes about a person",
+          "when somebody is upset" in stable
+          and "standing here" in stable
+          and "on a removal" in stable
+          and "vote about a person" in stable)
+    check("never explained and never doubled, which is what makes one land",
+          "Never explain one" in stable and "two in the same message" in stable)
+
+    # He copies the shape of what he is given. The prompt was written with
+    # em dashes and he wrote them straight back out, which is the clearest
+    # tell there is that a machine produced a sentence. Banning them in the
+    # text while using them in the same text is asking to be ignored.
+    check("he is told not to use em dashes",
+          "No em dashes, ever" in stable)
+    check("and the prompt he learns the shape from has none in it either",
+          "\u2014" not in stable and "\u2014" not in volatile)
+
+    check("he answers things that have nothing to do with the server, "
+          "because a scope is a worse answer than a short honest one",
+          "nothing to do with this server" in stable
+          and "not a help desk with a scope" in stable)
+    check("and gives an opinion when asked for one, everywhere except an "
+          "open vote, which is a rule about ballots and not a personality",
+          "Have opinions" in stable
+          and "not a personality" in stable)
     settings.configure(data)
 
 
@@ -1922,7 +2035,7 @@ def test_prompt_caching(data):
               "The rules in brief" in before[0])
         check("and the four hundred lines he can look up are not",
               "## 13. Meetings" not in before[0]
-              and "get_standing_orders" in before[0])
+              and "`lookup` with kind 'rules'" in before[0])
         check("and the charter is gone from it entirely",
               "charter" not in before[0].lower())
         check("which still clears the annex's minimum several times over",
@@ -2439,6 +2552,7 @@ def main():
             test_debate_thread(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
+            test_prompt_matches_the_tools(data)
             test_privacy_surfaces(clerk, data)
             test_channel_choice(clerk, data)
             test_closing(clerk, data)

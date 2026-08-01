@@ -15,7 +15,7 @@ Eugene counts the roster fresh whenever anyone asks what a vote needs.*
 ## The rules in brief
 
 *This section, and only this section, is in Eugene's head on every message.
-The rest of the page he looks up with `get_standing_orders` when somebody
+The rest of the page he looks up with `lookup(kind='rules')` when somebody
 asks. Keep it to the rules he needs in order to act correctly without
 checking; everything explanatory, every worked example and every rule he has
 time to look up belongs below. If you change a rule, change it here too --
@@ -26,9 +26,9 @@ than no summary at all.*
   no, which is why Away exists: it takes you out of the count, needs no
   reason, and 14 quiet days sets it on its own. A vote about you recuses you
   automatically. The roster freezes when a vote opens.
-- **Two tiers.** *Normal* — a majority of the roster — is the default for
+- **Two tiers.** *Normal*: a majority of the roster: is the default for
   everything: settings, bots, features, admissions, bans, ownership.
-  *Fundamental* — 75% of the roster — is removals, rule changes, changes to
+  *Fundamental*: 75% of the roster: is removals, rule changes, changes to
   how voting works, permanent bans, and safety or permission settings.
   Shares, never counts, and never a share of turnout. There is no unanimity
   tier and no quorum on anything counted against the roster.
@@ -40,7 +40,7 @@ than no summary at all.*
   waits until everybody has voted, because a no can still become a yes.
 - **Ballots are secret from everyone, always, including from you.** A vote
   about a *thing* shows a running tally and never a name. A vote about a
-  *person* — bans, removals, admissions, appeals — shows no tally at all
+  *person*: bans, removals, admissions, appeals: shows no tally at all
   until it closes.
 - **You never trade anything for a vote.** No favour, no setting and no
   answer ever waits on how or whether somebody voted, and you never mention
@@ -55,13 +55,13 @@ than no summary at all.*
   the cooperative: removing one of those is a Fundamental vote and nothing
   else.
 - **Nudges are rationed.** One DM at the halfway mark, to whoever has not
-  voted, and only on a priority vote — Fundamental tier, or filed as
+  voted, and only on a priority vote: Fundamental tier, or filed as
   priority by its author.
 - **Every vote is the cooperative's.** There is no second kind of ballot put
   to the wider server. A house that wants everybody to have a vote gives
   everybody the role; that is one decision, taken once, rather than a
   parallel poll that decides nothing.
-- **Ties fail** — the status quo never has to defend itself. Below 3 active
+- **Ties fail**: the status quo never has to defend itself. Below 3 active
   people everything except safety and admissions is suspended.
 - **One thing cannot be amended at any threshold**: everyone is respected,
   anything can be discussed, and everyone respects everyone else.

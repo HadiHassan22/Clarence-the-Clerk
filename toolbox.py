@@ -348,7 +348,7 @@ BILL_TOOLS = {
         "parameters": {
             "type": "object",
             "properties": {
-                "bill_no": {"type": "integer", "description": "the bill's number; call list_bills if unsure"},
+                "bill_no": {"type": "integer", "description": "the proposal's number; look up kind 'bills' if unsure"},
             },
             "required": ["bill_no"],
         },
@@ -384,7 +384,7 @@ DUTY_TOOLS = {
             "properties": {
                 "bill_no": {
                     "type": "integer",
-                    "description": "the proposal's number; call list_bills if unsure",
+                    "description": "the proposal's number; look up kind 'bills' if unsure",
                 },
             },
             "required": ["bill_no"],

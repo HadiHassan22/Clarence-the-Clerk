@@ -3568,16 +3568,41 @@ class HouseModal(discord.ui.Modal, title="What is this server for?"):
         max_length=300,
         placeholder="a book club that argues about endings",
     )
+    # How this house wants him to sound, in its own words.
+    #
+    # Character is the one thing that genuinely is a server's business and
+    # not the repo's: a co-op, a study group and a guild of friends want
+    # three different clerks, and the shipped default cannot be all of
+    # them. It goes in the cached half like the description, because it
+    # changes when somebody edits it and not otherwise.
+    #
+    # It never reaches the rules. Whatever is written here, the ballot
+    # arithmetic, the sealed votes and the refusals are code, and the hard
+    # rules sit below this in the prompt where nothing above can argue
+    # with them.
+    voice = discord.ui.TextInput(
+        label="How should he sound? Blank for the default.",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1200,
+        placeholder="Warm, informal, calls people comrade. Has opinions "
+                    "and says them when asked.",
+    )
 
     def __init__(self, guild):
         super().__init__()
         current = settings.get(guild.id, "house")
         if current:
             self.description.default = current
+        voiced = settings.get(guild.id, "voice")
+        if voiced:
+            self.voice.default = voiced
 
     async def on_submit(self, interaction):
         text = " ".join(str(self.description).split())[:300]
-        settings.put(interaction.guild.id, house=text or None)
+        tone = str(self.voice).strip()[:1200]
+        settings.put(interaction.guild.id, house=text or None,
+                     voice=tone or None)
         note = (
             f"He now knows **{interaction.guild.name}** as *{text}*."
             if text else
