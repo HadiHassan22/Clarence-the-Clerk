@@ -819,6 +819,60 @@ def test_setup_rooms(clerk, data):
           sorted(n for n, _ow in seen) == ["decisions", "propose", "votes"])
 
 
+def test_privacy_surfaces(clerk, data):
+    """The claims PRIVACY.md makes, checked against the code that makes
+    them true. A privacy page is worth exactly as much as the thing it
+    describes, so the load-bearing sentences are pinned here."""
+    print("\nwhat leaves the server, and who can find that out")
+    import brain
+    import modules
+
+    store = data / "privacy-store"
+    settings.configure(store)
+    gid = 5150
+    try:
+        check("with no key on file, nothing goes anywhere at all",
+              brain.provider_name(gid) is None and brain.enabled(gid) is False)
+        check("and no governance feature ever wanted one",
+              all(not modules.SPEC[k]["brain"]
+                  for k in modules.keys() if k != "chat"))
+
+        check("a key cannot be set before somebody has read what it means",
+              clerk.consented(types.SimpleNamespace(id=gid)) is False)
+        settings.put(gid, **{clerk.CONSENT: {"by": "Robin", "id": 1,
+                                             "at": "2026-01-01T00:00:00"}})
+        check("and accepting is recorded under a name, because a server "
+              "cannot agree to anything -- a person does",
+              clerk.consented(types.SimpleNamespace(id=gid))
+              and settings.get(gid, clerk.CONSENT)["by"] == "Robin")
+
+        # What he is holding is counted, not quoted, so /privacy cannot
+        # drift from the thing it is describing.
+        brain._memory.clear()
+        brain._deeds.clear()
+        room = types.SimpleNamespace(id=4001, threads=[])
+        guild = types.SimpleNamespace(id=gid, text_channels=[room])
+        brain._remember(4001, "Robin", "hello")
+        brain._note_deed(4001, "Robin", "lookup", {"kind": "bills"}, "[]", 0)
+        held = brain.holding(guild)
+        check("he can say how much of the room he is holding right now",
+              held["messages"] == 1 and held["tool_results"] == 1)
+        check("and the caps he says are the ones the code actually uses",
+              held["message_cap"] == brain.MEMORY_MSGS
+              and held["result_cap"] == brain.DEEDS_MAX)
+
+        brain._remember(9999, "Someone", "another server's room")
+        gone = brain.forget_here(guild)
+        check("forgetting drops this server's and says how much",
+              gone["messages"] == 1 and brain.holding(guild)["messages"] == 0)
+        check("and never reaches into another server's rooms",
+              len(brain._memory.get(9999, [])) == 1)
+    finally:
+        brain._memory.clear()
+        brain._deeds.clear()
+        settings.configure(data)
+
+
 def test_channel_choice(clerk, data):
     """Whether Apply may take over a channel you already have is the
     server's decision, and the panel has to say which way it is set."""
@@ -2378,6 +2432,7 @@ def main():
             test_debate_thread(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
+            test_privacy_surfaces(clerk, data)
             test_channel_choice(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)

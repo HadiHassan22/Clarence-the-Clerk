@@ -124,6 +124,12 @@ a conversation:
 - **`/house`** — every feature and whether it is running, and the numbers
   this house votes by. Read-only, and free; the changing is done by asking
   him.
+- **`/privacy`** — what leaves this server, where it goes, and how much of
+  the room he is holding right now. Anyone can run it, and there is a
+  button on it that makes him forget what he is holding.
+- **`/access`** — which channels he can see, which he listens in, and
+  which are invisible to him. Worked out from Discord's permissions, not
+  from a list somebody wrote down.
 
 They are the cooperative's, and refuse anyone else. A command belonging to
 a feature the server has switched off says so, and names who can switch it
@@ -358,6 +364,19 @@ State files are runtime data and are gitignored on purpose. So are `logs/`
 such as a channel export — which is everybody's messages and ids, and is
 not something to publish). So is
 `guilds/`, which holds the keys. Never commit it.
+
+## Privacy
+
+[PRIVACY.md](PRIVACY.md) says exactly what leaves your server, with the
+line of code that does it. The short version: **with no AI key, nothing
+leaves** — every vote, the record, the roster and the reminders are plain
+Python on your own host. With a key, one request goes out when somebody in
+the cooperative speaks to him, carrying that room's recent conversation and
+nothing about anybody who is not in it. He does not read rooms he cannot
+answer in, he keeps no notes on people, and nothing is ever sent on a timer.
+
+An administrator has to read a summary of that and accept it before a key
+can be set, and who accepted is recorded.
 
 ## License
 

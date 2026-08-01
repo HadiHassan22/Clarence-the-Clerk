@@ -578,6 +578,38 @@ Today is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}."""
     return [stable, volatile]
 
 
+def holding(guild=None):
+    """How much of this server's conversation he is holding right now.
+
+    For `/privacy`, so the answer is counted rather than quoted from a
+    page that may have drifted. Per process and never on disk: a restart
+    empties all of it.
+    """
+    ids = set()
+    if guild is not None and hasattr(guild, "text_channels"):
+        ids = {c.id for c in guild.text_channels}
+        ids |= {t.id for c in guild.text_channels
+                for t in getattr(c, "threads", [])}
+    lines = sum(len(dq) for cid, dq in _memory.items()
+                if not ids or cid in ids)
+    deeds = sum(len(dq) for cid, dq in _deeds.items()
+                if not ids or cid in ids)
+    return {"messages": lines, "tool_results": deeds,
+            "message_cap": MEMORY_MSGS, "result_cap": DEEDS_MAX}
+
+
+def forget_here(guild):
+    """Drop what he is holding for this server, and say how much went."""
+    held = holding(guild)
+    ids = {c.id for c in getattr(guild, "text_channels", [])}
+    ids |= {t.id for c in getattr(guild, "text_channels", [])
+            for t in getattr(c, "threads", [])}
+    for store in (_memory, _deeds):
+        for cid in [c for c in store if not ids or c in ids]:
+            store.pop(cid, None)
+    return held
+
+
 def forget_room():
     """Drop the rolling transcript.
 

@@ -3238,6 +3238,63 @@ class BrainKeyModal(discord.ui.Modal):
         )
 
 
+# Whoever accepted what a key means, and when. A server that has never
+# been told is asked once, before the first key, and never again.
+CONSENT = "ai_consent"
+
+
+def consented(guild) -> bool:
+    return bool(settings.get(guild.id, CONSENT))
+
+
+CONSENT_NOTICE = (
+    "## Before a key goes in\n"
+    "Setting one changes what this server sends outside it, so somebody "
+    "should read this rather than find out later.\n\n"
+    "**What goes out, and only when a member of the cooperative speaks to "
+    "him in a room he may answer in:**\n"
+    "- up to 40 recent messages from that room, with display names\n"
+    "- the tool results from that room, the roster count, and which "
+    "features are on\n\n"
+    "**Where:** the provider whose key you are about to paste, and no "
+    "other. Their retention and training terms are theirs, and they "
+    "change: read them.\n\n"
+    "**What never goes out:** how anybody voted, anything about people "
+    "who are not in the room, and any durable note about a person -- he "
+    "keeps none. Nothing is sent on a timer.\n\n"
+    "**He does not read rooms he cannot answer in.** Bind a chat room and "
+    "that is the only room he sees.\n\n"
+    "-# The full version, with the line of code that does each part, is "
+    "PRIVACY.md. `/privacy` shows any member the same thing for this "
+    "server at any time. Everything Eugene exists to do works with no key "
+    "at all."
+)
+
+
+class ConsentView(StewardView):
+    """One screen, once. Accepting is recorded under a name, because "the
+    server agreed" is not a thing a server can do -- a person does it."""
+
+    def __init__(self, owner_id, annex):
+        super().__init__(owner_id)
+        self.annex = annex
+
+    @discord.ui.button(label="I have read this — set the key",
+                       style=discord.ButtonStyle.primary, row=0)
+    async def accept(self, interaction, button):
+        settings.put(
+            interaction.guild.id,
+            **{CONSENT: {"by": interaction.user.display_name,
+                         "id": interaction.user.id,
+                         "at": now_utc().isoformat()}},
+        )
+        log.info(f"guild {interaction.guild.id}: AI terms accepted by "
+                 f"{interaction.user.display_name}")
+        await interaction.response.send_modal(
+            BrainKeyModal(interaction.guild, self.annex)
+        )
+
+
 class SetKeyButton(discord.ui.Button):
     def __init__(self, annex, keyed):
         super().__init__(
@@ -3249,6 +3306,13 @@ class SetKeyButton(discord.ui.Button):
         self.annex = annex
 
     async def callback(self, interaction):
+        # The notice comes before the modal, not after: a key pasted and
+        # then explained is a key already pasted.
+        if not consented(interaction.guild):
+            return await interaction.response.edit_message(
+                content=CONSENT_NOTICE,
+                view=ConsentView(interaction.user.id, self.annex),
+            )
         await interaction.response.send_modal(
             BrainKeyModal(interaction.guild, self.annex)
         )
@@ -4003,6 +4067,142 @@ async def slash_bills(interaction: discord.Interaction):
         lines.append(f"-# And {rest} more.")
     lines.append("-# ⚡ is one you will be chased about.")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+# ---------- what he can see, and what leaves ----------
+# Both of these are the cooperative's, not the steward's. A privacy notice
+# only one person can read is a notice, not a disclosure -- and the whole
+# claim being made here is that anybody can check it rather than take his
+# word for it. So both are computed live from Discord and from the code,
+# and neither quotes PRIVACY.md, which would only be a page agreeing with
+# itself.
+
+
+def _visible_rooms(guild):
+    """Every text channel he can actually read, by Discord's own answer."""
+    me = guild.me
+    out = []
+    for channel in guild.text_channels:
+        try:
+            if channel.permissions_for(me).read_messages:
+                out.append(channel)
+        except Exception:
+            continue
+    return out
+
+
+@bot.tree.command(name="access",
+                  description="Which channels Eugene can see, listen in and answer in")
+@app_commands.guild_only()
+async def slash_access(interaction: discord.Interaction):
+    """Worked out from permissions and bindings, never from a list."""
+    guild = interaction.guild
+    visible = _visible_rooms(guild)
+    invisible = [c for c in guild.text_channels if c not in visible]
+    answers = [c for c in visible if brain.may_speak_in(guild, c)]
+    lines = [
+        f"## What Eugene can see in {guild.name}",
+        f"**Can read** — {len(visible)} of {len(guild.text_channels)} "
+        f"channels. Discord decides this, not him: it is wherever his role "
+        f"has Read Messages.",
+        f"**Cannot see at all** — {len(invisible)}"
+        + (": " + ", ".join(c.mention for c in invisible[:10])
+           + (" and more" if len(invisible) > 10 else "")
+           if invisible else ""),
+        "",
+    ]
+    if not module_live(guild, "chat"):
+        lines += [
+            "**Listens in / answers in** — nowhere. Conversation is off "
+            "here, so he reads nothing and keeps no transcript at all.",
+        ]
+    else:
+        lines += [
+            "**Answers in, and therefore listens in** — "
+            + (", ".join(c.mention for c in answers[:10])
+               + (" and more" if len(answers) > 10 else "")
+               if answers else "nowhere"),
+            "-# One condition, not two: the room he may answer in is the "
+            "only room he remembers. A channel he is kept out of is one he "
+            "learns nothing from.",
+        ]
+    lines += [
+        "",
+        "-# He does note that you were around — your id and a timestamp, in "
+        "every channel he can see — because that is what the away rule "
+        "counts. No message text, and it never leaves the host.",
+    ]
+    await interaction.response.send_message("\n".join(lines)[:1990],
+                                            ephemeral=True)
+
+
+@bot.tree.command(name="privacy",
+                  description="What leaves this server, and where it goes")
+@app_commands.guild_only()
+async def slash_privacy(interaction: discord.Interaction):
+    """Anybody in the room, not just an administrator."""
+    guild = interaction.guild
+    provider = brain.provider_name(guild.id)
+    lines = [f"## What leaves {guild.name}"]
+    if provider is None:
+        lines += [
+            "**Nothing.** No AI key is set here, so no message, name or "
+            "proposal is sent anywhere. Votes, the record, the roster and "
+            "the reminders are all worked out on the host and stay there.",
+        ]
+    else:
+        held = brain.holding(guild)
+        lines += [
+            f"**{providers.label(provider)}** is on duty, on "
+            f"`{brain.model_name(guild.id)}`, paid for by this server.",
+            "",
+            "When somebody in the cooperative talks to him, one request "
+            "goes out carrying:",
+            f"- up to **{held['message_cap']} recent messages** from that "
+            f"room, with display names",
+            f"- up to **{held['result_cap']} tool results** from that room",
+            "- the roster count and what a vote needs today",
+            "- which features are on, this server's name and description",
+            "",
+            f"Right now he is holding **{held['messages']} message(s)** and "
+            f"**{held['tool_results']} tool result(s)** for this server, in "
+            f"memory only. A restart clears them; so does **Purge** below.",
+            "",
+            "**Never sent:** how anybody voted, anything about people who "
+            "are not in the room, or any durable note about a person -- he "
+            "keeps none, so there is nothing to send. Nothing goes out on a "
+            "timer; he speaks when spoken to.",
+            "",
+            f"-# ${brain.spend_usd(guild.id):.2f} of "
+            f"${settings.budget_usd(guild.id):.0f} spent this month. Full "
+            f"detail, with the line of code that does each part, is in "
+            f"PRIVACY.md in the repository.",
+        ]
+    view = PurgeView() if provider is not None else None
+    await interaction.response.send_message(
+        "\n".join(lines)[:1990], view=view, ephemeral=True
+    )
+
+
+class PurgeView(discord.ui.View):
+    """Anybody's, deliberately. What it drops is the room's recent
+    conversation as he is holding it, which is everybody's, so making it an
+    administrator's button would be protecting the wrong person."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Forget what you are holding",
+                       style=discord.ButtonStyle.danger)
+    async def purge(self, interaction, button):
+        gone = brain.forget_here(interaction.guild)
+        await interaction.response.edit_message(
+            content=f"Dropped: {gone['messages']} message(s) and "
+                    f"{gone['tool_results']} tool result(s). The record, the "
+                    f"roster and the votes are untouched -- this was only "
+                    f"what I had in my head.",
+            view=None,
+        )
 
 
 @bot.tree.command(name="house", description="What Eugene is running for this server")
