@@ -540,7 +540,7 @@ def summary(guild_id, *, rooms=(), roles=(), brain=False):
         tail = ""
         if state in ("dormant", "blocked"):
             why = blockers(guild_id, key, rooms=rooms, roles=roles, brain=brain)
-            tail = " — " + "; ".join(why)
+            tail = ": " + "; ".join(why)
         lines.append(f"{marks[state]} **{SPEC[key]['name']}**{tail}")
     return "\n".join(lines)
 

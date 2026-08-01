@@ -1516,7 +1516,7 @@ def test_choice_ballots(clerk, data):
 
         face = clerk.ballot_content(guild, poll({"1": "Tuesday", "2": "Sunday"}))
         check("the ballot shows a bar for each option, not a paragraph",
-              face.count("`") == 6 and "**Tuesday** — 1" in face)
+              face.count("`") == 6 and "**Tuesday**: 1" in face)
         check("and the turnout, live", "2 of 8 voted" in face)
         check("and says what would end it", "5 carries an option" in face)
         check("a first round says a runoff may follow", "runoff" in face)
@@ -2030,6 +2030,23 @@ def test_empty_promises(data):
     # text while using them in the same text is asking to be ignored.
     check("he is told not to use em dashes",
           "No em dashes, ever" in stable)
+    # Not only his sentences: every line the bot writes. The panel was full
+    # of them while the prompt banned them, which is the same rule enforced
+    # in one place and broken in the other.
+    import io as _io, tokenize as _tok
+    showing = {}
+    for name in ("clerk.py", "modules.py", "bindings.py", "toolbox.py",
+                 "powers.py", "builder.py", "duties.py"):
+        text = (HERE / name).read_text()
+        count = sum(
+            t.string.count("\u2014") for t in
+            _tok.generate_tokens(_io.StringIO(text).readline)
+            if t.type == _tok.STRING and "\u2014" in t.string
+        )
+        if count:
+            showing[name] = count
+    check(f"and nothing the bot itself writes has one either: {showing or 'clean'}",
+          not showing)
     check("and the prompt he learns the shape from has none in it either",
           "\u2014" not in stable and "\u2014" not in volatile)
 

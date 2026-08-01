@@ -143,7 +143,7 @@ MEMBER = "Member"            # in the room, no vote; unused while all of
 # already standing in. The cooperative is a different door and it has never
 # been a vote -- somebody who has it hands it over.
 NOT_INSIDE = (
-    "Only the cooperative files proposals here — whoever has picked up a "
+    "Only the cooperative files proposals here: whoever has picked up a "
     "chore. Somebody who runs the place hands that over under `/setup` → "
     "Roles & votes. (`/invite` is the door into the server, and you are "
     "already through it.)"
@@ -771,7 +771,7 @@ def choice_body(st):
         else "otherwise a majority of votes cast at close, or a runoff"
     )
     rows = "\n".join(
-        f"`{bar(n, st['clinch'])}` **{o}** — {n}" for o, n in st["counts"].items()
+        f"`{bar(n, st['clinch'])}` **{o}**: {n}" for o, n in st["counts"].items()
     )
     return (
         f"🗳️ **{st['voted']} of {st['size']} voted**\n{rows}\n"
@@ -1958,7 +1958,7 @@ async def send_nudges(guild, silent=False):
 
 AWAY_GONE = (
     "A fortnight quiet, so I have taken you off the roster for now. Nobody "
-    "thinks anything of it and nothing you did is undone — it only means "
+    "thinks anything of it and nothing you did is undone: it only means "
     "votes stop counting your silence as a no. Say anything here and you are "
     "straight back on."
 )
@@ -2588,16 +2588,16 @@ def panel_content(guild, user, note=None):
         + (" Press **Apply** to finish the rest." if missing or not inside
            else ""),
         "",
-        f"{mark(coop is not None)} **1 · Roles** — "
+        f"{mark(coop is not None)} **1 · Roles**: "
         + (f"{coop.mention}" + (f" · {member.mention}" if member else "")
            if coop is not None else
            "no cooperative role yet; Apply makes one"),
-        f"{mark(not missing)} **2 · Rooms** — "
+        f"{mark(not missing)} **2 · Rooms**: "
         + (f"{len(have_rooms)} bound"
            if not missing else
            "missing " + ", ".join(f"`{r}`" for r in missing)
-           + (" — Apply adopts what is already named that"
-              if adopting(guild) else " — Apply makes them")),
+           + (": Apply adopts what is already named that"
+              if adopting(guild) else ": Apply makes them")),
         "　　-# Channels: **"
         + ("use the ones I already have" if adopting(guild)
            else "make new ones") + "**"
@@ -2606,22 +2606,22 @@ def panel_content(guild, user, note=None):
            if adopting(guild) and adoptable_now(guild) else "")
         + ". **Channels** changes it; **Rooms** points a job at any channel "
           "by hand.",
-        f"{mark(bool(inside))} **3 · The cooperative** — "
+        f"{mark(bool(inside))} **3 · The cooperative**: "
         + (f"{len(inside)} " + ("person" if len(inside) == 1 else "people")
            + ("" if you_in else ", and you are not one of them")
            if inside else
-           "**empty — nobody can propose, vote or talk to him.** Apply puts "
+           "**empty: nobody can propose, vote or talk to him.** Apply puts "
            "you in"),
-        f"✅ **4 · Features** — {on} on, {total - on} off"
+        f"✅ **4 · Features**: {on} on, {total - on} off"
         + (f" · waiting on something: "
            f"{', '.join(modules.name(k).lower() for k in stuck)}"
            if stuck else ""),
-        f"{mark(has_brain(guild))} **5 · Brain** — "
+        f"{mark(has_brain(guild))} **5 · Brain**: "
         + (f"awake through {providers.label(brain.provider_name(guild.id))}"
            if has_brain(guild) else
            "optional. Governance runs without one, and with no key "
            "**nothing leaves this server**"),
-        f"{mark(bool(settings.get(guild.id, 'house')))} **6 · This place** — "
+        f"{mark(bool(settings.get(guild.id, 'house')))} **6 · This place**: "
         + (f"*{brain.house_description(guild.id)}*"
            if settings.get(guild.id, "house") else
            "he describes it neutrally rather than guessing"),
@@ -2796,7 +2796,7 @@ class ModuleSelect(discord.ui.Select):
                 default=modules.switched_on(guild.id, key),
             ))
         super().__init__(
-            placeholder="What Eugene does here — tick what you want",
+            placeholder="What Eugene does here: tick what you want",
             min_values=0, max_values=len(options), options=options, row=0,
         )
 
@@ -2863,7 +2863,7 @@ class RoomSelect(discord.ui.ChannelSelect):
     def __init__(self, key, row, page=0):
         super().__init__(
             channel_types=self.KINDS,
-            placeholder=f"{key} — {bindings.ROOMS[key]}",
+            placeholder=f"{key}: {bindings.ROOMS[key]}",
             min_values=0, max_values=1, row=row,
         )
         self.key = key
@@ -2923,7 +2923,7 @@ class RoomTypeModal(discord.ui.Modal, title="Point a job at a channel"):
         max_length=40,
     )
     where = discord.ui.TextInput(
-        label="Which channel — name, id, or a link",
+        label="Which channel: name, id, or a link",
         placeholder="#the-floor",
         style=discord.TextStyle.short,
         max_length=200,
@@ -3015,7 +3015,7 @@ async def open_rooms(interaction, page=0, note=None):
 class RoleBindSelect(discord.ui.RoleSelect):
     def __init__(self, key, row):
         super().__init__(
-            placeholder=f"{key} — {bindings.ROLES[key]}",
+            placeholder=f"{key}: {bindings.ROLES[key]}",
             min_values=0, max_values=1, row=row,
         )
         self.key = key
@@ -3072,11 +3072,11 @@ class GrantSelect(discord.ui.UserSelect):
         note = (f"In: {', '.join(added)}." if added else "Nobody new.")
         if refused:
             note += " Could not: " + "; ".join(refused) + \
-                    " — my role has to sit above the cooperative's."
+                    ": my role has to sit above the cooperative's."
         await open_roles(
             interaction,
             note + "\n-# This is how the cooperative grows: somebody in it "
-                   "hands it over here. `/invite` is a different door — it "
+                   "hands it over here. `/invite` is a different door: it "
                    "puts a stranger in the server, not on this roll.",
         )
 
@@ -3133,7 +3133,7 @@ class JoinButton(discord.ui.Button):
         except discord.HTTPException as e:
             return await open_roles(
                 interaction,
-                f"Could not: {e!r} — my role has to sit above {coop.mention}.",
+                f"Could not: {e!r}: my role has to sit above {coop.mention}.",
             )
         await open_roles(interaction, f"You are in. {coop.mention} is yours.")
 
@@ -3149,14 +3149,14 @@ async def open_roles(interaction, note=None):
     inside = cooperative_members(guild)
     body = [
         "## Who holds a vote",
-        "`cooperative` votes. `member` is in the room without one — leave it "
+        "`cooperative` votes. `member` is in the room without one: leave it "
         "unbound if everyone here votes.",
         "",
         f"**In the cooperative: {len(inside)}**"
-        + (" — " + ", ".join(m.display_name for m in inside[:20])
+        + (": " + ", ".join(m.display_name for m in inside[:20])
            + ("…" if len(inside) > 20 else "")
            if inside else
-           " — **nobody. He refuses everyone, including you, until somebody "
+           ": **nobody. He refuses everyone, including you, until somebody "
            "is in.**"),
         "",
         bindings.summary(guild, wanted=[], required=[]),
@@ -3280,7 +3280,7 @@ class ConsentView(StewardView):
         super().__init__(owner_id)
         self.annex = annex
 
-    @discord.ui.button(label="I have read this — set the key",
+    @discord.ui.button(label="I have read this: set the key",
                        style=discord.ButtonStyle.primary, row=0)
     async def accept(self, interaction, button):
         settings.put(
@@ -3437,7 +3437,7 @@ def voting_lines(guild):
         # Not `-#` subtext: Discord only honours that at the start of a
         # line, and this is the end of one.
         mark = "" if name in chosen else " *(his default)*"
-        rows.append(f"- `{name}` **{shown}** — {blurb}{mark}")
+        rows.append(f"- `{name}` **{shown}**: {blurb}{mark}")
     return rows
 
 
@@ -3607,7 +3607,7 @@ class HouseModal(discord.ui.Modal, title="What is this server for?"):
             f"He now knows **{interaction.guild.name}** as *{text}*."
             if text else
             f"Reset. He will describe this place as "
-            f"*{brain.DEFAULT_HOUSE}* — true of most servers, specific to none."
+            f"*{brain.DEFAULT_HOUSE}*: true of most servers, specific to none."
         )
         await show_panel(interaction, note)
 
@@ -3627,9 +3627,9 @@ def structure_preview(guild):
     coop, member = cooperative_role(guild), member_role(guild)
     lines += [
         "**Roles**",
-        f"{'✅' if coop else '➕'} `Cooperative` — holds a vote"
+        f"{'✅' if coop else '➕'} `Cooperative`: holds a vote"
         + (f" (you have {coop.mention})" if coop else ""),
-        f"{'✅' if member else '➕'} `Member` — in the room, no vote",
+        f"{'✅' if member else '➕'} `Member`: in the room, no vote",
         "",
     ]
     plan = modules.structure(guild.id, only_buildable=True)
@@ -3640,7 +3640,7 @@ def structure_preview(guild):
         existing_cat = category_for(guild, category)
         lines.append(
             f"{'✅' if existing_cat else '➕'} **{category or 'no category'}**"
-            + (f" — {modules.CATEGORIES[category]}"
+            + (f": {modules.CATEGORIES[category]}"
                if category in modules.CATEGORIES else "")
         )
         for job in rooms:
@@ -3655,7 +3655,7 @@ def structure_preview(guild):
                 mark, shown, tail = "➕", f"#{spec['name']}", "created"
             wanted = modules.wanted_by(guild.id, job)
             lines.append(
-                f"　{mark} {shown} — {tail}; "
+                f"　{mark} {shown}: {tail}; "
                 + {"cooperative": "the cooperative's",
                    "members": "everyone in the room",
                    "admins": "administrators only",
@@ -3670,7 +3670,7 @@ def structure_preview(guild):
                      + ", ".join(off) + ".")
     lines.append(
         "-# Every line above is additive. "
-        + ("A channel that already exists is adopted exactly as it stands — "
+        + ("A channel that already exists is adopted exactly as it stands: "
            "never renamed, re-topiced, moved, re-permissioned or deleted."
            if adopting(guild) else
            "He is building his own; nothing you already have is touched or "
@@ -3788,7 +3788,7 @@ async def make_missing_rooms(guild, categories=None, adopt=False):
             continue
         existing = find_channel(guild, key) if adopt else None
         if existing is None:
-            skipped.append(f"`{key}` — nothing here to use, so nothing made")
+            skipped.append(f"`{key}`: nothing here to use, so nothing made")
             continue
         bindings.bind_channel(guild.id, key, existing.id)
         bound.append(f"`{key}` → {existing.mention} (adopted, unchanged)")
@@ -3813,7 +3813,7 @@ async def do_apply(interaction):
     lacking = builder.missing_permissions(guild)
     if lacking:
         return await interaction.response.edit_message(
-            content="I cannot do this yet — I am missing: "
+            content="I cannot do this yet: I am missing: "
             + ", ".join(lacking)
             + ".\nGrant them, drag my role to the top of the list, and press "
               "Apply again.",
@@ -3845,7 +3845,7 @@ async def do_apply(interaction):
                 await you.add_roles(coop, reason="/setup: the first member")
                 say(f"gave you {coop.mention}")
             except discord.HTTPException as e:
-                say(f"could not give you {coop.mention}: {e!r} — "
+                say(f"could not give you {coop.mention}: {e!r}: "
                     "check my role sits above it in the list")
 
         wanted = [c for c, _rooms
@@ -3884,16 +3884,16 @@ async def do_apply(interaction):
     ]
     left = []
     if not has_brain(guild):
-        left.append("**Brain** — a key, so he can talk. Without one he keeps "
+        left.append("**Brain**: a key, so he can talk. Without one he keeps "
                     "records and holds the door, and says nothing.")
     left.append(
-        "**Roles & votes** — hand the cooperative to anyone else who should "
+        "**Roles & votes**: hand the cooperative to anyone else who should "
         "have one. That is the only way onto that roll; `/invite` is the "
         "server's door and a vote, and it hands out a link, not a ballot."
     )
     if not settings.get(guild.id, "house"):
         left.append(
-            "**What this place is** — one line on what this server is for. He "
+            "**What this place is**: one line on what this server is for. He "
             "reads the name off Discord, but not the point of the place."
         )
     stuck = [k for k in modules.keys()
@@ -4084,7 +4084,7 @@ async def slash_bills(interaction: discord.Interaction):
         mark = "⚡ " if is_priority(bill) else ""
         where = floor_for(interaction.guild, bill)
         lines.append(
-            f"{mark}**No. {bill['no']}: {bill['title']}** — "
+            f"{mark}**No. {bill['no']}: {bill['title']}**: "
             f"{bill.get('author', 'someone')}, closes <t:{ends}:R>"
             + (f" · {where.mention}" if where else "")
         )
@@ -4128,10 +4128,10 @@ async def slash_access(interaction: discord.Interaction):
     answers = [c for c in visible if brain.may_speak_in(guild, c)]
     lines = [
         f"## What Eugene can see in {guild.name}",
-        f"**Can read** — {len(visible)} of {len(guild.text_channels)} "
+        f"**Can read**: {len(visible)} of {len(guild.text_channels)} "
         f"channels. Discord decides this, not him: it is wherever his role "
         f"has Read Messages.",
-        f"**Cannot see at all** — {len(invisible)}"
+        f"**Cannot see at all**: {len(invisible)}"
         + (": " + ", ".join(c.mention for c in invisible[:10])
            + (" and more" if len(invisible) > 10 else "")
            if invisible else ""),
@@ -4139,12 +4139,12 @@ async def slash_access(interaction: discord.Interaction):
     ]
     if not module_live(guild, "chat"):
         lines += [
-            "**Listens in / answers in** — nowhere. Conversation is off "
+            "**Listens in / answers in**: nowhere. Conversation is off "
             "here, so he reads nothing and keeps no transcript at all.",
         ]
     else:
         lines += [
-            "**Answers in, and therefore listens in** — "
+            "**Answers in, and therefore listens in**: "
             + (", ".join(c.mention for c in answers[:10])
                + (" and more" if len(answers) > 10 else "")
                if answers else "nowhere"),
@@ -4154,8 +4154,8 @@ async def slash_access(interaction: discord.Interaction):
         ]
     lines += [
         "",
-        "-# He does note that you were around — your id and a timestamp, in "
-        "every channel he can see — because that is what the away rule "
+        "-# He does note that you were around: your id and a timestamp, in "
+        "every channel he can see: because that is what the away rule "
         "counts. No message text, and it never leaves the host.",
     ]
     await interaction.response.send_message("\n".join(lines)[:1990],
@@ -4245,7 +4245,7 @@ async def slash_house(interaction: discord.Interaction):
         return await refuse(interaction, "That one is for people who are in.")
     guild = interaction.guild
     chosen = len(settings.voting_overrides(guild.id))
-    tail = ("\n-# These are all the defaults so far — just tell me what you "
+    tail = ("\n-# These are all the defaults so far: just tell me what you "
             "want changed." if not chosen else
             f"\n-# {chosen} of these numbers are yours; the rest are the "
             f"ones he came with.")
@@ -4270,7 +4270,7 @@ async def slash_house(interaction: discord.Interaction):
 # week rather than once ever.
 
 CLAUDE_TIER_BLURB = {
-    "haiku": "cheap and quick — the one he came with",
+    "haiku": "cheap and quick: the one he came with",
     "sonnet": "the middle rung, three times haiku",
     "opus": "the good one, five times haiku",
 }
@@ -4281,7 +4281,7 @@ def _claude_tier_choices():
     rather than typed twice, so a fourth tier is one line over there."""
     return [
         app_commands.Choice(
-            name=f"{tier} — {CLAUDE_TIER_BLURB.get(tier, model)}", value=tier
+            name=f"{tier}: {CLAUDE_TIER_BLURB.get(tier, model)}", value=tier
         )
         for tier, model in providers.tiers("claude").items()
     ]
@@ -4313,14 +4313,14 @@ async def slash_model(interaction: discord.Interaction,
         # Asking is free and answering costs nothing, so the no-argument
         # form is a straight read: what he is on, and what else there is.
         rungs = "\n".join(
-            f"- **{name}** — `{model}`" + (" ← here" if model == now else "")
+            f"- **{name}**: `{model}`" + (" ← here" if model == now else "")
             for name, model in tiers.items()
         )
         return await refuse(
             interaction,
             f"Claude is on `{now}`"
             + (f" ({standing})." if standing else
-               " — not one of the named rungs, so it stays untouched "
+               ": not one of the named rungs, so it stays untouched "
                "unless you pick one.")
             + f"\n{rungs}\n-# `/model tier: opus` moves him.",
         )
@@ -4466,7 +4466,7 @@ async def setup_hook():
     if not intents.message_content:
         log.warning(
             "running without the Message Content intent: Eugene cannot "
-            "hear anything, whatever keys a server sets — and the filters "
+            "hear anything, whatever keys a server sets: and the filters "
             "read an empty message, so automod is off in fact whatever the "
             "settings say"
         )

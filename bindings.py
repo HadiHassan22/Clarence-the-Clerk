@@ -259,18 +259,18 @@ def summary(guild, wanted=None, required=None):
     lines = []
     for key, label in ROLES.items():
         got = role(guild, key)
-        lines.append(f"{'✅' if got else '⬜'} **{key}** — {got.mention if got else label}")
+        lines.append(f"{'✅' if got else '⬜'} **{key}**: {got.mention if got else label}")
     for key in rooms:
         got = channel(guild, key)
         optional = "" if key in must else " *(optional)*"
         lines.append(
-            f"{'✅' if got else '⬜'} **{key}**{optional} — "
+            f"{'✅' if got else '⬜'} **{key}**{optional}: "
             f"{got.mention if got else ROOMS.get(key, '')}"
         )
     for key, label in CATEGORIES.items():
         got = category(guild, key)
         lines.append(
-            f"{'✅' if got else '⬜'} **{key}** *(optional)* — "
+            f"{'✅' if got else '⬜'} **{key}** *(optional)*: "
             f"{got.name if got else label}"
         )
     return "\n".join(lines)
