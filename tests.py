@@ -1190,6 +1190,7 @@ def test_role_cap(clerk, data):
     print("\none colour of your own")
     keep = clerk.load_json(clerk.ROLES, {})
     cap = settings.voting()["role_create_max"]
+    wear = settings.voting()["role_wear_max"]
     try:
         clerk.save_json(clerk.ROLES, {})
         check("with no role of your own you are not at the cap",
@@ -1227,8 +1228,42 @@ def test_role_cap(clerk, data):
               "and the refusal still reads as English",
               clerk.role_cap_line() == "You cannot make roles here; this "
                                        "house has the cap at nought.")
+
+        # Wearing has its own cap and its own sentences, and the same
+        # obligation: at a limit of one, "wearing 1 already" reads as a bug
+        # rather than a rule, and that is what every one of these said.
+        settings.configure_voting(role_create_max=1, role_wear_max=1)
+        colour = types.SimpleNamespace(name="Horsy")
+        check("one colour worn at a time is what he ships with",
+              settings.voting()["role_wear_max"] == 1)
+        line = clerk.wear_cap_line("You are", None, [colour])
+        check(f"being at it reads as English, not as a figure: {line!r}",
+              "wearing 1" not in line and "already wearing one" in line)
+        check("and it names what is in the way, so there is nothing to ask",
+              "Horsy" in line)
+        check("Eugene says the same of somebody else",
+              clerk.wear_cap_line("Sam is").startswith(
+                  "Sam is already wearing one"))
+        check("and the panel in the room promises this house's own caps",
+              clerk.wardrobe_blurb()
+              == "Make one, wear one at a time, yours or anyone's.")
+
+        settings.configure_voting(role_create_max=3, role_wear_max=5)
+        check("raised, the panel says the numbers plainly",
+              clerk.wardrobe_blurb()
+              == "Make up to 3, wear up to 5 at once, yours or anyone's.")
+        check("and so does the refusal, naming every colour in the way",
+              clerk.wear_cap_line("Sam is", None, [colour])
+              == "Sam is already wearing 5 (Horsy), which is the limit. "
+                 "One has to come off first.")
+
+        settings.configure_voting(role_wear_max=0)
+        check("a house that wants no colour worn at all still reads as "
+              "English, in the panel and in the refusal",
+              "nought" in clerk.wardrobe_blurb()
+              and "nought" in clerk.wear_cap_line())
     finally:
-        settings.configure_voting(role_create_max=cap)
+        settings.configure_voting(role_create_max=cap, role_wear_max=wear)
         clerk.save_json(clerk.ROLES, keep)
 
 

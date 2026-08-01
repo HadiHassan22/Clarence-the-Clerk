@@ -433,7 +433,7 @@ them at once with.
 | `kick_min_yes` | the fewest yes votes a removal can ever pass on | 3 |
 | `away_days` | a quiet spell this long takes you out of the count | 14 |
 | `role_create_max` | colour roles one person may make | 1 |
-| `role_wear_max` | colour roles one person may wear at once | 5 |
+| `role_wear_max` | colour roles one person may wear at once | 1 |
 
 Each is held inside a range where the rest of the machinery still means
 what it says, so a share cannot be set above everybody and a window cannot

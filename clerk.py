@@ -2673,6 +2673,48 @@ def role_cap_line(subject="You", guild=None):
     return f"{subject} already made {cap} roles. One has to go to make room."
 
 
+def wear_cap_line(subject="You are", guild=None, worn=()):
+    """Being at the wearing cap, said the same way by the panel, the
+    wardrobe and Eugene's own hands.
+
+    It has to read at a cap of one, which is what this house ships with
+    now: every one of these sentences used to interpolate the bare number,
+    and "You are wearing 1 already" is the sort of line that makes a limit
+    look like a bug rather than a rule.
+
+    `subject` carries its own verb -- both "You are" and "Sam is" get said
+    -- and `worn` names what is in the way where the caller knows it. A
+    refusal that says which colour has to come off is one the person can
+    act on without asking a second question.
+    """
+    cap = role_caps(guild)["role_wear_max"]
+    if cap == 0:
+        return f"{subject} not allowed to wear a colour here; the cap is nought."
+    named = f" ({', '.join(r.name for r in worn)})" if worn else ""
+    if cap == 1:
+        return (f"{subject} already wearing one{named}, and one is the limit "
+                f"here. It has to come off before another goes on.")
+    return (f"{subject} already wearing {cap}{named}, which is the limit. "
+            f"One has to come off first.")
+
+
+def wardrobe_blurb(guild=None):
+    """What the panel in the roles room promises, in this house's own
+    numbers rather than in numbers nobody has had since the caps became
+    settings. It said "Create up to five, wear up to five" against a
+    shipped cap of one and one, which is the first thing anybody reads
+    about colours and was wrong about both halves."""
+    held = role_caps(guild)
+    made, worn = int(held["role_create_max"]), int(held["role_wear_max"])
+    if not worn:
+        return "Nobody wears a colour here; this house has the cap at nought."
+    put = "one at a time" if worn == 1 else f"up to {worn} at once"
+    if not made:
+        return f"Wear {put}, from the colours this house already has."
+    make = "one" if made == 1 else f"up to {made}"
+    return f"Make {make}, wear {put}, yours or anyone's."
+
+
 def worn_custom(member):
     registry = role_registry()
     return [r for r in member.roles if str(r.id) in registry]
@@ -3093,8 +3135,7 @@ class WearView(discord.ui.View):
             await member.remove_roles(role, reason="Shed a custom role")
             verdict = f"Shed {role.mention}."
         elif len(worn_custom(member)) >= numbers(member.guild)['role_wear_max']:
-            worn_cap = numbers(member.guild)['role_wear_max']
-            verdict = f"You are wearing {worn_cap} already. Shed one first."
+            verdict = wear_cap_line("You are", member.guild, worn_custom(member))
         else:
             await member.add_roles(role, reason="Wearing a custom role")
             verdict = f"Wearing {role.mention}."
@@ -3441,7 +3482,7 @@ async def act_create_color(guild, member, args):
     registry = role_registry()
     registry[str(role.id)] = {"creator_id": member.id}
     save_json(ROLES, registry)
-    worn = ""
+    worn, note = "", ""
     if len(worn_custom(wearer)) < numbers(guild)['role_wear_max']:
         await wearer.add_roles(
             role,
@@ -3453,13 +3494,12 @@ async def act_create_color(guild, member, args):
     else:
         # A colour nobody can see is worth saying out loud, or the answer is
         # "created it" and the person it was made for sees no change at all.
-        worn = (f", but {wearer.display_name} is already wearing "
-                f"{numbers(guild)['role_wear_max']}, so it will not show "
-                f"until one comes off")
+        note = " It will not show yet: " + wear_cap_line(
+            f"{wearer.display_name} is", guild, worn_custom(wearer))
     await ensure_color_stack(guild)
     await update_wardrobe(guild)
     shown = colour_name(colour.value) or f"#{colour.value:06x}"
-    return f"Created {role.name} ({shown}) for {wearer.display_name}{worn}."
+    return f"Created {role.name} ({shown}) for {wearer.display_name}{worn}.{note}"
 
 
 async def act_edit_color(guild, member, args):
@@ -3499,10 +3539,11 @@ async def act_edit_color(guild, member, args):
             wearing = (f" {member.display_name} was not wearing it, so it is "
                        f"on them now and the colour actually shows.")
         else:
-            wearing = (f" {member.display_name} is not wearing it, and is "
-                       f"already wearing {numbers(guild)['role_wear_max']}, so "
-                       f"the new colour will not show until one comes off. "
-                       f"Say so.")
+            wearing = (f" It is not on {member.display_name} and the new "
+                       f"colour will not show until it is: "
+                       + wear_cap_line(f"{member.display_name} is", guild,
+                                       worn_custom(member))
+                       + " Say so.")
     await ensure_color_stack(guild)
     await update_wardrobe(guild)
     shown = colour_name(role.colour.value) or f"#{role.colour.value:06x}"
@@ -3539,10 +3580,8 @@ async def act_wear_color(guild, member, args):
     if len(worn) >= numbers(guild)['role_wear_max']:
         # Naming what is in the way is the difference between a refusal
         # they can act on and one they have to ask a second question about.
-        return (f"{target.display_name} is wearing "
-                f"{numbers(guild)['role_wear_max']} already, which is the "
-                f"limit: {', '.join(repr(r.name) for r in worn)}. One has to "
-                f"come off first -- ask which, do not pick for them.")
+        return (wear_cap_line(f"{target.display_name} is", guild, worn)
+                + " Ask them first; do not choose for them.")
     await target.add_roles(
         role,
         reason=("Worn via Eugene" if target.id == member.id
@@ -6381,8 +6420,8 @@ async def ensure_furniture(guild, restamp=False):
         await ensure_button_message(
             roles_channel(guild),
             "roles_home_id",
-            "*Self-service: a role is a name and a color, nothing more. "
-            "Create up to five, wear up to five, yours or anyone's.*",
+            f"*Self-service: a role is a name and a color, nothing more. "
+            f"{wardrobe_blurb(guild)}*",
             RolesHomeView(),
             restamp=restamp,
         )

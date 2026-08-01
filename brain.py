@@ -112,9 +112,9 @@ TOO_DEEP_LINE = "That took more digging than I have in me. Ask me something narr
 # Fallback only. The real figures live in clerk.py and arrive through
 # configure(); the prompt quotes them at members as rules, so a stale number
 # here is Eugene confidently telling someone the wrong limit. Which is what
-# it was: five and five, against a shipped default of one and five in
+# it was: five and five, against a shipped default of one and one in
 # settings.py. It matches its source now, and there is exactly one source.
-ROLE_LIMITS = {"create": 1, "wear": 5}
+ROLE_LIMITS = {"create": 1, "wear": 1}
 
 
 def configure(bot, here: Path, data: Path, in_cooperative, health_log, chunk_text,

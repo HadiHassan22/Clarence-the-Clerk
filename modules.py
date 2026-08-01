@@ -128,7 +128,11 @@ ROOM_PLAN = {
     "wardrobe": {
         "name": "roles", "category": "governance",
         "visibility": "members", "read_only": True,
-        "topic": "Make yourself a colour. Wear up to five, yours or anyone's.",
+        # No number in the topic. A topic is written once, when the room is
+        # built, and the caps are settings a house can move afterwards --
+        # so any figure here is one that goes quietly wrong later. The
+        # panel in the room says the count, and it is rewritten every boot.
+        "topic": "Make yourself a colour, or wear somebody else's.",
     },
     "health": {
         "name": "bot-health", "category": "governance",
@@ -238,8 +242,8 @@ SPEC = {
     },
     "colours": {
         "name": "Colour roles",
-        "blurb": "Self-service colours: make one, wear five, yours or "
-                 "anyone's.",
+        "blurb": "Self-service colours: make your own, or wear somebody "
+                 "else's. How many of each is a setting.",
         "default": True,
         "rooms": {"wardrobe": False},
         "roles": (),

@@ -276,7 +276,7 @@ VOTING_RULES = {
     "kick_min_yes":       (3, 1, 100, int),
     "away_days":          (14, 1, 365, int),
     "role_create_max":    (1, 0, 25, int),
-    "role_wear_max":      (5, 0, 25, int),
+    "role_wear_max":      (1, 0, 25, int),
 }
 
 _voting_defaults = {name: rule[0] for name, rule in VOTING_RULES.items()}
