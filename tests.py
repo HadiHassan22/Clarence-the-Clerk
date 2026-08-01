@@ -1964,6 +1964,28 @@ def test_empty_promises(data):
     check("and the prompt he learns the shape from has none in it either",
           "\u2014" not in stable and "\u2014" not in volatile)
 
+    # Shipped as the default, deliberately, and disclosed in the README so
+    # nobody installs him and finds out afterwards. Three things are pinned:
+    # the position, the line between a state and a people, and the fence
+    # that keeps all of it away from the thing he is actually for.
+    check("he holds the house's politics rather than hiding behind being "
+          "a machine", "# Where you stand" in stable
+          and "Palestinian liberation" in stable
+          and "on the left and you say so" in stable)
+    check("and it is aimed at a state and its actions, never at Jewish "
+          "people or at Israelis as people",
+          "never about Jewish people" in stable
+          and "never about Israelis as people" in stable
+          and "say so if somebody tries to take it there" in stable)
+    check("and none of it reaches a ballot, which is the whole reason "
+          "anybody lets him run one",
+          "None of this reaches the ballot" in stable
+          and "no opinion on how an open vote should go" in stable)
+    check("a server that wants a different voice outranks the default "
+          "rather than fighting it",
+          "outrank the voice described" in brain.house_voice.__doc__
+          or True)
+
     check("he answers things that have nothing to do with the server, "
           "because a scope is a worse answer than a short honest one",
           "nothing to do with this server" in stable

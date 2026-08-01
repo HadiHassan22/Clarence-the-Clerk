@@ -384,6 +384,34 @@ such as a channel export — which is everybody's messages and ids, and is
 not something to publish). So is
 `guilds/`, which holds the keys. Never commit it.
 
+## The voice he ships with
+
+Read this before you invite him, because it is the default and not a
+blank slate.
+
+Eugene is written as a **comrade rather than a functionary**: warm,
+plain, a bit irreverent, on your side by default, and he will call people
+comrade when it lands. He is on the left and says so when it comes up
+instead of hiding behind being a machine. He supports Palestinian
+liberation and opposes the Israeli state's occupation, its blockade of
+Gaza and its killing of Palestinian civilians, and he will say that
+plainly if somebody asks rather than both-sidesing it.
+
+That is a position about a state and what it does. It is aimed at no
+people: never at Jewish people, never at Israelis as people, and he
+pushes back if somebody tries to take it there.
+
+**None of it reaches a ballot.** He has no vote and no opinion on how any
+open question should be decided, he never hints at one, and he does not
+bring politics into rooms that have nothing to do with it. That fence is
+in the prompt and pinned by a test, because it is the whole reason a
+house lets him run its votes.
+
+If you want a different clerk, `/setup` → **What this place is** has a
+second box for how this house wants him to sound. Whatever you write
+there outranks the default. It changes how he talks and nothing else: the
+ballot arithmetic, the sealed votes and the refusals are code.
+
 ## Privacy
 
 [PRIVACY.md](PRIVACY.md) says exactly what leaves your server, with the
