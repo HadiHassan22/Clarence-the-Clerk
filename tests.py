@@ -718,26 +718,45 @@ def test_setup_rooms(clerk, data):
           "everybody, rather than no rooms at all",
           all(ow == {} for _name, ow in seen))
 
-    print("\na room already built is adopted, never duplicated")
-    # The bug this is here for: the builder writes "🗳️・votes" and this
-    # command looked for "votes". It found nothing, made a second one loose at
-    # the top of the sidebar, and bound Eugene to the empty one.
+    print("\nadopting a room you already have is a choice, not a guess")
+    # Adoption used to be unconditional and by name, which is a decision
+    # about somebody else's server taken from a string match: a #votes made
+    # for something quite different quietly became the floor. It is the
+    # house's call now, and building is the default because it is the one
+    # that cannot be wrong about a room it did not make.
     seen.clear()
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
                  ["🖋️・propose", "🗳️・votes", "🏛️・decisions",
                   "💬・eugene-chat"])]
     dressed = guild_for(3333)
-    dressed.text_channels = built
+    # A copy: the fake create_text_channel appends to guild.text_channels,
+    # and handing it the same list means `built` grows as he builds.
+    dressed.text_channels = list(built)
+
     made, bound, _skipped = run(clerk.make_missing_rooms(dressed))
-    check("nothing is created over the top of a server that has these rooms",
+    check("by default a server's own channels are left alone entirely",
+          bound == [] and len(made) == len(built))
+    check("and he builds his own instead, under his own names",
+          all("🗳️・votes" not in line for line in made))
+    for key in ("proposals", "votes", "decisions", "chat"):
+        bindings.bind_channel(3333, key, None)
+    seen.clear()
+
+    # The bug adoption was written for: the builder writes "🗳️・votes" and
+    # this command looked for "votes", found nothing, made a second one
+    # loose at the top of the sidebar, and bound Eugene to the empty one.
+    # Asked for, it still has to find them.
+    dressed.text_channels = list(built)
+    made, bound, _skipped = run(clerk.make_missing_rooms(dressed, adopt=True))
+    check("asked for, nothing is created over the top of what is there",
           made == [] and seen == [])
     check("every one of them is adopted instead", len(bound) == len(built))
     check("and adopted as they are, emoji and category untouched",
           all("unchanged" in line for line in bound))
     check("the binding points at the room that was already there",
           bindings.bound_channel_id(3333, "votes") == 501)
-    made2, bound2, skipped2 = run(clerk.make_missing_rooms(dressed))
+    made2, bound2, skipped2 = run(clerk.make_missing_rooms(dressed, adopt=True))
     check("a second run has nothing left to do",
           made2 == [] and bound2 == []
           and sum(1 for s in skipped2 if "already bound" in s) == len(built))
@@ -798,6 +817,47 @@ def test_setup_rooms(clerk, data):
     run(clerk.make_missing_rooms(guild_for(3636)))
     check("and governance on its own gets exactly its three",
           sorted(n for n, _ow in seen) == ["decisions", "propose", "votes"])
+
+
+def test_channel_choice(clerk, data):
+    """Whether Apply may take over a channel you already have is the
+    server's decision, and the panel has to say which way it is set."""
+    print("\nadopt or build is a decision the house makes, and can read")
+    import bindings
+    import modules
+
+    store = data / "choice-store"
+    settings.configure(store)
+    gid = 8181
+    have = types.SimpleNamespace(id=900, name="🗳️・votes", mention="#votes")
+    guild = types.SimpleNamespace(
+        id=gid, name="Book Club", text_channels=[have], channels=[have],
+        categories=[], roles=[], members=[], me=None,
+        get_channel=lambda cid: have if cid == 900 else None,
+        get_role=lambda rid: None,
+    )
+    try:
+        check("building is what he does unless told otherwise, because it is "
+              "the choice that cannot be wrong about a room he did not make",
+              clerk.adopting(guild) is False)
+        check("and the panel says which way it is set rather than leaving it "
+              "to be discovered by pressing Apply",
+              "make new ones" in clerk.panel_content(guild, None))
+
+        clerk.set_adopting(guild, True)
+        check("asked to use what is here, it says so", clerk.adopting(guild))
+        found = clerk.adoptable_now(guild)
+        check("and names the actual channel it would take over, so nobody "
+              "presses Apply to find out",
+              found.get("votes") is have
+              and "#votes" in clerk.panel_content(guild, None))
+
+        clerk.set_adopting(guild, False)
+        check("and switching back leaves nothing pinned",
+              clerk.adopting(guild) is False
+              and settings.get(gid, clerk.ROOMS_MODE) is None)
+    finally:
+        settings.configure(data)
 
 
 def test_closing(clerk, data):
@@ -2318,6 +2378,7 @@ def main():
             test_debate_thread(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
+            test_channel_choice(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
             test_voting(clerk, data)

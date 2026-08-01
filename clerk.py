@@ -2528,6 +2528,38 @@ def cooperative_members(guild):
     return [m for m in guild.members if not m.bot and coop in m.roles]
 
 
+# Whether Apply may adopt a channel that already has the name he would
+# have used, or should build his own and leave everything else alone.
+#
+# It used to adopt unconditionally, which is a decision about somebody
+# else's server taken from a string match: a #votes made for something
+# quite different quietly became the floor. Build is the default because
+# it is the one that cannot be wrong about a room it did not make.
+ROOMS_MODE = "rooms_mode"
+
+
+def adopting(guild) -> bool:
+    return settings.get(guild.id, ROOMS_MODE) == "adopt"
+
+
+def set_adopting(guild, on):
+    settings.put(guild.id, **{ROOMS_MODE: "adopt" if on else None})
+
+
+def adoptable_now(guild):
+    """Which jobs there is actually a same-named channel here for, so the
+    panel can say what adopting would pick up rather than promising in the
+    abstract."""
+    found = {}
+    for key in modules.wanted_rooms(guild.id):
+        if bindings.channel(guild, key) is not None:
+            continue
+        existing = find_channel(guild, key)
+        if existing is not None:
+            found[key] = existing
+    return found
+
+
 def panel_content(guild, user, note=None):
     """The whole state of the install on one screen.
 
@@ -2564,7 +2596,16 @@ def panel_content(guild, user, note=None):
         + (f"{len(have_rooms)} bound"
            if not missing else
            "missing " + ", ".join(f"`{r}`" for r in missing)
-           + " — Apply makes them"),
+           + (" — Apply adopts what is already named that"
+              if adopting(guild) else " — Apply makes them")),
+        "　　-# Channels: **"
+        + ("use the ones I already have" if adopting(guild)
+           else "make new ones") + "**"
+        + (" · here that would pick up "
+           + ", ".join(c.mention for c in adoptable_now(guild).values())
+           if adopting(guild) and adoptable_now(guild) else "")
+        + ". **Channels** changes it; **Rooms** points a job at any channel "
+          "by hand.",
         f"{mark(bool(inside))} **3 · The cooperative** — "
         + (f"{len(inside)} " + ("person" if len(inside) == 1 else "people")
            + ("" if you_in else ", and you are not one of them")
@@ -2664,6 +2705,31 @@ class SetupPanel(StewardView):
     @discord.ui.button(label="Numbers", style=discord.ButtonStyle.secondary, row=0)
     async def numbers_button(self, interaction, button):
         await open_numbers(interaction)
+
+    @discord.ui.button(label="Channels", style=discord.ButtonStyle.secondary, row=1)
+    async def channels(self, interaction, button):
+        """The one decision this screen exists to stop him making for you."""
+        guild = interaction.guild
+        now = adopting(guild)
+        set_adopting(guild, not now)
+        found = adoptable_now(guild)
+        if now:
+            note = ("**Channels: make new ones.** Apply builds his own under "
+                    "a governance category and binds those. Nothing you "
+                    "already have is touched or looked at.")
+        elif found:
+            note = ("**Channels: use the ones I already have.** Apply will "
+                    "adopt " + ", ".join(f"{c.mention} for `{k}`"
+                                         for k, c in found.items())
+                    + " exactly as they are, and build only what is left. "
+                      "Press **Channels** again to go back to building.")
+        else:
+            note = ("**Channels: use the ones I already have.** Nothing here "
+                    "is named like a room he wants, so Apply will build them "
+                    "anyway. **Rooms** points a job at a channel whatever it "
+                    "is called, which is the way to use one you already have "
+                    "under a different name.")
+        await show_panel(interaction, note)
 
     @discord.ui.button(label="Preview the structure", style=discord.ButtonStyle.secondary, row=1)
     async def preview(self, interaction, button):
@@ -3493,7 +3559,7 @@ def structure_preview(guild):
             found = None if bound else find_channel(guild, job)
             if bound:
                 mark, shown, tail = "✅", bound.mention, "already bound"
-            elif found:
+            elif found and adopting(guild):
                 mark, shown, tail = "🔗", found.mention, "adopted as it is"
             else:
                 mark, shown, tail = "➕", f"#{spec['name']}", "created"
@@ -3513,9 +3579,13 @@ def structure_preview(guild):
         lines.append("Switched off, so nothing is built for them: "
                      + ", ".join(off) + ".")
     lines.append(
-        "-# Every line above is additive. A channel that already exists is "
-        "adopted exactly as it stands — never renamed, re-topiced, moved, "
-        "re-permissioned or deleted. Nothing else in your server is touched."
+        "-# Every line above is additive. "
+        + ("A channel that already exists is adopted exactly as it stands — "
+           "never renamed, re-topiced, moved, re-permissioned or deleted."
+           if adopting(guild) else
+           "He is building his own; nothing you already have is touched or "
+           "even looked at. **Channels** on the panel switches that.")
+        + " Nothing else in your server is touched."
     )
     return "\n".join(lines)[:1990]
 
@@ -3553,12 +3623,18 @@ async def ensure_categories(guild, wanted, say):
     return made
 
 
-async def make_missing_rooms(guild, categories=None):
+async def make_missing_rooms(guild, categories=None, adopt=False):
     """Create and bind a channel for every job an enabled feature wants and
     has none. Strictly additive: it never renames, moves, re-topics,
-    re-permissions, reorders or deletes anything that already exists --
-    including channels it finds by name, which are adopted exactly as they
-    are. Nothing outside the plan is touched at all.
+    re-permissions, reorders or deletes anything that already exists.
+    Nothing outside the plan is touched at all.
+
+    `adopt` decides what happens when a channel already has the name he
+    would have used. It used to be unconditional and it was a guess the
+    server never agreed to: a room called #votes, made for something else,
+    silently became the floor. The choice is the house's now -- Channels on
+    the panel is where it is made -- and the default is to build his own
+    and leave everything else alone.
 
     Which rooms those are comes from `modules.py`, so a server that has
     switched governance off is not given a votes room, and switching a
@@ -3574,16 +3650,11 @@ async def make_missing_rooms(guild, categories=None):
         if bindings.channel(guild, key) is not None:
             skipped.append(f"`{key}` already bound")
             continue
-        # By the job's name, not by the bare word. The layout used to call
-        # this room "🗳️・votes" and this command looked for "votes", found
-        # nothing, and created a second one loose at the top of the sidebar
-        # -- so a server built from the terminal and then set up from inside
-        # Discord ended up with two of every governance room, Eugene bound
-        # to the empty one. `find_channel` is the same lookup the rest of
-        # the bot uses to find a room nobody has bound, which is the point:
-        # what gets bound here and what gets found without a binding must be
-        # the same channel.
-        existing = find_channel(guild, key)
+        # Only if the house said so. `find_channel` is the same lookup the
+        # rest of the bot uses for a room nobody has bound, which is the
+        # point: what gets bound here and what gets found without a binding
+        # must be the same channel.
+        existing = find_channel(guild, key) if adopt else None
         if existing is not None:
             bindings.bind_channel(guild.id, key, existing.id)
             bound.append(f"`{key}` → {existing.mention} (adopted, unchanged)")
@@ -3625,7 +3696,7 @@ async def make_missing_rooms(guild, categories=None):
     for key in modules.adoptable_rooms(guild.id):
         if bindings.channel(guild, key) is not None:
             continue
-        existing = find_channel(guild, key)
+        existing = find_channel(guild, key) if adopt else None
         if existing is None:
             skipped.append(f"`{key}` — nothing here to use, so nothing made")
             continue
@@ -3690,7 +3761,8 @@ async def do_apply(interaction):
         wanted = [c for c, _rooms
                   in modules.structure(guild.id, only_buildable=True)]
         categories = await ensure_categories(guild, wanted, say)
-        made, bound, skipped = await make_missing_rooms(guild, categories)
+        made, bound, skipped = await make_missing_rooms(
+            guild, categories, adopt=adopting(guild))
         for line in made:
             say(f"created {line}")
         for line in bound:

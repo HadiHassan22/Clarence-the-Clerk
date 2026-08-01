@@ -57,7 +57,7 @@ server and says what is done and what is missing:
 ⬜ 6 · This place — he describes it neutrally rather than guessing
 
 [ Features ] [ Rooms ] [ Roles & votes ] [ Brain ] [ Numbers ]
-[ Preview the structure ] [ Apply ] [ What this place is ] [ Details ]
+[ Channels ] [ Preview the structure ] [ Apply ] [ What this place is ]
 ```
 
 **Nothing in your server changes until you press Apply**, and **Preview
@@ -65,6 +65,15 @@ the structure** prints the layout that is about to exist before it
 exists — every room marked as one he will create, one he will adopt
 exactly as it stands, or one already bound, with the feature that asked
 for it named beside it.
+
+**Channels** is the one decision he will not make for you: whether Apply
+builds his own rooms or takes over ones you already have. Building is
+the default, because adopting used to happen automatically from a name
+match — a `#votes` you made for something else quietly became the floor.
+Set it to adopt and the panel names the exact channels it would pick up
+before you press anything. **Rooms** points any job at any channel by
+hand, whatever it is called, which is the way to use one you already
+have under a different name.
 
 Apply makes the `Cooperative` and `Member` roles, binds them, creates the
 channels your switched-on features want and do not have, and — the part
