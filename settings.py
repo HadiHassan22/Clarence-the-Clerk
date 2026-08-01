@@ -119,14 +119,39 @@ def get(guild_id, key, default=None):
     return load(guild_id).get(key, default)
 
 
+# Bumped on every write, and read by anything holding a cached answer that
+# was true when this server was configured differently. The bug it exists
+# for: a tool refused because a feature was off, that refusal kept as
+# evidence, and the feature switched back on -- after which the clerk went
+# on insisting it was off, correctly, from a record nothing invalidated.
+VERSION = "_config_version"
+
+
+def config_version(guild_id) -> int:
+    """How many times this server's configuration has changed."""
+    try:
+        return int(load(guild_id).get(VERSION, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def put(guild_id, **values):
-    """Merge values in. Passing None for a key removes it."""
+    """Merge values in. Passing None for a key removes it.
+
+    Every call moves the version, including one that sets a key back to
+    what it already was: the alternative is comparing values here and
+    getting it wrong for the one caller whose value is a dict.
+    """
     current = load(guild_id)
     for key, value in values.items():
         if value is None:
             current.pop(key, None)
         else:
             current[key] = value
+    try:
+        current[VERSION] = int(current.get(VERSION, 0)) + 1
+    except (TypeError, ValueError):
+        current[VERSION] = 1
     save(guild_id, current)
     return current
 

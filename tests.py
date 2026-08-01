@@ -51,7 +51,7 @@ GUILD = types.SimpleNamespace(
     name="The Hangout", id=1, text_channels=[], channels=[], members=[],
     get_channel=lambda _id: None, get_role=lambda _id: None,
 )
-CITIZEN = types.SimpleNamespace(id=99, display_name="Hadi")
+CITIZEN = types.SimpleNamespace(id=99, display_name="Robin")
 
 
 def load_clerk(data):
@@ -82,7 +82,7 @@ def test_settings(data):
           settings.provider(one, KNOWN) is None)
     check("and no key", settings.brain_key(one, "gemini") is None)
 
-    settings.set_brain_key(one, "gemini", "AIzaSecretOne", by="Hadi")
+    settings.set_brain_key(one, "gemini", "AIzaSecretOne", by="Robin")
     check("a stored key comes back", settings.brain_key(one, "gemini") == "AIzaSecretOne")
     check("storing one puts it on duty", settings.provider(one, KNOWN) == "gemini")
     check("the other server is untouched", settings.brain_key(two, "gemini") is None)
@@ -400,7 +400,7 @@ def test_debate_thread(clerk, data):
         create_category=never, create_text_channel=never,
         create_voice_channel=never,
     )
-    author = types.SimpleNamespace(id=7, display_name="Hadi", mention="@Hadi")
+    author = types.SimpleNamespace(id=7, display_name="Robin", mention="@Robin")
 
     keep_floor, keep_content = clerk.floor_for, clerk.ballot_content
     clerk.floor_for = lambda _guild, _bill: floor
@@ -510,7 +510,7 @@ def test_filing(clerk, data):
     check(f"the bill is filed: No. {out.get('filed')}", out.get("filed") == 13)
     check("it is filed as an invite bill", filed.get("kind") == "invite")
     check("the citizen who asked is the author, not the clerk",
-          out.get("author") == "Hadi")
+          out.get("author") == "Robin")
     check("the ballot is advertised as three-way and sealed",
           "abstain" in out.get("ballot", "") and "sealed" in out.get("ballot", ""))
     check("the text names the person and the consequence",
@@ -872,7 +872,7 @@ def test_closing(clerk, data):
         check("and returns the ruling", out.get("ruling") == "passed")
         check("with the report attached",
               out.get("outstanding") and out.get("done"))
-        check("naming who called time", out.get("closed_early_by") == "Hadi")
+        check("naming who called time", out.get("closed_early_by") == "Robin")
 
         live[5]["status"] = "passed"
         out = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "close_floor", {"bill_no": 5})))
@@ -962,7 +962,7 @@ def test_close_floor_split(clerk, data):
         check("past a quarter of the window it closes and rules",
               isinstance(report, dict) and report["ruling"] == "passed")
         check("under the name of whoever called time",
-              report["closed_early_by"] == "Hadi")
+              report["closed_early_by"] == "Robin")
         live[5] = on_floor(5, hours_ago=13)
         as_text = run(clerk.act_close_floor(GUILD, CITIZEN, {"bill_no": 5}))
         check("the model gets the identical report, one JSON string of it",
@@ -1480,7 +1480,7 @@ def test_duties(data):
     report_for = lambda b: {"outstanding": b.get("wants", [])}  # noqa: E731
     bills = [
         {"no": 1, "title": "Done", "status": "passed", "wants": ["a channel"],
-         "carried_out": {"by": "Hadi"}},
+         "carried_out": {"by": "Robin"}},
         {"no": 2, "title": "Waiting", "status": "passed", "act": 4,
          "wants": ["a channel"]},
         {"no": 3, "title": "Fell", "status": "failed", "wants": ["nothing"]},
@@ -1528,7 +1528,7 @@ def test_duty_actions(clerk, data):
                                           {"bill_no": 7})))
     check("it can be marked done", out.get("bill") == 7)
     check("under the name of whoever said so",
-          clerk.bill_by("no", 7)["carried_out"]["by"] == "Hadi")
+          clerk.bill_by("no", 7)["carried_out"]["by"] == "Robin")
     check("and it comes off the list", listed() == [])
     check("marking it twice is not an error, just nothing",
           "note" in json.loads(run(toolbox.dispatch(
@@ -1982,6 +1982,78 @@ def test_modules(data):
     modules.reset(gid)
 
 
+def test_stale_config(data):
+    """A refusal must never become evidence.
+
+    The bug, exactly: switch a feature off, ask him to do the thing, get a
+    refusal -- and that refusal is filed in the deed log, which is handed
+    back on every following turn under the words "where the two differ this
+    one is right, do not call a tool again for something answered here".
+    Switch the feature back on and he goes on refusing, correctly, from a
+    record nothing invalidated. It read as a caching bug and it was not:
+    the tool list was right the whole time.
+    """
+    print("\nswitching a feature back on actually switches it back on")
+    import brain
+    import modules
+    import toolbox
+
+    store = data / "stale-store"
+    settings.configure(store)
+    toolbox.configure(HERE, store, in_cooperative=lambda m: True)
+    gid = 4242
+    guild = types.SimpleNamespace(id=gid, name="Test")
+    asker = types.SimpleNamespace(id=1, display_name="Robin")
+    try:
+        modules.set_enabled(gid, "chat", False)
+        version = settings.config_version(gid)
+        refused = run(toolbox.dispatch(guild, asker, "server_info", {}))
+        check("with the feature off the tool refuses",
+              "error" in json.loads(refused))
+        check("and the refusal is not written down as something he did",
+              brain._note_deed(770, "Robin", "server_info", {}, refused,
+                               version) is None
+              and brain._deed_log(770, version) == "")
+
+        modules.set_enabled(gid, "chat", True)
+        check("switched back on, the tool is his again",
+              modules.tool_allowed(gid, "server_info"))
+
+        # The other half: an answer that described the configuration is
+        # still true of the moment it was given and false now.
+        was = settings.config_version(gid)
+        brain._note_deed(771, "Robin", "list_features", {},
+                         '{"features": [{"feature": "chat", "on": true}]}', was)
+        check("a settings answer stands while nothing has moved",
+              "list_features" in brain._deed_log(771, was))
+        modules.set_enabled(gid, "chat", False)
+        check("and is dropped the moment somebody changes the thing it "
+              "described, rather than being quoted back as current",
+              brain._deed_log(771, settings.config_version(gid)) == "")
+
+        # What is not about configuration is not thrown away with it.
+        now = settings.config_version(gid)
+        brain._note_deed(772, "Robin", "list_bills", {},
+                         '[{"no": 3, "title": "Kettle rota"}]', now)
+        settings.set_voting(gid, floor_hours=2)
+        check("a fact about the house survives a settings change untouched",
+              "Kettle rota" in brain._deed_log(772, settings.config_version(gid)))
+
+        # The first turn in a room has nothing to compare against, so it
+        # says nothing; the one after a change says so, once.
+        brain._told_version.pop(gid, None)
+        check("the first turn after a restart claims nothing changed",
+              brain._changed_note(guild) == "")
+        modules.set_enabled(gid, "chat", True)
+        check("but the turn after somebody moves a switch says so",
+              "# Something changed" in brain._changed_note(guild))
+        check("and the turn after that does not say it again",
+              brain._changed_note(guild) == "")
+    finally:
+        settings.configure(data)
+        toolbox.configure(HERE, data)
+
+
 def test_turn_shape(data):
     """What the model is actually handed, and in what order.
 
@@ -2010,7 +2082,7 @@ def test_turn_shape(data):
         ("Bob", "no spoilers please"),
         ("Eugene", "Noted."),
         ("Alice", "ok but the finale though"),
-        ("Hadi", "@Eugene make me a blue role called sky"),
+        ("Robin", "@Eugene make me a blue role called sky"),
     ):
         brain._remember(99, author, said)
 
@@ -2026,7 +2098,7 @@ def test_turn_shape(data):
         id=1, name="Book Club", members=[], text_channels=[],
         get_channel=lambda _i: None, get_role=lambda _i: None,
     )
-    member = types.SimpleNamespace(id=5, display_name="Hadi")
+    member = types.SimpleNamespace(id=5, display_name="Robin")
     channel = types.SimpleNamespace(id=99, name="general")
     try:
         run(brain._run_turn(guild, member, channel,
@@ -2096,17 +2168,17 @@ def test_turn_shape(data):
     print("\nwhat the tools returned outlives the turn that called them")
     brain._memory.clear()
     brain._deeds.clear()
-    brain._remember(99, "Hadi", "what colours are there")
+    brain._remember(99, "Robin", "what is open")
     brain._note_deed(
-        99, "Hadi", "list_color_roles", {},
-        '{"roles_they_made": ["horsy role"], "roles_they_are_wearing": []}',
+        99, "Robin", "list_bills", {},
+        '[{"no": 4, "title": "Quiet hours in voice"}]',
     )
-    brain._remember(99, "Eugene", "You have one, and it is tomato red.")
-    brain._remember(99, "Hadi", "make it purple")
+    brain._remember(99, "Eugene", "One: the kettle rota.")
+    brain._remember(99, "Robin", "close it")
     seen.clear()
     brain._call = fake_call
     try:
-        run(brain._run_turn(guild, member, channel, "make it purple",
+        run(brain._run_turn(guild, member, channel, "close it",
                             said_already=True))
     except RuntimeError:
         pass
@@ -2114,14 +2186,12 @@ def test_turn_shape(data):
         brain._call = real_call
     later = seen["turns"][0]["text"]
     check("the next turn is handed the call itself, not his account of it",
-          "list_color_roles" in later and '"horsy role"' in later)
-    check("with the real spelling, which is the thing he kept inventing",
-          "horsy role" in later)
+          "list_bills" in later and "Quiet hours in voice" in later)
     check("and told which of the two to believe when they disagree",
           "Where the two differ this one is right" in later)
     check("his own drifted summary is still there, and still only that",
-          "tomato red" in later
-          and later.index("list_color_roles") < later.index("tomato red"))
+          "kettle rota" in later
+          and later.index("list_bills") < later.index("kettle rota"))
     check("a room where he has done nothing carries no such block",
           "already done in this room" not in brain._deed_log(12345))
     brain._deeds.clear()
@@ -2232,6 +2302,7 @@ def main():
             test_dynamic_thresholds(data)
             test_empty_promises(data)
             test_prompt_caching(data)
+            test_stale_config(data)
             test_turn_shape(data)
             settings.configure(data)
         test_firewall(data)

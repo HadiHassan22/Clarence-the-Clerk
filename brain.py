@@ -386,6 +386,27 @@ def _roster_now(guild):
     )
 
 
+def _changed_note(guild):
+    """One line, once, when the house has been reconfigured under him.
+
+    Without it the switches below simply read differently from one turn to
+    the next and he has no way to know anything happened -- so he answers
+    correctly and still sounds like he is contradicting himself.
+    """
+    gid = getattr(guild, "id", None)
+    if gid is None:
+        return ""
+    now = settings.config_version(gid)
+    was = _told_version.get(gid)
+    _told_version[gid] = now
+    if was is None or was == now:
+        return ""
+    return ("\n# Something changed\nThis server's settings or features have "
+            "moved since you last spoke here. What is below is current; "
+            "anything you said earlier about how this place is set up may "
+            "not be. Say so plainly if somebody notices.\n")
+
+
 def _switches(guild):
     """Which of the house machinery is running, in one line.
 
@@ -572,7 +593,7 @@ GOOD: (calls the tool) "Done."
 # How this place works
 The rules you run on. This is a summary and it is not all of them: for anything it does not settle -- meetings, the ownership rotation, cooldowns on a re-tabled proposal, what an admin may hold up -- call `get_standing_orders` and read the page rather than reasoning from what is here.
 {brief}"""
-    volatile = f"""{_roster_now(guild)}{_switches(guild)}{_floor_now(guild)}
+    volatile = f"""{_changed_note(guild)}{_roster_now(guild)}{_switches(guild)}{_floor_now(guild)}
 Decisions on record:
 {_acts_index()}
 
@@ -607,6 +628,11 @@ def _floor_now(guild):
         f"Unless they asked about a vote, it has nothing to do with what "
         f"they want and you do not mention it.\n"
     )
+
+
+# The last configuration version he was told about, per server, so a change
+# made mid-conversation is mentioned once rather than every turn afterwards.
+_told_version = {}
 
 
 def forget_room():
@@ -644,7 +670,37 @@ DEED_RESULT_CHARS = 700
 _deeds = {}
 
 
-def _note_deed(channel_id, who, tool, args, result):
+# Tools whose answer is a description of how this server is configured. Any
+# of them goes stale the moment somebody changes the configuration, so they
+# are stamped with the version that produced them and dropped when it moves.
+# Everything else -- what is on the floor, what is on the record -- is a
+# fact about the house and survives a settings change untouched.
+CONFIG_TOOLS = ("list_features", "list_settings", "set_feature",
+                "set_setting", "reset_settings")
+
+
+def _is_refusal(result):
+    """Whether what came back was a no rather than an answer.
+
+    A refusal is a statement about the configuration at one moment, not a
+    fact about the world, and it must never become evidence: a tool refused
+    because a feature was switched off, kept in the deed log under "where
+    the two differ this one is right", is a clerk who goes on insisting the
+    feature is off after somebody switches it back on. Which is exactly
+    what he did.
+    """
+    text = (result or "").strip()
+    if not text.startswith("{"):
+        return False
+    try:
+        return isinstance(json.loads(text), dict) and "error" in json.loads(text)
+    except (ValueError, TypeError):
+        return False
+
+
+def _note_deed(channel_id, who, tool, args, result, version=0):
+    if _is_refusal(result):
+        return
     dq = _deeds.setdefault(channel_id, deque(maxlen=DEEDS_MAX))
     dq.append(
         {
@@ -652,17 +708,27 @@ def _note_deed(channel_id, who, tool, args, result):
             "tool": tool,
             "args": args or {},
             "result": (result or "")[:DEED_RESULT_CHARS],
+            "version": version,
         }
     )
 
 
-def _deed_log(channel_id):
-    """What the tools have actually returned in this room lately."""
+def _deed_log(channel_id, version=0):
+    """What the tools have actually returned in this room lately.
+
+    Anything that described the configuration is dropped once the
+    configuration has moved under it, so a settings answer from before a
+    change is not handed back as the current one.
+    """
     dq = _deeds.get(channel_id)
     if not dq:
         return ""
+    live = [d for d in dq
+            if d["tool"] not in CONFIG_TOOLS or d.get("version", 0) >= version]
+    if not live:
+        return ""
     lines = []
-    for d in dq:
+    for d in live:
         shown = json.dumps(d["args"], ensure_ascii=False) if d["args"] else ""
         lines.append(f"- for {d['who']}: {d['tool']}({shown}) returned: {d['result']}")
     return (
@@ -781,9 +847,10 @@ async def _run_turn(guild, member, channel, text, said_already=False):
     model = model_name(guild.id, name)
     channel_name = getattr(channel, "name", "a direct message")
     who = member.display_name
+    version = settings.config_version(guild.id)
     turns = [
         providers.said(
-            f"{_deed_log(channel.id)}"
+            f"{_deed_log(channel.id, version)}"
             f"{_transcript(channel.id, drop_last=said_already)}"
             f"----------------\n"
             f"# The message you are answering\n"
@@ -858,7 +925,8 @@ async def _run_turn(guild, member, channel, text, said_already=False):
             )
             # Kept for the turns after this one, where it is the only thing
             # standing between him and his own summary of what happened.
-            _note_deed(channel.id, who, call.name, call.args, result)
+            _note_deed(channel.id, who, call.name, call.args, result,
+                       version)
         turns.append(providers.returned(results))
     return TOO_DEEP_LINE, used_tools, cost, cached
 
