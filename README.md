@@ -475,12 +475,18 @@ should set `price_in_per_m` and `price_out_per_m` in its settings file to
 match. Claude answers with thinking off, which is what keeps a
 one-sentence reply to one sentence.
 
-By default he answers wherever he is mentioned. To keep him to one room,
-point the `chat` job at a channel under **Rooms**: after that he talks
-there, in its threads, and in direct messages, and nowhere else. Anyone
-who mentions him elsewhere gets one short pointer to the right room, at
-most once an hour, and it costs nothing to say. Leave `chat` unbound and
-nothing changes.
+He answers in `#eugene-chat`, which he makes himself under **Apply** and
+binds to the `chat` job — there, in its threads, and in direct messages,
+and nowhere else. Point `chat` at a different channel under **Rooms** if
+you would rather he lived somewhere you already have. Anyone who mentions
+him elsewhere gets one short pointer to the right room, at most once an
+hour, and it costs nothing to say.
+
+Unbind `chat` entirely and he falls back to the rooms he was given: the
+governance category and anything you have pointed at a job. He does not
+get the run of the whole server that way — the only server he answers
+everywhere in is one nobody has set up at all, where he has no rooms of
+his own to be kept to.
 
 ## What he says without being asked
 
@@ -557,9 +563,10 @@ Three limits, and they are the point rather than the small print:
   read notes aloud, never to tell one person what he knows about another,
   and never to use any of it to guess how somebody voted.
 
-He only ever learns where he is allowed to speak. A server that binds a
-`chat` room has kept him out of every other room entirely — listening
-included.
+He only ever learns where he is allowed to speak. The `chat` room keeps
+him out of every other room entirely — listening included — and so does
+the fallback: a room outside the governance category is one he neither
+answers in nor reads.
 
 ## Installing it on someone else's server
 

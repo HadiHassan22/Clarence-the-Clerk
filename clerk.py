@@ -8,7 +8,7 @@ hardcodes a name is a bug, not a default.
 
 Roles:      given by people, not earned at a button. Eugene reads them.
 Proposing: say what should change (title/what/why), Eugene publishes it,
-            opens a debate thread on the same floor, and runs an anonymous
+            opens a thread on it to argue in, and runs an anonymous
             ballot.
 Voting:     thresholds count against the roster, not against turnout, so a
             vote ends the moment its result is settled rather than when the
@@ -16,8 +16,8 @@ Voting:     thresholds count against the roster, not against turnout, so a
             three quarters. voting.floor_hours is only the backstop for a
             vote nobody finishes.
 At close:   result posted, passed proposals become numbered decisions in
-            the record, final notes are preserved in a thread, the debate
-            thread is locked and archived where it stands. Choice ballots
+            the record, and the thread -- the argument and the final notes
+            both -- is locked and archived where it stands. Choice ballots
             (author supplies 2-10 options)
             need a strict majority of votes cast; otherwise a runoff opens
             with the leading options, decided by plurality. They are the
@@ -600,41 +600,25 @@ def bill_name(number, title, prefix="", limit=100):
     return prefix + name
 
 
-async def open_chamber(floor, number, title):
-    """Somewhere to argue about a proposal: a thread on the floor it was
-    filed in.
-
-    It used to be a category holding a text channel and a voice channel,
-    which meant every vote added three rooms to the sidebar and the archive
-    grew by one channel forever. A thread costs nothing, disappears when it
-    is done, and -- the part that matters -- has no permissions of its own:
-    it inherits the floor's, so who can read the debate and who can read
-    the ballot are the same question with the same answer. The
-    cooperative's floor is closed to members, so the debate on it is too,
-    and it stays that way without anyone maintaining a second set of
-    overwrites that could drift from the first.
-
-    A week, because the vote it belongs to may run for days and a thread
-    that files itself away mid-argument reads as the argument being over.
-    """
-    return await floor.create_thread(
-        name=bill_name(number, title, "💬 "),
-        type=discord.ChannelType.public_thread,
-        auto_archive_duration=10080,
-        reason=f"Debate chamber for Proposal No. {number}: {title}",
-    )
-
-
 def chamber_of(guild, bill):
-    """The debate room for a proposal, whatever shape it is.
+    """Where a proposal is argued about, whatever shape that is here.
 
-    Proposals filed before the chambers became threads still hold a text
-    channel, and they are still open, so both are looked up here rather
-    than at each of the four places that want to point at one.
+    One thread, hanging off the proposal on the floor: the notes are filed
+    in it and the argument happens in it. It has no permissions of its own,
+    which is the point -- it inherits the floor's, so who can read the
+    debate and who can read the ballot are the same question with the same
+    answer, and there is no second set of overwrites to drift from the
+    first.
+
+    It was briefly two threads, one for the argument and one for the
+    record, and before that a category holding a text channel and a voice
+    channel. Proposals filed under either are still open, so all three are
+    looked up here rather than at each of the places that want to point at
+    one.
     """
     if guild is None:
         return None
-    thread_id = bill.get("chamber_thread_id")
+    thread_id = bill.get("chamber_thread_id") or bill.get("notes_thread_id")
     if thread_id:
         get_thread = getattr(guild, "get_thread", None)
         thread = get_thread(thread_id) if get_thread else None
@@ -645,8 +629,9 @@ def chamber_of(guild, bill):
 # ---------- notes ----------
 
 NOTES_PROMPT = (
-    "-# Have a case to make? File your position below: named or "
-    "anonymous, one slot of each, editable until the vote closes."
+    "-# Argue it out here. Want your position on the record instead? File "
+    "it below: named or anonymous, one slot of each, editable until the "
+    "vote closes."
 )
 
 
@@ -1251,26 +1236,20 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         hours=floor_hours or numbers(guild)["floor_hours"]
     )
 
-    chamber = await open_chamber(floor, number, title)
-
     stamp = await floor.send(
         view=Card([f"## Proposal No. {number}: {title}\nSubmitted by {author.mention}"])
     )
+    # One thread per proposal, and it hangs off the proposal itself. There
+    # was briefly a second one beside it for the argument, which meant two
+    # rooms in the sidebar for one vote and a guess to make before typing
+    # about which of them a thought belonged in. A week, because a vote runs
+    # for days and a thread that files itself away mid-argument reads as the
+    # argument being over.
     notes_thread = await stamp.create_thread(
-        name=(bill_name(number, title) + ": notes")[:100]
+        name=(bill_name(number, title) + ": notes")[:100],
+        auto_archive_duration=10080,
     )
     notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
-    # The notes are a record, not a conversation: one named slot and one
-    # anonymous slot each, both filed through a modal and posted by Eugene.
-    # That used to be guaranteed by the floor denying everybody the right to
-    # talk in threads at all, which is no longer true now that the debate is
-    # a thread on the same floor -- so the guarantee is made here, on the one
-    # thread that wants it, rather than by a permission that would have to
-    # deny the argument as well. Locked, not archived: he still writes here.
-    try:
-        await notes_thread.edit(locked=True)
-    except discord.HTTPException as e:
-        log.warning(f"could not lock notes thread for bill {number}: {e!r}")
     for label, body in (("What", what), ("Why", why)):
         for i, piece in enumerate(chunk_text(body)):
             prefix = f"### {label}\n" if i == 0 else ""
@@ -1290,7 +1269,6 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         "message_id": stamp.id,
         "notes_message_id": notes_msg.id,
         "notes_thread_id": notes_thread.id,
-        "chamber_thread_id": chamber.id,
         "submitted_at": now_utc().isoformat(),
         "ends_at": ends_at.isoformat(),
         "status": "on_floor",
@@ -1714,18 +1692,17 @@ async def publish_act(guild, bill, decided=None):
 
 
 async def seal_chamber(guild, bill):
-    """Shut the debate room at close.
+    """Shut a debate room that is not the proposal's own thread.
 
-    A thread is locked and archived where it stands: it stays attached to
-    the floor it belongs to, readable by exactly the people who could read
-    it while the vote was live, and nothing has to be moved or hidden for
-    that to be true.
-
-    Proposals filed before the chambers were threads still hold a category,
-    a text channel and a voice channel, and some of them are still open, so
-    the old close survives here for as long as they do -- text locked and
-    filed in the archive, voice deleted because voice is never recorded,
-    the empty category swept up after them.
+    A proposal filed now argues in the thread its notes are in, and that
+    one is sealed with the notes a few lines above this is called: there is
+    nothing left here to do, and this does nothing. What is left is the two
+    shapes that came before it, both of which are still open on somebody's
+    floor. A proposal filed with a separate debate thread has that thread
+    locked and archived where it stands. One older still holds a category,
+    a text channel and a voice channel -- text locked and filed in the
+    archive, voice deleted because voice is never recorded, the empty
+    category swept up after them.
     """
     thread_id = bill.get("chamber_thread_id")
     if thread_id:
@@ -4397,9 +4374,16 @@ ROOMS_PER_PAGE = 4
 
 
 class RoomSelect(discord.ui.ChannelSelect):
+    # Announcement channels are text channels that a server decided to
+    # publish from, and plenty of servers keep their record in one. They
+    # were not on this list, so those servers could not point `decisions`
+    # at the channel they already keep decisions in -- the menu simply did
+    # not contain it, with nothing to say why.
+    KINDS = [discord.ChannelType.text, discord.ChannelType.news]
+
     def __init__(self, key, row, page=0):
         super().__init__(
-            channel_types=[discord.ChannelType.text],
+            channel_types=self.KINDS,
             placeholder=f"{key} — {bindings.ROOMS[key]}",
             min_values=0, max_values=1, row=row,
         )
@@ -4422,6 +4406,86 @@ class RoomSelect(discord.ui.ChannelSelect):
         )
 
 
+def resolve_channel(guild, text):
+    """The channel somebody meant: a mention, an id, a link, or a name.
+
+    Discord's channel menu is auto-populated and renders only part of a long
+    list, so a server with a few hundred channels can find that the room it
+    wants to point at is simply not in the dropdown, with nothing on screen
+    to say why. This is the way round it: no list, say which one you mean.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    # The last long number in whatever was pasted: a mention is `<#123>`, a
+    # link ends in the channel id, and a bare id is itself.
+    found = re.findall(r"\d{15,25}", text)
+    if found:
+        got = guild.get_channel(int(found[-1]))
+        if got is not None:
+            return got
+    wanted = text.lstrip("#").strip().lower()
+    pool = list(guild.text_channels)
+    exact = next(
+        (c for c in pool
+         if c.name.lower() == wanted or base_name(c.name) == wanted),
+        None,
+    )
+    return exact or next((c for c in pool if wanted in c.name.lower()), None)
+
+
+class RoomTypeModal(discord.ui.Modal, title="Point a job at a channel"):
+    """The fallback for a channel the menu will not show."""
+
+    job = discord.ui.TextInput(
+        label="Which job",
+        placeholder="votes",
+        style=discord.TextStyle.short,
+        max_length=40,
+    )
+    where = discord.ui.TextInput(
+        label="Which channel — name, id, or a link",
+        placeholder="#the-floor",
+        style=discord.TextStyle.short,
+        max_length=200,
+    )
+
+    def __init__(self, page=0):
+        super().__init__()
+        self.page = page
+
+    async def on_submit(self, interaction):
+        guild = interaction.guild
+        key = str(self.job).strip().strip("`").lower()
+        if key not in bindings.ROOMS:
+            return await open_rooms(
+                interaction, self.page,
+                f"There is no job called `{key}`. They are: "
+                + ", ".join(f"`{k}`" for k in bindings.ROOMS) + ".",
+            )
+        picked = resolve_channel(guild, str(self.where))
+        if picked is None:
+            return await open_rooms(
+                interaction, self.page,
+                f"I cannot find `{str(self.where).strip()[:60]}` here. A name, "
+                "a channel id, or a link to it will all do.",
+            )
+        bindings.bind_channel(guild.id, key, picked.id)
+        log.info(f"bound room {key} -> #{picked.name} ({picked.id}), typed")
+        await open_rooms(interaction, self.page,
+                         f"`{key}` → {picked.mention}.")
+
+
+class RoomTypeButton(discord.ui.Button):
+    def __init__(self, page):
+        super().__init__(label="Type a channel…",
+                         style=discord.ButtonStyle.secondary, row=4)
+        self.page = page
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(RoomTypeModal(self.page))
+
+
 class RoomsPageButton(discord.ui.Button):
     def __init__(self, label, page):
         super().__init__(label=label, style=discord.ButtonStyle.secondary, row=4)
@@ -4440,6 +4504,7 @@ async def open_rooms(interaction, page=0, note=None):
     view = StewardView(interaction.user.id)
     for row, key in enumerate(pages[page]):
         view.add_item(RoomSelect(key, row, page))
+    view.add_item(RoomTypeButton(page))
     if len(pages) > 1:
         if page:
             view.add_item(RoomsPageButton("‹ Fewer", page - 1))
@@ -4451,6 +4516,9 @@ async def open_rooms(interaction, page=0, note=None):
         "Pick a channel you already have for each. Clear a menu to unbind "
         "it. Anything left unset that a feature needs, **Apply** creates.",
         "-# Stored by id, so renaming a channel later changes nothing.",
+        "-# A menu missing the channel you want is Discord's, not mine: it "
+        "lists only part of a long list. Type in it to search, or press "
+        "**Type a channel…** and name the one you mean.",
         "",
         bindings.summary(guild, wanted=keys, required=required),
     ]

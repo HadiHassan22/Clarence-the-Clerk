@@ -162,10 +162,10 @@ could file one anyway. Now:
 - The denominator and the door are the same function (`belongs_to`), so a
   ballot can never be counted against people it would turn away.
 - `floor_for()` puts an open poll in the `polls` room and the cooperative's
-  business on the floor, and the debate on it is a thread on that same room, so
-  it inherits whatever the room says rather than carrying a second set of
-  permissions that could disagree with the ballot's. A vote posted where the
-  people it is open to cannot read it is not open.
+  business on the floor, and the argument about it happens in the thread on the
+  vote itself, so it inherits whatever the room says rather than carrying a
+  second set of permissions that could disagree with the ballot's. A vote
+  posted where the people it is open to cannot read it is not open.
 - `/poll`, a button in the proposals room, and an `open_poll` tool so it can be
   asked for in conversation. All three refuse cleanly when no `polls` room is
   bound, and say how to bind one.

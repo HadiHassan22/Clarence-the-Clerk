@@ -31,7 +31,7 @@ ROOMS = {
     "wardrobe": "Where the colour-role buttons live",
     "health": "Eugene's own vitals. Administrators only",
     "welcome": "Where arrivals are greeted. Unset, nobody is greeted",
-    "chat": "The only room Eugene talks in (unset: anywhere)",
+    "chat": "Where people talk to Eugene. He makes this one himself",
 }
 
 # Rooms without which governance cannot run at all.
@@ -80,6 +80,11 @@ JOBS = {
     "health": "health",
     "roles": "wardrobe",
     "wardrobe": "wardrobe",
+    # His own room, by his own name, and only by that. A server's existing
+    # `#chat` is not on this list and must never be: binding `chat` does not
+    # add a room he talks in, it takes away every other one, and no server
+    # asked for that by naming a channel after the ordinary English word.
+    "eugene-chat": "chat",
 }
 
 _ROOMS_KEY = "rooms"
@@ -171,6 +176,16 @@ def role(guild, key):
 
 def bound_channel_id(guild_id, key):
     return _table(guild_id, _ROOMS_KEY).get(key)
+
+
+def bound_room_ids(guild_id):
+    """Every channel this server has pointed at a job, whatever the job.
+
+    The set of rooms that are his, for the one question that does not care
+    which room is which: is he in one of his own rooms, or in somebody
+    else's.
+    """
+    return {int(v) for v in _table(guild_id, _ROOMS_KEY).values() if v}
 
 
 # ---------- writing ----------

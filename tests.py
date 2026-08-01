@@ -362,22 +362,20 @@ def test_audit(data):
 # ---------- the debate room ----------
 
 def test_debate_thread(clerk, data):
-    """Filing a proposal opens somewhere to argue about it, and that is a
-    thread on the floor rather than a category, a text channel and a voice
-    channel per vote.
+    """Filing a proposal opens exactly one room to argue in: the thread on
+    the proposal itself.
 
     Three things are worth holding still here. The sidebar: nothing is
-    built at guild level any more, so a busy week no longer adds rooms
-    nobody will read again. The permissions: a thread has none of its own,
-    which is the whole reason it is one -- the cooperative's floor is shut
-    to members, so the debate on it is shut to them by the same overwrite
-    that shuts the ballot. And the notes: they are a record, not a chat,
-    and they used to be silent because the floor denied everyone the right
-    to talk in threads at all. That is no longer true, so the guarantee is
-    made on the notes thread itself.
+    built at guild level any more, so a busy week no longer adds a
+    category, a text channel and a voice channel per vote. The count: one
+    thread, not two -- there was briefly a second beside the notes for the
+    argument, which is two rooms for one vote and a guess to make before
+    typing. And the permissions: a thread has none of its own, which is the
+    whole reason it is one. The cooperative's floor is shut to members, so
+    the debate on it is shut to them by the same overwrite that shuts the
+    ballot.
     """
-    print("\nthe debate on a proposal is a thread on the floor")
-    import discord
+    print("\nthe argument about a proposal happens in the thread on it")
 
     settings.configure(data)
     threads, built = [], []
@@ -398,8 +396,10 @@ def test_debate_thread(clerk, data):
         def __init__(self, mid):
             self.id = mid
 
-        async def create_thread(self, name=None, **kwargs):
+        async def create_thread(self, name=None, auto_archive_duration=None,
+                                **kwargs):
             notes = Thread(200, name)
+            notes.window = auto_archive_duration
             threads.append(notes)
             return notes
 
@@ -410,12 +410,9 @@ def test_debate_thread(clerk, data):
             Floor.said += 1
             return Message(600 + Floor.said)
 
-        async def create_thread(self, name=None, type=None,
-                                auto_archive_duration=None, reason=None):
-            debate = Thread(300, name)
-            debate.type, debate.window = type, auto_archive_duration
-            threads.append(debate)
-            return debate
+        async def create_thread(self, **kwargs):
+            built.append("a second thread")
+            return Thread(300, kwargs.get("name"))
 
     async def never(*args, **kwargs):
         built.append(args[0] if args else "?")
@@ -440,37 +437,32 @@ def test_debate_thread(clerk, data):
     finally:
         clerk.floor_for, clerk.ballot_content = keep_floor, keep_content
 
-    debate = next((t for t in threads if t.id == 300), None)
     notes = next((t for t in threads if t.id == 200), None)
     check("nothing is built in the sidebar: no category, no text channel, "
-          "no voice channel", built == [])
-    check("what it opens instead is one thread on the floor",
-          debate is not None and debate.name.startswith("💬 Proposal-"))
-    check("and the proposal remembers it as a thread",
-          bill.get("chamber_thread_id") == 300)
-    check("the three channel ids are gone rather than left behind empty",
+          "no voice channel, and no second thread", built == [])
+    check("one thread is opened, and it hangs off the proposal itself",
+          len(threads) == 1 and notes is not None)
+    check("the proposal remembers it", bill.get("notes_thread_id") == 200)
+    check("the channel ids of the old chambers are gone rather than left "
+          "behind empty",
           not any(k in bill for k in ("chamber_category_id", "chamber_text_id",
-                                      "chamber_voice_id")))
-    check("it is a public thread, so it inherits the floor's own "
-          "permissions and nothing has to be told who may read it",
-          debate.type == discord.ChannelType.public_thread)
-    check("and it stays open for a week, longer than a vote runs",
-          debate.window == 10080)
-    check("the notes thread is locked the moment it exists, because notes "
-          "are filed through a modal and never typed",
-          notes is not None and notes.edits.get("locked") is True)
-    check("the ballot can find the debate to point at it",
-          clerk.chamber_of(guild, bill) is debate)
+                                      "chamber_voice_id", "chamber_thread_id")))
+    check("it stays open for a week, longer than a vote runs",
+          notes.window == 10080)
+    check("and it is not locked, because the argument happens in it",
+          notes.edits.get("locked") is not True)
+    check("the ballot can find it to point at it",
+          clerk.chamber_of(guild, bill) is notes)
+    check("the prompt at the top of it invites both: argue here, or file a "
+          "position for the record",
+          any("Argue it out here" in (line or "") for line in notes.sent))
 
     run(clerk.seal_chamber(guild, bill))
-    check("at close the debate is sealed where it stands, locked and "
-          "archived rather than moved anywhere",
-          debate.edits.get("locked") is True
-          and debate.edits.get("archived") is True)
-    check("and it says so, so nobody reads a stopped argument as a live one",
-          any("sealed" in (line or "") for line in debate.sent))
+    check("closing has nothing separate to shut, since the thread is "
+          "sealed with the notes",
+          notes.edits == {} and len(notes.sent) == 1)
 
-    print("\nproposals filed before the chambers were threads still close")
+    print("\nproposals filed before it was one thread still close")
 
     class Room:
         def __init__(self, rid, name):
@@ -500,6 +492,17 @@ def test_debate_thread(clerk, data):
     check("the voice channel is still deleted, because voice is never "
           "recorded", voice.gone)
     check("and the empty category with it", category.gone)
+
+    separate = Thread(400, "💬 Proposal-10")
+    threads.append(separate)
+    run(clerk.seal_chamber(guild, {
+        "no": 10, "title": "The one with two threads",
+        "chamber_thread_id": 400, "notes_thread_id": 200,
+    }))
+    check("a proposal that got a debate thread of its own has that sealed "
+          "too, locked and archived where it stands",
+          separate.edits.get("locked") is True
+          and separate.edits.get("archived") is True)
 
 
 # ---------- the filing handlers, for real ----------
@@ -876,7 +879,7 @@ def test_setup_rooms(clerk, data):
     built = [types.SimpleNamespace(id=500 + i, name=name, mention=f"#{name}")
              for i, name in enumerate(
                  ["🖋️・propose", "🗳️・votes", "🏛️・decisions", "📊・polls",
-                  "🎭・roles", "🩺・bot-health"])]
+                  "🎭・roles", "🩺・bot-health", "💬・eugene-chat"])]
     dressed = guild_for(3333)
     dressed.text_channels = built
     made, bound, _skipped = run(clerk.make_missing_rooms(dressed))
@@ -907,9 +910,13 @@ def test_setup_rooms(clerk, data):
           and any("welcome" in line and "unchanged" in line for line in bound3)
           and bindings.bound_channel_id(3333, "welcome") == 600)
     import modules as _m
-    check("and the chat room is never adopted, because binding it does not "
-          "add a room, it takes away every other one",
-          "chat" not in _m.adoptable_rooms(3333))
+    check("and the chat room is never adopted either: he makes his own, "
+          "under his own name, so a server's existing #chat is not quietly "
+          "turned into the only room he will answer in",
+          "chat" not in _m.adoptable_rooms(3333)
+          and _m.ROOM_PLAN["chat"]["name"] == "eugene-chat"
+          and bindings.job_of("chat") is None
+          and bindings.job_of("eugene-chat") == "chat")
 
     check("the room a name announces is the same one either route reads",
           bindings.job_of("🗳️・votes") == "votes"
@@ -939,7 +946,7 @@ def test_setup_rooms(clerk, data):
           "everyone else",
           sorted(shut) == ["bot-health", "propose", "votes"])
     check("and the rest stay open", sorted(n for n, ow in seen if not ow)
-          == ["decisions", "polls", "roles"])
+          == ["decisions", "eugene-chat", "polls", "roles"])
     health_ow = dict(seen)["bot-health"]
     check("the health room grants nobody anything: administrators read it "
           "because Discord lets them past an overwrite, so there is no role "
@@ -2325,20 +2332,39 @@ def test_chat_room(data):
     settings.configure(data / "chat-store")
     try:
         gid = 5150
-        guild = types.SimpleNamespace(id=gid, get_channel=lambda _cid: None)
-        general = types.SimpleNamespace(id=10, parent_id=None)
-        lounge = types.SimpleNamespace(id=20, parent_id=None)
-        thread = types.SimpleNamespace(id=21, parent_id=20)
+        rooms = {}
+        guild = types.SimpleNamespace(
+            id=gid,
+            categories=[types.SimpleNamespace(id=90, name="governance")],
+            get_channel=lambda cid: rooms.get(cid),
+        )
+        general = types.SimpleNamespace(id=10, parent_id=None, category_id=None)
+        lounge = types.SimpleNamespace(id=20, parent_id=None, category_id=90)
+        thread = types.SimpleNamespace(id=21, parent_id=20, category_id=None)
+        rooms.update({c.id: c for c in (general, lounge, thread)})
 
-        check("bound to nothing, he talks anywhere, as he always did",
-              brain.may_speak_in(guild, general) is True)
+        check("a server that has not been set up at all keeps the run of the "
+              "place: penning him into rooms that do not exist is muteness "
+              "rather than tidiness",
+              brain.may_speak_in(
+                  types.SimpleNamespace(id=5151, categories=[],
+                                        get_channel=lambda _c: None),
+                  general) is True)
+        check("but a server with a governance category has him read that and "
+              "nothing else, with no chat room bound at all",
+              brain.may_speak_in(guild, lounge) is True
+              and brain.may_speak_in(guild, general) is False)
+        check("and a thread in one of his rooms is one of his rooms",
+              brain.may_speak_in(guild, thread) is True)
         bindings.bind_channel(gid, "chat", 20)
         check("bound, he talks in that room", brain.may_speak_in(guild, lounge) is True)
         check("and in no other", brain.may_speak_in(guild, general) is False)
         check("a thread hanging off it is still it",
               brain.may_speak_in(guild, thread) is True)
         bindings.bind_channel(gid, "chat", None)
-        check("unbinding gives him the run of the place back",
+        bindings.bind_channel(gid, "votes", 10)
+        check("and a room the server pointed at a job is his wherever it is "
+              "filed, category or no category",
               brain.may_speak_in(guild, general) is True)
     finally:
         settings.configure(data)
@@ -3110,19 +3136,25 @@ def test_modules(data):
     print("\nthe structure is generated, so it cannot describe another server")
     modules.apply_set(gid, ["governance", "polls", "colours", "health"])
     plan = dict(modules.structure(gid, only_buildable=True))
-    check("the cooperative's rooms are in one category",
-          plan["governance"] == ["proposals", "votes"])
-    check("and everything open to the room is in the other",
-          plan["commons"] == ["decisions", "polls", "wardrobe", "health"])
+    check("every room he makes is in one category, and there is one category",
+          list(plan) == ["governance"]
+          and plan["governance"] == ["proposals", "votes", "decisions",
+                                     "polls", "wardrobe", "health"])
+    check("who may read a room is written on the room, not on a second "
+          "category filing it",
+          list(modules.CATEGORIES) == ["governance"]
+          and {modules.ROOM_PLAN[r]["visibility"]
+               for r in plan["governance"]} > {"cooperative"})
     modules.apply_set(gid, ["moderation"])
     check("a server running him as a moderator is asked to build nothing",
           modules.structure(gid, only_buildable=True) == []
           and modules.wanted_rooms(gid, only_buildable=True) == [])
     modules.apply_set(gid, ["chat"])
-    check("and the chat room is wanted but never built: it is a room you "
-          "already have, not one he makes for you",
+    check("and conversation brings a room of his own with it, rather than "
+          "the run of every room the server has",
           modules.wanted_rooms(gid) == ["chat"]
-          and modules.wanted_rooms(gid, only_buildable=True) == [])
+          and modules.wanted_rooms(gid, only_buildable=True) == ["chat"]
+          and modules.ROOM_PLAN["chat"]["name"] == "eugene-chat")
     modules.reset(gid)
 
     print("\na switched-off feature cannot be talked into existence")

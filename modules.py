@@ -70,9 +70,16 @@ KEY = "modules"
 # adopted exactly as it stands, never renamed, never re-topiced, never moved.
 # `category` groups them in the preview and in the build.
 
+# One category, and one only. There used to be two -- governance for the
+# cooperative's rooms and commons for the open ones -- which meant a server
+# that installed him got two categories it had not asked for, filed by a
+# distinction only this file cares about. Who may read a room is already
+# written on the room, in `visibility`, and that is where it belongs: a
+# second category said the same thing again in the sidebar and got in the
+# way of every server that already had its own idea of how to file things.
 CATEGORIES = {
-    "governance": "The cooperative's own rooms. Members are outside these.",
-    "commons": "Open to everyone in the server.",
+    "governance": "Eugene's rooms: the cooperative's, the server's record, "
+                  "and the one he talks in.",
 }
 
 # `visibility` is the builder's vocabulary, so this table can drive both
@@ -96,35 +103,35 @@ ROOM_PLAN = {
     "votes": {
         "name": "votes", "category": "governance",
         "visibility": "cooperative", "read_only": True,
-        # Only Eugene posts in the room; the argument about a proposal is a
-        # thread he opens on it, and a thread nobody may write in is not a
-        # debate. The notes thread stays a record either way -- it is locked
-        # the moment it is made, so this opens the debate and nothing else.
+        # Only Eugene posts in the room itself; the argument about a
+        # proposal happens in the thread he opens on it, and a thread
+        # nobody may write in is not a debate. This opens that and nothing
+        # else -- the room stays his.
         "threads": True,
-        "topic": "Proposals up for a vote. Debate and notes in threads, "
-                 "ballots by button, always anonymous.",
+        "topic": "Proposals up for a vote. Argue in the thread, ballots by "
+                 "button, always anonymous.",
     },
     "decisions": {
-        "name": "decisions", "category": "commons",
+        "name": "decisions", "category": "governance",
         "visibility": "members", "read_only": True,
         "topic": "Every decision ever made, numbered. The permanent record.",
     },
     "polls": {
-        "name": "polls", "category": "commons",
+        "name": "polls", "category": "governance",
         "visibility": "members", "read_only": True,
-        # Same reason as `votes`: the debate on a poll is a thread on the
-        # poll, and here it is open to whoever the poll is open to.
+        # Same reason as `votes`: the argument about a poll happens in the
+        # thread on it, and here it is open to whoever the poll is open to.
         "threads": True,
         "topic": "Polls open to everyone. Advisory: they say what the room "
                  "thinks.",
     },
     "wardrobe": {
-        "name": "roles", "category": "commons",
+        "name": "roles", "category": "governance",
         "visibility": "members", "read_only": True,
         "topic": "Make yourself a colour. Wear up to five, yours or anyone's.",
     },
     "health": {
-        "name": "bot-health", "category": "commons",
+        "name": "bot-health", "category": "governance",
         # Administrators only, and nobody else -- not the cooperative, not
         # members. It carries the running commit, the month's spend, the
         # annex he is on and every error he has hit, which is operational
@@ -137,7 +144,7 @@ ROOM_PLAN = {
                  "Administrators only.",
     },
     "welcome": {
-        "name": "welcome", "category": "commons",
+        "name": "welcome", "category": "governance",
         "visibility": "gate", "read_only": False,
         "topic": "Say hello.",
         # Bound if the server already has one, never created. "Do you have
@@ -152,13 +159,17 @@ ROOM_PLAN = {
         "bound_only": True,
     },
     "chat": {
-        "name": "chat", "category": "commons",
+        # His own room, made under his own name. A server with a channel
+        # called `chat` has not thereby asked to be confined to it, and the
+        # old plan -- adopt nothing, build nothing, talk everywhere until
+        # somebody points you at a room -- meant the ordinary install had
+        # him answering in every channel in the building. So he makes the
+        # room, and the name says whose it is: nothing that already exists
+        # is called `eugene-chat`, so nothing that already exists is taken
+        # over by it.
+        "name": "eugene-chat", "category": "governance",
         "visibility": "members", "read_only": False,
-        "topic": "Where Eugene talks. Mention him.",
-        # Not adopted, and this is the one that has to be deliberate:
-        # binding `chat` does not add a room, it takes away every other
-        # one. A server with a channel called chat has not thereby asked
-        # to be confined to it.
+        "topic": "Talk to Eugene here. Mention him.",
         "adopt": False,
     },
 }
@@ -249,7 +260,12 @@ SPEC = {
         "needs": (),
         "brain": True,
         "settings": (),
-        "builds": False,
+        # He builds it now. This was False while the plan was that
+        # conversation lived in a room the server already had, which in
+        # practice meant no room and every room: unbound, he answered
+        # wherever he was mentioned. One room he makes himself is the
+        # smaller promise and the easier one to keep.
+        "builds": True,
         "commands": (),
         "tools": ("server_info",),
     },
@@ -570,7 +586,7 @@ def adoptable_rooms(guild_id):
 def wanted_rooms(guild_id, *, only_buildable=False):
     """Every room job the enabled modules ask for, in build order.
 
-    `only_buildable` drops the ones no module wants created -- the chat
+    `only_buildable` drops the ones no module wants created -- the arrivals
     room, which is a room you already have and point him at, never one he
     makes for you.
     """

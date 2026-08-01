@@ -1131,14 +1131,65 @@ def _is_addressed(message):
 # ---------- where he may be spoken to ----------
 
 def chat_room_id(guild_id):
-    """The one room this server wants him talking in, or None for anywhere.
+    """The room this server wants him talking in, or None if it has not said.
 
-    The odd one out among the bindings: everywhere else an unbound room means
-    the feature is switched off, and here it means the opposite. That is the
-    right way round for a restriction -- a server that has never opened the
-    setup menu should not discover that Eugene has gone mute.
+    Ordinarily that is `#eugene-chat`, which he makes and binds himself when
+    somebody presses Apply -- so None now means a server that has not been
+    set up, rather than a server that wants him in every channel it has.
+    What None falls back to is `may_speak_in`'s question, not this one's.
     """
     return bindings.bound_channel_id(guild_id, "chat")
+
+
+def _governance_category(guild):
+    """The category he files his own rooms under, if this server has one.
+
+    Bound first, by name second -- the same meekness `bindings.adopt` has,
+    and for the same reason: a server that already had a category called
+    governance meant that one.
+    """
+    for name in modules.CATEGORIES:
+        got = bindings.category(guild, name) or discord.utils.get(
+            getattr(guild, "categories", None) or [], name=name
+        )
+        if got is not None:
+            return got
+    return None
+
+
+def _is_his(guild, channel):
+    """Whether this channel is one of the rooms he was given.
+
+    What an unbound `chat` falls back to. It used to fall back to *anywhere*,
+    which was the right answer while he built no room of his own: a bot with
+    nowhere to talk that also refuses to talk is no use to anybody. He builds
+    one now, so the honest fallback is the opposite one -- his own rooms, and
+    nothing else. A bot that reads every channel in the building is a bot
+    nobody can hold a conversation without.
+
+    His rooms are the governance category and anything this server has
+    pointed at a job. A thread belongs wherever its parent does.
+
+    A server with neither -- nothing bound, no category, nobody has run
+    setup -- keeps the old run of the place, because restricting him to a
+    set of rooms that do not exist is not a restriction, it is muteness.
+    """
+    ids = bindings.bound_room_ids(guild.id)
+    category = _governance_category(guild)
+    if not ids and category is None:
+        return True
+    here = getattr(channel, "id", None)
+    parent = getattr(channel, "parent_id", None)
+    if here in ids or (parent is not None and parent in ids):
+        return True
+    if category is None:
+        return False
+    if getattr(channel, "category_id", None) == category.id:
+        return True
+    if parent is not None:
+        home = guild.get_channel(parent)
+        return home is not None and getattr(home, "category_id", None) == category.id
+    return False
 
 
 def may_speak_in(guild, channel):
@@ -1146,7 +1197,7 @@ def may_speak_in(guild, channel):
         return True
     bound = chat_room_id(guild.id)
     if bound is None:
-        return True
+        return _is_his(guild, channel)
     # A thread hanging off the chat room is still the chat room.
     return channel.id == bound or getattr(channel, "parent_id", None) == bound
 
@@ -1162,8 +1213,9 @@ async def _point_home(message, guild):
     if now - _pointed.get(message.channel.id, 0) < POINTER_QUIET:
         return
     _pointed[message.channel.id] = now
-    home = guild.get_channel(chat_room_id(guild.id))
-    where = home.mention if home else "the room set aside for it"
+    bound = chat_room_id(guild.id)
+    home = guild.get_channel(bound) if bound else None
+    where = home.mention if home else "my own rooms"
     try:
         await message.reply(
             f"I only talk in {where}. Votes and colours work anywhere.",

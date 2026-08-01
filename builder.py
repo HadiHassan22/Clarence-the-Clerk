@@ -84,7 +84,13 @@ def from_modules(guild_id):
         categories.append({
             "name": name,
             "governance": True,
-            "visibility": ("cooperative" if name == "governance" else "members"),
+            # The category itself gates nothing, and must not: it holds the
+            # cooperative's rooms and the server's record side by side now,
+            # and every room in it carries its own overwrites. A category
+            # that shut the door would be a second answer to a question the
+            # rooms have already answered, and the wrong one for half of
+            # them.
+            "visibility": "gate",
             "channels": [
                 {
                     "name": spec["name"],
@@ -180,10 +186,10 @@ def overwrites_for(guild, cooperative, owner, spec, default_vis="members",
         create_public_threads=False,
         create_private_threads=False,
         # The room stays Eugene's -- proposals, ballots and the record are
-        # posted, not chatted -- but a floor is also where the debate on a
-        # proposal happens now, and that debate is a thread he opens on it.
-        # A room that wants no talking of any kind (the record, the archive)
-        # says nothing here and keeps threads shut, which is the default.
+        # posted, not chatted -- but the debate on a proposal happens in the
+        # thread he opens on it, and a thread nobody may write in is not a
+        # debate. A room that wants no talking of any kind (the record, the
+        # archive) says nothing here and keeps threads shut, the default.
         send_messages_in_threads=bool(spec.get("threads")),
     )
     seen = discord.PermissionOverwrite(view_channel=True)
