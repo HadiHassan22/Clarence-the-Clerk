@@ -1,27 +1,26 @@
 # Contributing
 
-This repo runs a live Discord server for a group of friends. `main` is the
-published branch: whatever lands there deploys to the real server within
-about two minutes. Treat a merge as a release.
+`main` is the published branch, and installs track it. Treat a merge as a
+release.
 
 ## The workflow
 
-You work from a **fork**. You never push to this repository directly.
+You work from a **fork**. Nobody pushes to `main` directly.
 
 ```sh
 # once
 git clone https://github.com/<you>/Clarence-the-Clerk.git
 cd Clarence-the-Clerk
-git remote add upstream https://github.com/salahalshayah/Clarence-the-Clerk.git
+git remote add upstream https://github.com/<owner>/Clarence-the-Clerk.git
 
 # per change
 git fetch upstream && git checkout -b my-change upstream/main
 # ... work ...
 git push origin my-change
-# then open a pull request against salahalshayah/Clarence-the-Clerk: main
+# then open a pull request against upstream: main
 ```
 
-Salah reviews and merges. Nothing else reaches `main`.
+A maintainer reviews and merges. Nothing else reaches `main`.
 
 ## Setting up to run it
 

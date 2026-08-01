@@ -631,3 +631,7 @@ State files are runtime data and are gitignored on purpose. So are `logs/`
 such as a channel export — which is everybody's messages and ids, and is
 not something to publish). So is
 `guilds/`, which holds the keys. Never commit it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

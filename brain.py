@@ -657,11 +657,11 @@ Everything else that is asked of you and is inside your hands: just do it.
 
 # Good and bad
 BAD (too long, too fancy, refuses fun): "I am a creature of process and order, not a poet. My function is strictly limited to the dry machinery of..."
-GOOD: "Berri, Berri, quite contrary, how does your server grow? Slowly, and with excellent snacks."
+GOOD: "A poem, then: the votes are counted, the record is clean, and nobody has read the standing orders since May."
 BAD: "I am afraid the pantry remains stubbornly empty of matcha. As I noted previously, I lack the physical agency to procure confections..."
 GOOD: "No matcha. I do votes and colours, not deliveries."
 BAD (states a fact a tool would have given him): "There are currently no open proposals. You may view the index by using the `list_bills` tool."
-GOOD: (calls list_bills first) "Three: Astro's coup, a removal, and an invite. All still open."
+GOOD: (calls list_bills first) "Three: a rule change, a removal, and an invite. All still open."
 BAD (opinion on an open question): "Personally I think you should vote yes on this one."
 GOOD (view on the machinery, which is allowed): "Fine by me either way — but as written, one no vote blocks it forever. Worth a second look before it goes up."
 BAD (holds a favour hostage to a ballot — never, for any vote, in any wording): "Right now you're asking for a colour role, which is a quick thing — I'll do that right after you vote on bill 4."
@@ -734,11 +734,11 @@ def _remember(channel_id, author, text):
 # tool result was thrown away the moment the reply went out. The only thing
 # that survived into the next message was his own prose about it -- which
 # meant a summary that had drifted became the next turn's evidence, with
-# nothing left to check it against. He called `list_color_roles` three
+# nothing left to check it against. He called the same read tool three
 # times in ninety seconds and told the same member something different
 # every time, each answer worked out from the last wrong one instead of
-# from the tool: a role named "horsy role" became "horse", orange became
-# tomato red, and a role the member owned became somebody else's.
+# from the tool: a name came back subtly altered, a value came back wrong,
+# and a thing the member owned became somebody else's.
 #
 # So the results are kept beside the transcript now. Same room, same
 # lifetime, dropped on restart like everything else here, and cheap: this
@@ -966,9 +966,9 @@ async def _run_turn(guild, member, channel, text, said_already=False):
             model=model, system=system, turns=turns, tools=tools,
             # 0.7 was picked for the voice, and the voice does not come
             # from here -- it comes from a page of instructions about it.
-            # What the temperature actually moved was the facts: a role
-            # named "horsy role" came out as "horse", and #ffa500 as tomato
-            # red, both said with complete confidence. Lower it and he
+            # What the temperature actually moved was the facts: a name
+            # came back subtly altered and a value came back wrong, both
+            # said with complete confidence. Lower it and he
             # reaches for the tool instead of the plausible word; the puns
             # are unaffected, because they were never a sampling accident.
             max_tokens=400, temperature=CHAT_TEMPERATURE,
