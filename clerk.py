@@ -54,7 +54,6 @@ import modules
 import people
 import powers
 import providers
-import pulse
 import roster
 import sanction
 import settings
@@ -1320,10 +1319,9 @@ async def file_from_modal(interaction, **kwargs):
 # ---------- submitting bills ----------
 
 class BillModal(discord.ui.Modal, title="Make a proposal"):
-    def __init__(self, priority=False, prefill=None, from_draft=None):
+    def __init__(self, priority=False, prefill=None):
         super().__init__()
         self.priority = bool(priority)
-        self.from_draft = from_draft
         # A draft he wrote arrives filled in and every word of it editable,
         # which is the difference between an offer and a fait accompli. The
         # person who presses send is the author, so they had better be able
@@ -1373,18 +1371,6 @@ class BillModal(discord.ui.Modal, title="Make a proposal"):
             options=options,
             priority=self.priority,
         )
-        if bill is not None and self.from_draft is not None:
-            pulse.drop_draft(self.from_draft)
-            try:
-                message = await interaction.channel.fetch_message(self.from_draft)
-                await message.edit(
-                    content=f"-# Filed by {interaction.user.display_name} as "
-                            f"Proposal No. {bill['no']}.",
-                    view=None,
-                )
-            except discord.HTTPException:
-                pass
-
 
 def parse_options(raw):
     """One option per line, duplicates dropped, order kept. Returns the
@@ -2133,8 +2119,6 @@ async def check_floor():
 # can be talked into saying something it should not.
 
 DUTY_MINUTES = 15
-# How often the heartbeat wakes to look. Looking is free; see pulse.py.
-PULSE_MINUTES = 20
 
 
 def is_priority(bill):
@@ -2335,265 +2319,6 @@ async def update_outstanding(guild, silent=False):
             f"-# {len(items)} decision(s) still want doing. The list is pinned."
         )
     return items
-
-
-# ---------- the heartbeat ----------
-# The other proactive loop, and the only one that spends. duties.py is free
-# by construction and stays that way; everything below is fenced instead.
-#
-# The order is the whole design: a timer wakes it, plain arithmetic decides
-# whether anything has happened, and only then is the model asked. A quiet
-# server costs nothing at all, and a busy one costs at most MAX_PER_DAY
-# thoughts however wrong the gate turns out to be.
-
-
-class DraftView(discord.ui.View):
-    """A proposal he wrote, with a button that files it in somebody else's
-    name.
-
-    This is the whole of his volition and the limit of it. He is not an
-    author here and never becomes one: whoever presses the button is the
-    author, wanted it, and can throw it away first. If nobody presses,
-    nothing was proposed -- which is the correct outcome for an idea only
-    the bot had.
-    """
-
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="File this", emoji="🖋️",
-        style=discord.ButtonStyle.primary, custom_id="clerk:draft_file",
-    )
-    async def file(self, interaction: discord.Interaction, button):
-        if not in_cooperative(interaction.user):
-            return await interaction.response.send_message(
-                NOT_INSIDE, ephemeral=True
-            )
-        held = pulse.draft(interaction.message.id)
-        if held is None:
-            return await interaction.response.send_message(
-                "That draft has gone. Anyone can write it out with "
-                "`/propose`, which is all this button ever did.",
-                ephemeral=True,
-            )
-        await interaction.response.send_modal(
-            BillModal(prefill=held, from_draft=interaction.message.id)
-        )
-
-    @discord.ui.button(
-        label="Not interested", emoji="🗑️",
-        style=discord.ButtonStyle.secondary, custom_id="clerk:draft_drop",
-    )
-    async def drop(self, interaction: discord.Interaction, button):
-        if not in_cooperative(interaction.user):
-            return await interaction.response.send_message(
-                NOT_INSIDE, ephemeral=True
-            )
-        held = pulse.draft(interaction.message.id)
-        pulse.drop_draft(interaction.message.id)
-        if held:
-            # Already marked raised when it was posted; this only makes the
-            # refusal explicit in the log. He does not re-raise either way.
-            log.info(f"draft declined by {interaction.user.display_name}: "
-                     f"{held.get('topic')!r}")
-        try:
-            await interaction.message.edit(
-                content="-# A draft nobody wanted. Cleared.", view=None
-            )
-        except discord.HTTPException:
-            pass
-        await interaction.response.send_message(
-            "Cleared, and I will not raise it again.", ephemeral=True
-        )
-
-
-def governance_digest(guild):
-    """Where things stand, in the fewest words that are still true. Free:
-    every figure comes off files already on disk."""
-    bills = load_json(BILLS, [])
-    lines = []
-    for bill in bills:
-        if bill.get("status") != "on_floor":
-            continue
-        st = vote_state(guild, bill)
-        kind = "poll (everyone)" if st["open_kind"] else "proposal"
-        lines.append(
-            f"- No. {bill['no']} {bill['title']!r} ({kind}), "
-            f"{st['voted']} of {st['size']} voted, closes {bill.get('ends_at')}"
-        )
-    items = duties.outstanding(bills, closing_report)
-    if items:
-        lines.append(
-            f"- {len(items)} decision(s) passed and not carried out: "
-            + "; ".join(str(i.get("title", "")) for i in items[:4])
-        )
-    return "\n".join(lines)
-
-
-def pulse_material(guild):
-    """Everything the gate needs, and not one token spent gathering it."""
-    said, speakers = brain.fresh_counts()
-    bills = load_json(BILLS, [])
-    open_bills = []
-    latest = None
-    for bill in bills:
-        submitted = bill.get("submitted_at")
-        if submitted and (latest is None or submitted > latest):
-            latest = submitted
-        if bill.get("status") != "on_floor":
-            continue
-        st = vote_state(guild, bill)
-        open_bills.append({
-            "no": bill["no"], "ends_at": bill.get("ends_at"),
-            "waiting": st["waiting"],
-        })
-    items = duties.outstanding(bills, closing_report)
-    return {
-        "messages": said,
-        "speakers": len(speakers),
-        "speaker_ids": sorted(speakers),
-        "open_bills": open_bills,
-        "outstanding": len(items),
-        "outstanding_stale": bool(items) and not duties.chase_due(),
-        "floor_idle_since": latest,
-    }
-
-
-async def pulse_speak(guild, answer):
-    """Do whatever the one thought decided. Returns what was said, for the
-    log, or None."""
-    kind = (answer.get("say") or "nothing").strip()
-    topic = answer.get("topic") or ""
-    text = " ".join((answer.get("text") or "").split())
-
-    if kind == "draft":
-        draft = answer.get("draft") or {}
-        title = _clean(draft.get("title"), 100)
-        what = _clean(draft.get("what"), 4000)
-        why = _clean(draft.get("why"), 4000)
-        room_ = room(guild, "proposals")
-        if not (title and what and why) or room_ is None:
-            return None
-        body = (
-            f"### A draft, if anyone wants it\n{text}\n\n"
-            f"**{title}**\n{what}\n\n*Why:* {why}\n"
-            f"-# I did not propose this and I have no vote on it. Whoever "
-            f"presses the button is the author, and can rewrite every word "
-            f"of it first."
-        )
-        message = await room_.send(body, view=DraftView())
-        pulse.keep_draft(message.id, {"title": title, "what": what, "why": why},
-                         topic)
-        pulse.mark_raised(topic)
-        return f"draft: {title!r}"
-
-    if kind == "remark" and text:
-        # Wherever he is allowed to talk, and nowhere else. A server that
-        # kept him to one room did not mean "except when he starts it".
-        bound = brain.chat_room_id(guild.id)
-        where = guild.get_channel(bound) if bound else room(guild, "proposals")
-        if where is None:
-            return None
-        await where.send(text[:1800], allowed_mentions=discord.AllowedMentions.none())
-        pulse.mark_raised(topic)
-        return f"remark: {text[:60]!r}"
-
-    return None
-
-
-def pulse_learn(guild, answer):
-    """File what he picked up about people. Names are resolved against the
-    server, so a note about somebody who does not exist is dropped rather
-    than filed under a name he invented.
-
-    A house that has switched memory off is one where he thinks about the
-    room and files none of it. Checked here rather than in the prompt: what
-    a house has switched off is not a matter of persuasion. The switch and
-    not `module_live`, because there is no getting an answer out of the
-    model without a key in the first place, and re-asking would only be a
-    second way for the same fact to be wrong.
-    """
-    if not modules.enabled(guild.id, "memory"):
-        return 0
-    filed = 0
-    for item in (answer.get("people") or [])[:3]:
-        if not isinstance(item, dict):
-            continue
-        who = (item.get("who") or "").strip()
-        text = (item.get("text") or "").strip()
-        if not who or not text:
-            continue
-        member = discord.utils.find(
-            lambda m: not m.bot and who.lower() in (
-                m.display_name.lower(), getattr(m, "name", "").lower()
-            ),
-            guild.members,
-        )
-        if member is None:
-            log.debug(f"pulse note about unknown {who!r} dropped")
-            continue
-        why_not = people.note(member.id, member.display_name, text)
-        if why_not is None:
-            filed += 1
-        else:
-            log.debug(f"note about {who!r} not filed: {why_not}")
-    return filed
-
-
-@tasks.loop(minutes=PULSE_MINUTES)
-async def pulse_loop():
-    """Wake, look for free, and think only if there is cause."""
-    guild = home_guild()
-    if guild is None or not brain.enabled(guild.id):
-        return
-    if not module_live(guild, "pulse"):
-        return
-    if not pulse.due():
-        return
-    if not pulse.under_cap():
-        pulse.record_look()
-        return
-    if not pulse.within_budget(brain.spend_usd(guild.id),
-                               settings.budget_usd(guild.id)):
-        pulse.record_look()
-        return
-
-    material = pulse_material(guild)
-    reason = pulse.gate(material)
-    if reason is None:
-        pulse.record_look()
-        return
-
-    try:
-        chat = brain.drain_fresh()
-        answer, cost = await brain.pulse_think(
-            guild, reason, governance_digest(guild), chat,
-            people.digest(material["speaker_ids"]),
-        )
-    except Exception as e:
-        log.error(f"pulse think failed: {e!r}")
-        pulse.record_thought()
-        return
-    pulse.record_thought()
-    if not answer:
-        return
-
-    learned = pulse_learn(guild, answer)
-    topic = answer.get("topic") or ""
-    if pulse.raised_recently(topic):
-        log.info(f"pulse: {topic!r} raised recently, holding it "
-                 f"(${cost:.4f}, learned {learned})")
-        return
-    try:
-        spoke = await pulse_speak(guild, answer)
-    except Exception as e:
-        log.error(f"pulse speak failed: {e!r}")
-        return
-    log.info(
-        f"pulse [{reason}] ${cost:.4f} learned={learned} "
-        f"{spoke or 'said nothing'}"
-    )
 
 
 @tasks.loop(minutes=DUTY_MINUTES)
@@ -4772,7 +4497,7 @@ class BrainKeyModal(discord.ui.Modal):
             n for n in settings.keyed_providers(self.guild.id, providers.NAMES)
             if n != self.annex
         ]
-        woken = [modules.name(k) for k in ("chat", "memory", "pulse")
+        woken = [modules.name(k) for k in ("chat", "memory")
                  if modules.enabled(self.guild.id, k)]
         await interaction.followup.send(
             f"Done. He is awake through {providers.label(self.annex)} on "
@@ -6050,7 +5775,6 @@ async def setup_hook():
     slate.configure(DATA)
     roster.configure(DATA)
     duties.configure(DATA)
-    pulse.configure(DATA)
     # Upgrade in place: a host that still carries a key in its environment
     # hands it to the server it serves, once, and is never read again.
     adopted = settings.adopt_env_keys(GUILD_ID)
@@ -6076,7 +5800,6 @@ async def setup_hook():
     bot.add_view(MultiBallotView())
     bot.add_view(NotesView())
     bot.add_view(RolesHomeView())
-    bot.add_view(DraftView())
     # Same reason as the ballots: a deploy while a ban is waiting to be
     # signed must not leave the administrator holding a dead card.
     bot.add_view(sanction.SignOffView())
@@ -6215,8 +5938,6 @@ async def on_ready():
         furniture_loop.start()
     if not duty_loop.is_running():
         duty_loop.start()
-    if not pulse_loop.is_running():
-        pulse_loop.start()
 
 
 @bot.event

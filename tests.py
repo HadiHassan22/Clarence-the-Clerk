@@ -2712,193 +2712,6 @@ def test_one_memory_store(data):
     people.configure(data / "people-store")
 
 
-def test_pulse(data):
-    """The heartbeat, which is the only proactive thing that spends. Every
-    check here is about it not spending: the gate, the daily cap, the
-    budget floor, and never raising the same thing twice."""
-    print("\nthe heartbeat, and what it costs to have one")
-    import pulse
-
-    pulse.configure(data / "pulse-store")
-    now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
-
-    quiet = {"messages": 0, "speakers": 0, "open_bills": [], "outstanding": 0}
-    check("a quiet server wakes him for nothing at all",
-          pulse.gate(quiet, now) is None)
-    check("one person talking to themselves is not a conversation",
-          pulse.gate({**quiet, "messages": 20, "speakers": 1}, now) is None)
-    check("and neither is two people saying hello",
-          pulse.gate({**quiet, "messages": 3, "speakers": 2}, now) is None)
-    reason = pulse.gate({**quiet, "messages": 12, "speakers": 3}, now)
-    check(f"a real conversation does: {reason!r}", reason and "12 messages" in reason)
-
-    soon = (now + timedelta(hours=2)).isoformat()
-    late = (now + timedelta(days=3)).isoformat()
-    check("a vote about to close with people yet to vote is worth a look",
-          "closes soon" in (pulse.gate(
-              {**quiet, "open_bills": [{"no": 4, "ends_at": soon, "waiting": 3}]},
-              now) or ""))
-    check("the same vote with everybody voted is not",
-          pulse.gate(
-              {**quiet, "open_bills": [{"no": 4, "ends_at": soon, "waiting": 0}]},
-              now) is None)
-    check("nor is one with days left to run",
-          pulse.gate(
-              {**quiet, "open_bills": [{"no": 4, "ends_at": late, "waiting": 3}]},
-              now) is None)
-    check("a passed decision nobody has done is worth one look",
-          pulse.gate({**quiet, "outstanding": 2, "outstanding_stale": True},
-                     now) is not None)
-    check("and is not, while the weekly chase still has it in hand",
-          pulse.gate({**quiet, "outstanding": 2, "outstanding_stale": False},
-                     now) is None)
-
-    check("half a month spent still leaves room to think unprompted",
-          pulse.within_budget(5.0, 10.0) is True)
-    check("but the last quarter is kept for being spoken to",
-          pulse.within_budget(8.0, 10.0) is False)
-    check("and a server with no budget at all never thinks unprompted",
-          pulse.within_budget(0.0, 0.0) is False)
-
-    check("the day starts with the cap unspent", pulse.under_cap(now) is True)
-    for i in range(pulse.MAX_PER_DAY):
-        pulse.record_thought(now + timedelta(minutes=i))
-    check("a gate that goes wrong costs a day's cap and no more",
-          pulse.under_cap(now + timedelta(minutes=30)) is False)
-    check("and tomorrow is a fresh day",
-          pulse.under_cap(now + timedelta(days=1)) is True)
-
-    check("looking is free and does not count against the day",
-          pulse.spent_today(now + timedelta(days=2)) == 0)
-    pulse.record_look(now + timedelta(days=2))
-    check("but it does reset the timer, so the loop cannot spin",
-          pulse.due(now + timedelta(days=2)) is False)
-    check("and the timer comes round again",
-          pulse.due(now + timedelta(days=2) + pulse.EVERY) is True)
-
-    pulse.mark_raised("voice channel clutter", now)
-    check("something he has raised is left alone",
-          pulse.raised_recently("voice channel clutter", now) is True)
-    check("however it is capitalised or spaced",
-          pulse.raised_recently("  Voice Channel   Clutter ", now) is True)
-    check("something else is not",
-          pulse.raised_recently("meeting night", now) is False)
-    check("and a fortnight later it may be raised again",
-          pulse.raised_recently("voice channel clutter",
-                                now + timedelta(days=15)) is False)
-
-    pulse.keep_draft(555, {"title": "T", "what": "W", "why": "Y"}, "clutter", now)
-    check("a draft waits for somebody to want it",
-          pulse.draft(555)["title"] == "T")
-    pulse.drop_draft(555)
-    check("and is gone once it is taken up or thrown away",
-          pulse.draft(555) is None)
-
-
-def test_heartbeat_wiring(clerk, data):
-    """The heartbeat end to end, minus the model: what one thought does
-    once it comes back. The interesting half is what it refuses to do."""
-    print("\nwhat one unprompted thought is allowed to do")
-    import people
-    import pulse
-
-    people.configure(data / "beat-people")
-    pulse.configure(data / "beat-pulse")
-
-    sent = []
-
-    class FakeChannel:
-        id = 4242
-        mention = "#propose"
-
-        async def send(self, content=None, view=None, **kw):
-            sent.append((content, view))
-            return types.SimpleNamespace(id=900 + len(sent))
-
-    guild = types.SimpleNamespace(
-        id=51, name="The Hangout", text_channels=[], channels=[],
-        members=[fake_member(1), fake_member(2)],
-        get_channel=lambda _id: None, get_role=lambda _id: None,
-    )
-    guild.members[0].display_name = "Horsy"
-    guild.members[1].display_name = "Berri"
-
-    keep_room = clerk.room
-    clerk.room = lambda g, key: FakeChannel()
-    try:
-        quiet = run(clerk.pulse_speak(guild, {"say": "nothing", "topic": "x",
-                                              "text": ""}))
-        check("a thought that ends in silence says nothing and marks nothing",
-              quiet is None and not sent
-              and pulse.raised_recently("x") is False)
-
-        spoke = run(clerk.pulse_speak(guild, {
-            "say": "remark", "topic": "vote closing",
-            "text": "No. 4 closes in an hour with three yet to vote."}))
-        check("a remark is said once", spoke and len(sent) == 1
-              and "closes in an hour" in sent[0][0])
-        check("and the topic is written down, so it is not said again",
-              pulse.raised_recently("vote closing") is True)
-
-        sent.clear()
-        drafted = run(clerk.pulse_speak(guild, {
-            "say": "draft", "topic": "voice clutter",
-            "text": "Four people have hit this.",
-            "draft": {"title": "Archive dead voice channels",
-                      "what": "Voice channels unused for 60 days are archived.",
-                      "why": "Horsy and Berri both raised it."}}))
-        check("a draft is posted", drafted and len(sent) == 1)
-        body, view = sent[0]
-        check("with the proposal written out in full",
-              "Archive dead voice channels" in body
-              and "unused for 60 days" in body)
-        check("and it says plainly that he is not the author",
-              "I did not propose this" in body and "no vote on it" in body)
-        check("and carries a button for somebody who wants it",
-              isinstance(view, clerk.DraftView))
-        held = pulse.draft(901)
-        check("the draft is kept so the button can file it later",
-              held and held["title"] == "Archive dead voice channels")
-
-        sent.clear()
-        blocked = run(clerk.pulse_speak(guild, {
-            "say": "draft", "topic": "half a draft",
-            "text": "x", "draft": {"title": "T", "what": "", "why": "Y"}}))
-        check("a draft missing its operative text is not posted at all",
-              blocked is None and not sent)
-
-        # Learning: names are resolved against the server, so he cannot
-        # file a note under somebody he invented.
-        filed = clerk.pulse_learn(guild, {"people": [
-            {"who": "Horsy", "text": "argues for sport, cares about voice"},
-            {"who": "Nobody At All", "text": "invented out of thin air"},
-            {"who": "Berri", "text": "runs the book club"},
-        ]})
-        check("what he learned about real people is filed", filed == 2)
-        check("under the right names",
-              "argues for sport" in people.summary(1)
-              and "book club" in people.summary(2))
-        check("and a note about somebody who does not exist is dropped, "
-              "not filed under a name he made up",
-              people.counts()[0] == 2)
-
-        people.forget_person(1)
-        again = clerk.pulse_learn(guild, {"people": [
-            {"who": "Horsy", "text": "something new about them"},
-        ]})
-        check("somebody who asked him to stop is not learned about by the "
-              "heartbeat either -- that is the whole point of the strike",
-              again == 0 and people.profile(1)["notes"] == [])
-
-        check("more than three things learned at once is trimmed",
-              clerk.pulse_learn(guild, {"people": [
-                  {"who": "Berri", "text": f"observation {i}"}
-                  for i in range(9)
-              ]}) <= 3)
-    finally:
-        clerk.room = keep_room
-
-
 def test_empty_promises(data):
     """He has no later. A reply that promises to do a thing and does not do
     it is the one failure a member cannot see -- it reads as handled -- so
@@ -3125,11 +2938,10 @@ def test_modules(data):
           modules.enabled(gid, "governance") and modules.chosen(gid) == {})
 
     changed, knock = modules.set_enabled(gid, "chat", False)
-    check("switching conversation off takes memory and the heartbeat with it",
-          changed and set(knock) == {"memory", "pulse"})
-    check("and they read as off however their own switch is set",
-          not modules.enabled(gid, "memory")
-          and not modules.enabled(gid, "pulse"))
+    check("switching conversation off takes memory with it",
+          changed and set(knock) == {"memory"})
+    check("and it reads as off however its own switch is set",
+          not modules.enabled(gid, "memory"))
     check("but the panel can still tell a knocked-out module from a chosen one",
           modules.switched_on(gid, "memory")
           and modules.status(gid, "memory") == "blocked"
@@ -3146,7 +2958,7 @@ def test_modules(data):
     check("what the selection left standing is still standing",
           modules.enabled(gid, "governance") and modules.enabled(gid, "health"))
     check("and a selection that names a dependant brings its dependency too",
-          modules.apply_set(gid, ["pulse"]) and modules.enabled(gid, "chat"))
+          modules.apply_set(gid, ["memory"]) and modules.enabled(gid, "chat"))
     modules.reset(gid)
 
     print("\ndormant is not off: it names the gap instead")
@@ -4018,7 +3830,6 @@ def main():
         test_duties(data)
         test_people(data)
         test_one_memory_store(data)
-        test_pulse(data)
         test_modules(data)
         test_slate(data)
         test_warden_settings(data)
@@ -4060,7 +3871,6 @@ def main():
             test_colour_words(clerk, data)
             test_colour_picking(clerk, data)
             test_dynamic_thresholds(data)
-            test_heartbeat_wiring(clerk, data)
             test_empty_promises(data)
             test_prompt_caching(data)
             test_turn_shape(data)

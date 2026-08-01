@@ -685,14 +685,13 @@ def _floor_now(guild):
 
 
 def forget_room():
-    """Drop the rolling transcript and the heartbeat's buffer.
+    """Drop the rolling transcript.
 
     Both live in this process rather than on disk, so clearing the files
     without this leaves him quoting a room he has just been told to forget
     until the next restart.
     """
     _memory.clear()
-    _fresh.clear()
 
 
 def _remember(channel_id, author, text):
@@ -751,47 +750,6 @@ def _deed_log(channel_id):
         + "\n".join(lines)
         + "\n\n"
     )
-
-
-# What has been said since the heartbeat last looked, which is a different
-# question from what is in the room's rolling transcript: the gate needs to
-# know whether anything is *new*, and a deque that is always full cannot say.
-# Bounded like everything else here, and dropped entirely on restart -- a
-# conversation he was not running for is not one to catch up on.
-FRESH_MAX = 120
-_fresh = {}
-
-
-def _note_fresh(channel_id, author_id, display, text):
-    buf = _fresh.setdefault(channel_id, [])
-    buf.append((author_id, display, text[:600]))
-    if len(buf) > FRESH_MAX:
-        del buf[:-FRESH_MAX]
-
-
-def fresh_counts():
-    """How much has been said since the last look, and by how many people.
-    Free, and the gate runs on it."""
-    said = sum(len(buf) for buf in _fresh.values())
-    speakers = {uid for buf in _fresh.values() for uid, _, _ in buf}
-    return said, speakers
-
-
-def drain_fresh(limit=60):
-    """The new conversation, and then forget it was new.
-
-    Called only once a pulse has decided to spend, so a look that ends in
-    silence leaves the buffer alone and yesterday's three messages are still
-    there tomorrow to be counted with today's.
-    """
-    lines = []
-    for channel_id, buf in _fresh.items():
-        for _uid, display, text in buf:
-            lines.append(f"<{display}> {text}")
-    _fresh.clear()
-    if not lines:
-        return ""
-    return "\n".join(lines[-limit:])
 
 
 def _transcript(channel_id, drop_last=False):
@@ -980,118 +938,6 @@ async def _run_turn(guild, member, channel, text, said_already=False):
     return TOO_DEEP_LINE, used_tools, cost, cached
 
 
-# ---------- the heartbeat's one thought ----------
-
-PULSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "say": {
-            "type": "string",
-            "enum": ["nothing", "remark", "draft"],
-        },
-        "topic": {
-            "type": "string",
-            "description": "two or three words naming what this is about",
-        },
-        "text": {
-            "type": "string",
-            "description": "one or two sentences, his voice, or empty",
-        },
-        "draft": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "what": {"type": "string"},
-                "why": {"type": "string"},
-            },
-            "required": ["title", "what", "why"],
-        },
-        "people": {
-            "type": "array",
-            "description": "0-3 durable things learned about named people",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "who": {"type": "string"},
-                    "text": {"type": "string"},
-                },
-                "required": ["who", "text"],
-            },
-        },
-    },
-    "required": ["say", "topic", "text", "people"],
-}
-
-# The whole of what he is told when he wakes up on his own. Written to
-# argue for silence: an unprompted bot is an interruption by default, and
-# the only ones worth having are the ones that clear a high bar.
-PULSE_PROMPT = """You are Eugene, who runs "{house}". You woke up on your own -- nobody asked you anything. This is the one moment you get to decide whether the room is better off hearing from you, and the honest answer is almost always no.
-
-Why you were woken: {reason}
-
-# What is going on
-{governance}
-
-# What people have been saying
-{chat}
-
-# Who you know
-{people}
-
-# Your job right now, in order
-1. Learn. From the conversation above, note anything durable about a *named* person -- how they argue, what they care about, what they are working on, when they are around. Not what they said once; what they are like. Nought to three of these, and nought is a fine answer. Never note anything about how somebody voted, anything private, anything about a person's body, health, money or relationships, and nothing you would not say to their face.
-2. Then decide whether to speak, and default to "nothing".
-
-# When to say nothing
-- The conversation is fine without you. This is most of the time.
-- You would be repeating yourself, or saying something anyone present already knows.
-- You would be reminding people about a vote for no reason, or nudging anybody toward how to vote.
-- You have nothing to add except that you exist. Never announce that you are here, that you are watching, or that you noticed something, unless the noticing is itself useful.
-- You would be making a joke into a room that has moved on.
-
-# When a remark is worth it
-Something factual and useful that nobody in the room has: a vote about to close with people yet to vote, a decision that passed weeks ago and never happened, a question they are going round in circles on that the rules already answer. One or two sentences, in your voice, no preamble, no sign-off. Say the thing.
-
-# When a draft is worth it
-Several people have run into the same problem, or asked for the same change, and nobody has filed anything. Then you write the proposal out and offer it: title, what, why. Two hard rules on this and they are not negotiable.
-- **You are not the author and you never will be.** It is an offer with a button on it. If nobody wants it, nobody presses, and nothing was proposed. Write the why in *their* words -- the people who raised it -- and never in yours. Never write "I propose", never argue for it, never say it should pass.
-- **Never draft anything about yourself**: your hosting, your budget, your model, your keys, what you cost, where you run. Not once, not obliquely, not as a joke. If somebody wants that proposed they can ask you and you will file it for them, which is a different thing entirely.
-
-# Voice
-Match the room. Short. Dry. No preamble, no "just a heads up", no "I noticed", no offering further help. If you have nothing, say nothing -- it costs nobody anything and it is the answer that keeps people glad you are here.
-
-Return `say` as "nothing", "remark" or "draft". `topic` is two or three words naming the subject either way, so you do not raise the same thing twice. `text` is what you would say (empty for "nothing"). `draft` only when say is "draft"."""
-
-
-async def pulse_think(guild, reason, governance, chat, people_digest):
-    """One unprompted thought. Returns the parsed decision and the cost.
-
-    Structured on purpose: an unprompted message that arrived as free prose
-    would have to be parsed, and a parser that guesses is a parser that
-    eventually posts the reasoning instead of the remark.
-    """
-    name = provider_name(guild.id)
-    if name is None:
-        return None, 0.0
-    prompt = PULSE_PROMPT.format(
-        house=guild.name,
-        reason=reason,
-        governance=governance or "Nothing open, nothing outstanding.",
-        chat=chat or "Nothing since the last look.",
-        people=people_digest or "Nobody yet.",
-    )
-    model = model_name(guild.id, name)
-    answer, tokens_in, tokens_out = await _call(
-        guild.id, "json_answer",
-        model=model,
-        prompt=prompt,
-        schema=PULSE_SCHEMA,
-        max_tokens=700,
-    )
-    cost = _record_usage(guild.id, name, tokens_in, tokens_out, model=model)
-    return answer, cost
-
-
 def _is_addressed(message):
     bot = _deps["bot"]
     if isinstance(message.channel, discord.DMChannel):
@@ -1211,13 +1057,6 @@ async def handle_message(message):
         _remember(
             message.channel.id, message.author.display_name, message.content
         )
-        # And the same content again, for the heartbeat, which reads what
-        # the room said rather than only what was said to him. Same gate:
-        # a room he is kept out of is one he learns nothing from.
-        _note_fresh(
-            message.channel.id, message.author.id,
-            message.author.display_name, message.content,
-        )
     if not _is_addressed(message):
         return
     if not speaks_here:
@@ -1290,9 +1129,7 @@ async def handle_message(message):
     # always the answer is none" -- so the common case was paying a round
     # trip to be told nothing, and the gate was an attempt to make a
     # doubtful feature cheaper rather than to decide whether to have it.
-    # The heartbeat already learns, on its own schedule, from the room
-    # rather than from one exchange, and it does it inside a call that was
-    # going to happen anyway. One learner, no second call per message.
+    # What he keeps now, he keeps because somebody asked him to.
 
     state = _load_state(guild.id)
     _save_state(guild.id, state)  # touch to ensure file exists

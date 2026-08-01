@@ -44,10 +44,6 @@ Design history and scopes: [governance-design.md](governance-design.md),
 - **`duties.py`**: the short list of things the clerk says without being
   asked, and the ledger that stops him saying any of them twice. Costs
   nothing: no line of it consults the model.
-- **`pulse.py`**: the heartbeat. When he is worth waking, and what he may
-  do awake. This is the one proactive thing that spends, so the whole
-  module is the fence around it — the gate, the daily cap, the budget
-  floor, and the ledger of what he has already raised.
 - **`people.py`**: who he knows. Short notes on each person, owned by that
   person, readable and deletable by them and by nobody else.
 - **`warden.py`**: the house rules he keeps without a vote — every
@@ -177,7 +173,6 @@ either with nothing else at all.
 | Colour roles | self-service colours, yours or anyone's | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
 | Memory of people | short notes on the people here, each owned by them | on¹ |
-| Heartbeat | he notices things unprompted; the only feature that spends on its own | on¹ |
 | Moderation | the filters, warnings, and the hands | off |
 | Arrivals | greetings, goodbyes, an arrival role | on, until pointed at a room |
 | Audit log | deletes, edits, arrivals, every moderation action | on |
@@ -209,10 +204,9 @@ to a timeout, what the greeting says), never whether it runs. You can also
 just say it — *turn the filters on*, *stop greeting people* — which is the
 same switch from the other side.
 
-Three of them stand on `Conversation`, because a brain he may not have is
-what they are made of: switch that off and memory and the heartbeat go
-with it, and the panel says so rather than leaving two switches that look
-on and do nothing. The panel distinguishes four states throughout:
+Memory stands on `Conversation`, because a brain he may not have is what
+it is made of: switch that off and memory goes with it, and the panel says
+so rather than leaving a switch that looks on and does nothing. The panel distinguishes four states throughout:
 🟢 running · 🟡 on but waiting on a room or a key · 🟠 needs another
 feature that is off · ⬜ off.
 
@@ -349,8 +343,8 @@ API before they are saved, and kept in the server's own settings file at
 pays for its own thinking and has its own monthly budget, spend counter and
 rate limits.
 
-Setting one wakes Conversation, Memory of people and the Heartbeat
-together, and the reply says which. **Details** says what is configured.
+Setting one wakes Conversation and Memory of people together, and the
+reply says which. **Details** says what is configured.
 `/setup` is restricted to administrators.
 
 ## The numbers the server votes by
@@ -446,40 +440,6 @@ anything:
 Everything he starts is written into `duties.json` before it is said, so
 nothing is ever said twice — including things that could not be
 delivered, because a DM that bounces is not one to keep retrying.
-
-## The heartbeat
-
-The fourth proactive thing, and the only one that costs anything. Every
-twenty minutes he wakes and works out — in plain Python, for nothing —
-whether anything has actually happened: eight messages from two or more
-people since he last looked, a vote closing within six hours with people
-yet to vote, a passed decision nobody has carried out, a floor that has
-been silent for ten days in a server that is talking. Almost every wake-up
-ends there and costs zero.
-
-When something has happened, he gets **one** thought: he reads the new
-conversation and where governance stands, notes anything durable about the
-people in it, and then decides whether the room is better off hearing from
-him. He is told to answer "nothing" and usually does. What he can do
-instead is say one short useful thing, or write out a proposal and offer
-it.
-
-**He is never the author.** A draft is posted with a button on it; whoever
-presses it gets the proposal in a modal, every word editable, and it is
-filed in *their* name. If nobody presses, nothing was proposed — which is
-the right outcome for an idea only the bot had. He is also barred from
-drafting anything about himself: his hosting, his budget, his model, what
-he costs. If somebody wants that proposed, they can ask him and he files it
-for them, which is a different thing.
-
-Four fences, in this order, before a single token is spent:
-
-| Fence | What it does |
-|---|---|
-| the gate | nothing has changed → back to sleep, cost nothing |
-| `MAX_PER_DAY` | 12 thoughts a day, whatever the gate believes |
-| budget floor | below 25% of the month left, the heartbeat stops entirely — being answered when you speak to him outranks being told something you did not ask |
-| the topic ledger | anything he has raised is left alone for a fortnight |
 
 ## What he learns about people
 

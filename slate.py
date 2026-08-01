@@ -109,7 +109,7 @@ SCOPES = {
         "costs": "The record of nudges sent, roster changes announced and "
                  "topics the heartbeat has raised. Harmless to clear, except "
                  "that things already said once may be said once more.",
-        "shared": ("duties.json", "pulse.json"),
+        "shared": ("duties.json",),
         "owned": (),
         "keys": (),
     },

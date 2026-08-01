@@ -814,8 +814,8 @@ OFFICER_TOOLS = {
         },
     },
     "set_feature": {
-        "description": "Switch one of the ten features on or off for this "
-        "server: governance, polls, colours, chat, memory, pulse, "
+        "description": "Switch one of the features on or off for this "
+        "server: governance, polls, colours, chat, memory, "
         "moderation, welcome, log, health. This is the "
         "master switch -- 'turn the filters on', 'stop greeting people', "
         "'we do not want the log'. A feature that is off does nothing and "
