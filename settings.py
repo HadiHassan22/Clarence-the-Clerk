@@ -260,6 +260,20 @@ VOTING_RULES = {
     "away_days":          (14, 1, 365, int),
 }
 
+# How each number reads to somebody who has to decide whether to change it.
+# Here rather than in clerk.py because two readers want it now -- the panel
+# and the tool that changes one by conversation -- and a second copy is how
+# the wording and the bounds drift apart.
+VOTING_HELP = {
+    "floor_hours": "how long an ordinary vote stays open if nothing settles it",
+    "removal_hours": "the same, for a removal",
+    "fundamental_share": "the share of the roster a removal or a rule change needs",
+    "public_quorum_share": "the share of the server that must vote for an open poll to count",
+    "kick_min_yes": "the fewest yes votes a removal can ever pass on",
+    "away_days": "a quiet spell this long takes you out of the count",
+}
+
+
 _voting_defaults = {name: rule[0] for name, rule in VOTING_RULES.items()}
 
 

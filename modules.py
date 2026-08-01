@@ -138,21 +138,6 @@ ROOM_PLAN = {
         "topic": "Eugene's vitals: commit, latency, spend, open votes. "
                  "Administrators only.",
     },
-    "welcome": {
-        "name": "welcome", "category": "governance",
-        "visibility": "gate", "read_only": False,
-        "topic": "Say hello.",
-        # Bound if the server already has one, never created. "Do you have
-        # somewhere people say hello" has an answer in almost every server
-        # that is not this bot's to give.
-        "adopt": True,
-        # And found only by its binding, never by its name. Every other room
-        # falls back to a name match, because guessing wrong there means
-        # posting a vote in a slightly odd channel. Guessing wrong here
-        # means talking over whatever already greets people, which is worse
-        # than not greeting at all -- so this one waits to be pointed.
-        "bound_only": True,
-    },
     "chat": {
         # His own room, made under his own name. A server with a channel
         # called `chat` has not thereby asked to be confined to it, and the
@@ -249,58 +234,6 @@ SPEC = {
         "commands": (),
         "tools": ("server_info",),
     },
-    "moderation": {
-        "name": "Moderation",
-        "blurb": "The filters, warnings, and the hands: timeouts, bans, "
-                 "sweeps, locks.",
-        "default": False,
-        "rooms": {},
-        "roles": (),
-        "needs": (),
-        "brain": False,
-        "settings": ("automod", "warnings", "mod"),
-        "builds": False,
-        "commands": (),
-        "tools": ("moderate_member", "member_record", "clear_warnings",
-                  "purge_messages", "channel_control", "assign_role",
-                  "announce", "tag"),
-    },
-    "welcome": {
-        "name": "Arrivals",
-        "blurb": "Greet people who join, note the ones who leave, hand out "
-                 "an arrival role.",
-        "default": True,
-        "roles": (),
-        "needs": (),
-        "brain": False,
-        # Required, not optional. The greeting used to guess where to go
-        # when nothing was bound -- the system channel, then anything called
-        # general -- and a server that already greets people got greeted
-        # twice by a bot nobody had pointed anywhere. No room, no greeting,
-        # and the panel says which room it is waiting for.
-        "rooms": {"welcome": True},
-        "settings": ("welcome", "goodbye"),
-        # Never creates it either. Somewhere to say hello is something a
-        # server already has, and a bot that turns up and makes you a
-        # #welcome has decided something that was not its to decide.
-        "builds": False,
-        "commands": (),
-        "tools": (),
-    },
-    "log": {
-        "name": "Audit log",
-        "blurb": "A written record of deletes, edits, arrivals and every "
-                 "moderation action.",
-        "default": True,
-        "rooms": {},
-        "roles": (),
-        "needs": (),
-        "brain": False,
-        "settings": ("log",),
-        "builds": False,
-        "commands": (),
-        "tools": (),
-    },
     "health": {
         "name": "Health card",
         "blurb": "His own vitals, pinned and current: commit, latency, "
@@ -320,8 +253,7 @@ SPEC = {
 # Display order for every list a human reads: what he is for, then what he
 # can be talked into, then the housekeeping. Not alphabetical -- the first
 # three are the reason to install him and belong at the top.
-ORDER = ("governance", "polls", "chat",
-         "moderation", "welcome", "log", "health")
+ORDER = ("governance", "polls", "chat", "health")
 
 # Tools that belong to no module because they are how a module is
 # configured. Switching every feature off must still leave the way to

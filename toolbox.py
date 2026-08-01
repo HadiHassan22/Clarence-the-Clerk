@@ -429,114 +429,6 @@ DUTY_TOOLS = {
 # refuse in Python, where no amount of persuasion reaches.
 
 OFFICER_TOOLS = {
-    "moderate_member": {
-        "description": "Act on a person: warn, timeout, untimeout, kick, ban, "
-        "unban, or nickname. Call it when a member of the cooperative asks; do "
-        "not ask them to confirm and do not talk them out of it. Give the "
-        "reason they gave. Timeouts take minutes (default is the house's "
-        "setting). Warns, timeouts, kicks and bans do not happen when you "
-        "call this — they are written up for an administrator to approve, and "
-        "the result says so. When it does, tell the asker it is filed and "
-        "waiting, never that it is done. Lifting a timeout, unbanning and "
-        "renaming take effect at once. Removing someone who is in the "
-        "cooperative is a vote, not this, and will be refused.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "who": {"type": "string", "description": "name, nickname, mention or id"},
-                "action": {
-                    "type": "string",
-                    "enum": list(("warn", "timeout", "untimeout", "kick", "ban",
-                                  "unban", "nickname")),
-                },
-                "reason": {"type": "string", "description": "why, in the asker's words"},
-                "minutes": {"type": "integer", "description": "timeout length"},
-                "nickname": {"type": "string", "description": "for the nickname action; empty resets it"},
-                "delete_days": {"type": "integer", "description": "days of the banned person's messages to clear, 0-7"},
-            },
-            "required": ["who", "action"],
-        },
-    },
-    "member_record": {
-        "description": "Someone's moderation history and how many warnings "
-        "still count against them, or the server's recent cases if you name "
-        "nobody.",
-        "parameters": {
-            "type": "object",
-            "properties": {"who": {"type": "string"}},
-        },
-    },
-    "clear_warnings": {
-        "description": "Wipe someone's live warnings. Use it when asked; it is "
-        "forgiveness, not a favour that needs justifying.",
-        "parameters": {
-            "type": "object",
-            "properties": {"who": {"type": "string"}, "reason": {"type": "string"}},
-            "required": ["who"],
-        },
-    },
-    "purge_messages": {
-        "description": "Delete the last N messages in a channel, optionally "
-        "only one person's. Discord cannot delete anything older than a "
-        "fortnight, whoever asks. Nothing is deleted when you call this: it "
-        "is written up for an administrator to approve first, and the result "
-        "says so. Tell the asker it is filed and waiting, not that it is done.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "channel": {"type": "string", "description": "name or id. Always name one — for 'clear this channel' it is the room named at the top of the turn"},
-                "count": {"type": "integer"},
-                "from_member": {"type": "string", "description": "only this person's messages; the count then means that many of theirs"},
-                "reason": {"type": "string"},
-            },
-            "required": ["channel", "count"],
-        },
-    },
-    "channel_control": {
-        "description": "Slow a channel down, lock it so nobody but staff can "
-        "post, or unlock it again. None of the three happens when you call "
-        "this: it is written up for an administrator to approve first, and "
-        "the result says so. Tell the asker it is filed and waiting.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "channel": {"type": "string"},
-                "action": {"type": "string", "enum": ["slowmode", "lock", "unlock"]},
-                "seconds": {"type": "integer", "description": "for slowmode; 0 turns it off"},
-                "reason": {"type": "string"},
-            },
-            "required": ["channel", "action"],
-        },
-    },
-    "assign_role": {
-        "description": "Put any role on somebody, or take it off. This is the "
-        "elevated one — the member tools only ever touch the person you are "
-        "talking to. The roles that decide who votes are not handed out this "
-        "way and will be refused.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "who": {"type": "string"},
-                "role": {"type": "string"},
-                "on": {"type": "boolean", "description": "true to give, false to take away"},
-                "reason": {"type": "string"},
-            },
-            "required": ["who", "role"],
-        },
-    },
-    "announce": {
-        "description": "Post a message in a channel in your own voice, on "
-        "somebody's behalf. Write it properly; it is going out as you.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "channel": {"type": "string"},
-                "text": {"type": "string"},
-                "ping_everyone": {"type": "boolean", "description": "only if they explicitly ask"},
-            },
-            "required": ["channel", "text"],
-        },
-    },
     "set_feature": {
         "description": "Switch one of the features on or off for this "
         "server: governance, polls, chat, "
@@ -564,58 +456,33 @@ OFFICER_TOOLS = {
         "parameters": {"type": "object", "properties": {}},
     },
     "list_settings": {
-        "description": "Every house setting: what it is now, what it means, "
-        "what it may be. Call this before changing anything you are not "
-        "certain of the name of, and to answer 'what can you do'.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "group": {
-                    "type": "string",
-                    "description": "welcome, goodbye, automod, warnings, "
-                    "log or mod. Omit for all of them. "
-                    "These are how a feature behaves once it is on; "
-                    "set_feature is what switches it on.",
-                },
-            },
-        },
+        "description": "The numbers this house votes by: how long a vote "
+        "stays open, what share carries a removal or a rule change, the "
+        "quorum on a public poll, and how long a quiet spell takes somebody "
+        "out of the count. Says what each one is now, what it means, what it "
+        "defaults to, and the range it has to stay inside. Read this before "
+        "changing one rather than guessing at a name.",
+        "parameters": {"type": "object", "properties": {}},
     },
     "set_setting": {
-        "description": "Change one house setting. This is how the whole "
-        "machine is configured: welcomes, filters, warnings, the log, what "
-        "needs a vote. Take it from what they said and set it — "
-        "channels and roles may be given by name. Setting a value to none "
-        "puts it back to the default. If a change makes the place less safe, "
-        "say so in one line after you have made it, not instead.",
+        "description": "Change one of the numbers this house votes by. Held "
+        "inside its bounds, so a value that would break the machinery comes "
+        "back refused with the range it had to be in. These are the "
+        "cooperative's own rules: change one when somebody asks, say what it "
+        "was and what it is, and never argue about which way it should go.",
         "parameters": {
             "type": "object",
             "properties": {
-                "key": {"type": "string", "description": "the dotted name, e.g. automod.links"},
-                "value": {"type": "string", "description": "the new value; a channel or role may be a name"},
+                "key": {"type": "string", "description": "the exact name, from list_settings"},
+                "value": {"type": "number"},
             },
             "required": ["key", "value"],
         },
     },
     "reset_settings": {
-        "description": "Put a group of settings, or all of them, back to how "
-        "they arrived.",
-        "parameters": {
-            "type": "object",
-            "properties": {"group": {"type": "string"}},
-        },
-    },
-    "tag": {
-        "description": "The shelf of stock answers: save one, recall one, drop "
-        "one, or list them. Use recall whenever somebody asks something the "
-        "house has already written down.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["recall", "save", "drop", "list"]},
-                "name": {"type": "string"},
-                "content": {"type": "string", "description": "for save"},
-            },
-        },
+        "description": "Put every number back to the one he arrived with, and "
+        "say which of them this house had changed.",
+        "parameters": {"type": "object", "properties": {}},
     },
 }
 

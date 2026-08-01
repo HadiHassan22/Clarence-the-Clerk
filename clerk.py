@@ -54,11 +54,9 @@ import modules
 import powers
 import providers
 import roster
-import sanction
 import settings
 import slate
 import toolbox
-import warden
 
 HERE = Path(__file__).parent
 load_dotenv(HERE / ".env")
@@ -320,7 +318,6 @@ def health_content(guild):
         # easy to scroll past, and a sign-off nobody notices is a
         # moderation action that silently never happened -- which is the
         # one way this whole arrangement fails quietly.
-        *([f"⏳ {waiting}"] if (waiting := sanction.summary(guild.id)) else []),
         f"-# Updated <t:{int(now_utc().timestamp())}:R>. "
         f"Administrators only.",
     ]
@@ -2727,7 +2724,7 @@ def brain_lines(guild):
 
 # ---------- what this server currently has ----------
 # `modules.py` decides what a gap means; these three say what is there. The
-# split is the same one warden.py uses: the rules are testable on a laptop,
+# split keeps the rules testable on a laptop:
 # and only the lookups need a server.
 
 def role_for(guild, key):
@@ -3705,15 +3702,8 @@ async def open_slate(interaction, picked=(), note=None):
 # decision comes through this same function and the steward stops being the
 # only way in.
 
-# How each number reads to somebody who has to decide whether to change it.
-VOTING_BLURBS = {
-    "floor_hours": "how long an ordinary vote stays open if nothing settles it",
-    "removal_hours": "the same, for a removal",
-    "fundamental_share": "the share of the roster a removal or a rule change needs",
-    "public_quorum_share": "the share of the server that must vote for an open poll to count",
-    "kick_min_yes": "the fewest yes votes a removal can ever pass on",
-    "away_days": "a quiet spell this long takes you out of the count",
-}
+# What each number means lives in settings.py, beside its bounds.
+VOTING_BLURBS = settings.VOTING_HELP
 
 
 def voting_lines(guild):
@@ -4390,54 +4380,31 @@ async def slash_bills(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="house", description="What Eugene is running for this server")
-@app_commands.describe(group="One group of settings, in full: automod, warnings, log…")
 @app_commands.guild_only()
-async def slash_house(interaction: discord.Interaction, group: str = None):
-    """The settings, read-only, without spending a thought on it.
+async def slash_house(interaction: discord.Interaction):
+    """What is switched on and what this house votes by, read-only and free.
 
-    Everything here is changed by asking him instead, and that is the point
-    of the command: a house whose brain has no key, or whose bill has run
-    out for the month, can still see what its own filters are set to. A
-    switch you cannot read is a switch nobody trusts.
+    The point of the command is that it costs nothing and needs no key: a
+    house whose brain is dormant, or whose bill has run out for the month,
+    can still read its own numbers. A rule you cannot read is a rule nobody
+    trusts. Changing one is done by asking him, or on the panel.
     """
     if not keyed_in(interaction):
         return await refuse(interaction, "That one is for people who are in.")
     guild = interaction.guild
-    if group and group.lower() not in warden.GROUPS:
-        return await refuse(
-            interaction, f"Groups are: {', '.join(warden.GROUPS)}."
-        )
-    if not group:
-        chosen = len(warden.overrides(guild.id))
-        tail = ("\n-# Nothing has been changed from the defaults yet — just "
-                "tell me what you want." if not chosen else
-                f"\n-# {chosen} of these are yours; the rest are the defaults.")
-        return await interaction.response.send_message(
-            f"## What {guild.name} has switched on\n"
-            + module_summary(guild)
-            + "\n\n" + powers.summary(guild) + tail,
-            ephemeral=True,
-        )
-    now = warden.config(guild.id)
-    # A setting group belongs to a feature, and a group whose feature is off
-    # is a page of numbers nothing reads. Say so at the top rather than
-    # letting somebody tune a filter that will never run.
-    owner = modules.of_setting(group.lower())
-    header = f"**{group.lower()}**"
-    if owner and not modules.enabled(guild.id, owner):
-        header += (f"\n-# {modules.name(owner)} is switched off, so none of "
-                   f"these are read. `/setup` switches it back on.")
-    lines = [header]
-    for key, spec in warden.describe(group.lower()).items():
-        value = now.get(key)
-        if spec["type"] == "channel" and value:
-            got = interaction.guild.get_channel(value)
-            value = f"#{got.name}" if got else f"{value} (gone)"
-        elif spec["type"] == "role" and value:
-            got = interaction.guild.get_role(value)
-            value = got.name if got else f"{value} (gone)"
-        lines.append(f"`{key}` = **{value}**\n-# {spec['help']}")
-    await interaction.response.send_message("\n".join(lines)[:1990], ephemeral=True)
+    chosen = len(settings.voting_overrides(guild.id))
+    tail = ("\n-# These are all the defaults so far — just tell me what you "
+            "want changed." if not chosen else
+            f"\n-# {chosen} of these numbers are yours; the rest are the "
+            f"ones he came with.")
+    await interaction.response.send_message(
+        f"## What {guild.name} has switched on\n"
+        + module_summary(guild)
+        + "\n\n## What it votes by\n"
+        + "\n".join(voting_lines(guild))
+        + tail,
+        ephemeral=True,
+    )
 
 
 # ---------- which Claude does the talking ----------
@@ -4627,11 +4594,6 @@ async def setup_hook():
     # harness uses it to decide who may reach the elevated tools at all,
     # and powers.py uses it to decide who those tools may be used on.
     powers.configure(bot, in_cooperative, health_log)
-    # And the desk the heavy half of those hands now waits at. It is
-    # given the administrator check rather than the roll: the whole point
-    # of a sign-off is that it comes from somewhere other than the
-    # cooperative, which is already the thing that asked.
-    sanction.configure(bot, is_admin)
     settings.configure(DATA)
     # server_config.yaml's window becomes the default every house starts
     # from, and stops being the rule the moment one sets its own.
@@ -4663,9 +4625,6 @@ async def setup_hook():
     # ballot on the floor with dead buttons and no way to say so.
     bot.add_view(MultiBallotView())
     bot.add_view(NotesView())
-    # Same reason as the ballots: a deploy while a ban is waiting to be
-    # signed must not leave the administrator holding a dead card.
-    bot.add_view(sanction.SignOffView())
     guild = discord.Object(id=GUILD_ID)
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
@@ -4742,14 +4701,6 @@ async def furniture_loop():
             await ensure_furniture(guild)
         except Exception as e:
             log.error(f"furniture check failed: {e!r}")
-        # A sign-off card nobody got to should stop looking live. Five
-        # minutes of a lapsed request still showing its buttons is
-        # harmless; a day of it is a card somebody presses expecting a ban.
-        try:
-            await sanction.sweep(guild)
-        except Exception as e:
-            log.error(f"the sign-off sweep failed: {e!r}")
-            await health_log(guild, f"⚠️ Furniture check failed: `{e!r}`")
 
 
 @bot.event
@@ -4800,15 +4751,6 @@ async def on_message(message: discord.Message):
     # file paperwork to prove they still exist.
     if message.guild is not None:
         roster.touch(message.author.id)
-    # The filters first, and the counter with them. A message that has just
-    # been deleted for breaking a house rule is not also a message to answer:
-    # replying to something nobody can see reads as talking to yourself.
-    try:
-        if message.guild is not None and serves(message.guild):
-            if await powers.on_message(message):
-                return
-    except Exception as e:
-        log.error(f"automod error: {e!r}")
     # Conversation off means he does not read the room at all, which is
     # also what stops him learning people: `memory` stands on `chat` for
     # exactly this reason. Resolved the way brain.py resolves it, because a
@@ -4820,61 +4762,6 @@ async def on_message(message: discord.Message):
         await brain.handle_message(message)
     except Exception as e:
         log.error(f"brain handler error: {e!r}")
-
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    if member.bot or not serves(member.guild):
-        return
-    # Two unrelated things, on two switches. The hello is Arrivals and goes
-    # in a room somebody chose; writing the arrival down is the audit log's
-    # and goes wherever that writes. They were one call behind one gate,
-    # which meant a server that did not want a public greeting also lost
-    # the private record of who came and went.
-    try:
-        if module_live(member.guild, "welcome"):
-            await powers.on_join(member)
-    except Exception as e:
-        log.error(f"welcome error: {e!r}")
-    try:
-        if module_live(member.guild, "log"):
-            await powers.on_join_logged(member)
-    except Exception as e:
-        log.error(f"join log error: {e!r}")
-
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    if member.bot or not serves(member.guild):
-        return
-    try:
-        if module_live(member.guild, "welcome"):
-            await powers.on_leave(member)
-    except Exception as e:
-        log.error(f"goodbye error: {e!r}")
-    try:
-        if module_live(member.guild, "log"):
-            await powers.on_leave_logged(member)
-    except Exception as e:
-        log.error(f"leave log error: {e!r}")
-
-
-@bot.event
-async def on_message_delete(message: discord.Message):
-    if message.guild is not None and serves(message.guild):
-        try:
-            await powers.on_delete(message)
-        except Exception as e:
-            log.error(f"delete log error: {e!r}")
-
-
-@bot.event
-async def on_message_edit(before: discord.Message, after: discord.Message):
-    if after.guild is not None and serves(after.guild):
-        try:
-            await powers.on_edit(before, after)
-        except Exception as e:
-            log.error(f"edit log error: {e!r}")
 
 
 if __name__ == "__main__":

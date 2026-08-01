@@ -29,7 +29,6 @@ ROOMS = {
     "decisions": "The permanent record of what was decided",
     "polls": "Polls open to everyone, members included",
     "health": "Eugene's own vitals. Administrators only",
-    "welcome": "Where arrivals are greeted. Unset, nobody is greeted",
     "chat": "Where people talk to Eugene. He makes this one himself",
 }
 
@@ -73,8 +72,6 @@ JOBS = {
     "decisions": "decisions",
     "gazette": "decisions",
     "polls": "polls",
-    "welcome": "welcome",
-    "reception": "welcome",
     "bot-health": "health",
     "health": "health",
     # His own room, by his own name, and only by that. A server's existing

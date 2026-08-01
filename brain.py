@@ -31,7 +31,6 @@ import modules
 import providers
 import roster
 import settings
-import warden
 
 log = logging.getLogger("brain")
 
@@ -390,39 +389,21 @@ def _roster_now(guild):
 def _switches(guild):
     """Which of the house machinery is running, in one line.
 
-    Volatile by nature: somebody can turn the filters on mid-conversation
-    by asking him to, and the next thing he says must not be that they are
-    off. Only the switches go here, never the whole table -- the full
-    settings run to a page and a half, and he has `list_settings` for the
-    moment somebody actually wants them.
+    Volatile by nature: somebody can switch a feature on mid-conversation by
+    asking him to, and the next thing he says must not be that it is off.
+    Only the switches go here, never the numbers -- he has `list_settings`
+    for the moment somebody actually wants those.
     """
     if not hasattr(guild, "id"):
         return ""
-    try:
-        cfg = warden.config(guild.id)
-    except Exception:  # a server with no store yet is not a broken prompt
-        return ""
-    # Which features run is modules.py's answer; this used to keep a second
-    # one out of `<group>.enabled`, and a prompt that disagrees with the
-    # code is worse than one that says nothing.
     on = [modules.name(k).lower() for k in modules.keys()
           if modules.enabled(guild.id, k)]
     off = [modules.name(k).lower() for k in modules.keys()
            if not modules.enabled(guild.id, k)]
-    tail = ""
-    if modules.enabled(guild.id, "moderation"):
-        tail = (" The filters "
-                + ("exempt" if cfg["automod.exempt_cooperative"] else "apply to")
-                + " the cooperative.")
-    if cfg["goodbye.enabled"]:
-        tail += " He announces departures as well as arrivals."
-    if not cfg["mod.protect_cooperative"]:
-        tail += (" mod.protect_cooperative is off, so removing a member needs "
-                 "no vote here.")
     return (f"\n# What is switched on\n{', '.join(on) or 'nothing'}."
             + (f" Switched off, and not yours to work around: "
                f"{', '.join(off)}." if off else "")
-            + f"{tail}\n")
+            + "\n")
 
 
 # What kind of place this is, when nobody has said.

@@ -43,17 +43,8 @@ Design history and scopes: [governance-design.md](governance-design.md),
 - **`duties.py`**: the short list of things the clerk says without being
   asked, and the ledger that stops him saying any of them twice. Costs
   nothing: no line of it consults the model.
-- **`warden.py`**: the house rules he keeps without a vote — every
-  setting a conversation can change, with its type and its bounds, plus
-  the filters, the level curve and the case book. Imports nothing from
-  Discord, so all of it is testable on a laptop.
-- **`powers.py`**: the hands. What `warden.py` decides, this presses:
-  timeouts, bans, sweeps, roles, welcomes, the log.
-- **`sanction.py`**: the sign-off desk. The heavy half of those hands —
-  warns, timeouts, kicks, bans, sweeps, channel changes — is asked for
-  here and carried out only once an administrator has put their name to
-  the card. Holds the pending requests, the two buttons, and the rule
-  that a request nobody signs does nothing at all.
+- **`powers.py`**: the small hands. Which member somebody meant, and the
+  two tools that configure the clerk himself.
 
 ## Setup
 
@@ -138,9 +129,9 @@ a conversation:
 - **`/close <number>`** — call time on a vote that has had its run.
 - **`/bills`** — what is open for a vote right now. The cooperative sees
   everything; anyone else in the room sees the open polls.
-- **`/house`** — every feature and whether it is running, then the
-  settings underneath them: welcomes, filters, warnings, the log.
-  Read-only, and free; the changing is done by asking him.
+- **`/house`** — every feature and whether it is running, and the numbers
+  this house votes by. Read-only, and free; the changing is done by asking
+  him.
 
 They are the cooperative's, and refuse anyone else. A command belonging to
 a feature the server has switched off says so, and names who can switch it
@@ -152,35 +143,19 @@ back on. `/setup` is the administrators', and so is one command:
   he moves. The monthly counter re-prices itself to match, so an opus month
   is billed as one.
 
-## What he does here, in ten parts
+## What he does here, in four parts
 
 Every feature is a module with a switch, and **Features** on the `/setup`
-panel is the whole list, ticked or unticked. A server can run him as a
-parliament with no moderation, as a moderator with no parliament, or as
-either with nothing else at all.
+panel is the whole list, ticked or unticked.
 
 | Feature | What it is | Out of the box |
 |---|---|---|
 | Governance | proposals, anonymous ballots, the permanent record | on |
 | Polls | advisory questions put to the whole server | on |
 | Conversation | he answers when mentioned, and does as he is asked | on¹ |
-| Moderation | the filters, warnings, and the hands | off |
-| Arrivals | greetings, goodbyes, an arrival role | on, until pointed at a room |
-| Audit log | deletes, edits, arrivals, every moderation action | on |
 | Health card | his vitals, pinned and current; administrators only | on |
 
 ¹ *needs an AI key, so it is on and dormant until somebody sets one.*
-
-**Nothing greets anybody until you say where.** Arrivals is on out of the
-box and does nothing at all until the `welcome` job is pointed at a
-channel, because most servers already have something for this — Discord's
-own join notices, or a bot they had before this one — and a second hello
-in a room nobody chose is worse than no hello. `/setup` → Apply binds a
-channel you already have if one is obviously it, and **never creates one**.
-
-Every default is what the clerk already did before there were modules, so
-upgrading changes nothing and each switch above is a real switch rather
-than a quiet change of behaviour.
 
 Switching one off is not cosmetic. Its commands say it is off and name
 who can turn it back on, its rooms stop being built, its settings are
@@ -188,21 +163,12 @@ marked as read by nothing, and **it disappears from the tool list the
 model is handed** — so a feature you switched off cannot be talked into
 existence by asking him nicely for it.
 
-The switch above is the *only* switch. There is no second
-`automod.enabled` underneath it: what lives in the settings is how a
-feature behaves once it is on (what a link costs, how many warnings add up
-to a timeout, what the greeting says), never whether it runs. You can also
-just say it — *turn the filters on*, *stop greeting people* — which is the
-same switch from the other side.
-
-Memory stands on `Conversation`, because a brain he may not have is what
-it is made of: switch that off and memory goes with it, and the panel says
-so rather than leaving a switch that looks on and does nothing. The panel distinguishes four states throughout:
+The panel distinguishes four states throughout:
 🟢 running · 🟡 on but waiting on a room or a key · 🟠 needs another
 feature that is off · ⬜ off.
 
-`/house` prints the same list to anyone in the cooperative, free, without
-consulting the model.
+`/house` prints the same list, and the numbers this house votes by, to
+anyone in the cooperative — free, and without consulting the model.
 
 ## Starting again
 
@@ -240,83 +206,6 @@ no message.
 `install.py` asks the same question when you point it at a server the disk
 does not already belong to, and only then — a first install has nothing to
 clear and is never asked.
-
-## Running the server by asking
-
-Everything a moderation bot does, minus the dashboard. Anyone in the
-cooperative just says it, in a channel or a DM, and he acts on it — no
-form to fill in, no separate permission to hold, no hunting for whoever
-has one. Who may ask is checked in Python, not in his manners: nobody
-outside the roll gets any of it, whatever they claim about who they are.
-
-**The hands.** Warn, time out and lift one, kick, ban, unban, rename;
-sweep a channel or one person's messages out of it; slow a channel down,
-lock it, unlock it; put any role on anybody; post an announcement in his
-voice. Every action is a numbered case in his book, naming who asked, and
-a line in the log room.
-
-**The signature.** The half of that which cannot be undone by saying
-sorry — warn, timeout, kick, ban, sweep, and slowing, locking or
-unlocking a room — waits for an administrator. Eugene takes the request
-at face value, writes it up on a card in the log room with two buttons on
-it, and tells you it is filed. It happens when somebody presses Approve,
-and the card becomes the receipt. Nothing happens if nobody does: a
-request lapses after an hour and leaves no case behind, because a list of
-things that happened should not contain things that did not.
-
-> *hadi: ban that spammer in #general*
-> *Eugene: Written up and waiting on an admin — nothing done yet.*
-
-He does not hold the conversation open while an administrator is found,
-and he never reports a filed request as a done one. The person who signs
-may be the person who asked, if they are an administrator; in a house
-with one administrator any other rule is a house that cannot moderate
-itself, and the log line says when the two hands were the same one.
-
-The rest still happens on your word alone — lifting a timeout, unbanning,
-renaming, roles, announcements, settings, forgiveness — because a gate on
-everything is a gate nobody reads. So do the filters: automod acts on the
-message in front of it, in the second after it was posted, and a spam
-wave that waits for a signature is a spam wave that worked. If your house
-wants none of this, `mod.require_signoff` turns it off and he goes back
-to acting on the cooperative's word; `mod.signoff_minutes` is how long a
-request stands.
-
-**The machinery, set by talking.** No config file and no panel — say what
-you want:
-
-> *stop deleting links, we post GitHub all day*
-> *greet people in #hellos and give them Newcomer*
-> *three warnings should be an hour, not a day*
-> *log deletes and edits into #mod-log*
-
-Behind those sentences are welcomes and goodbyes, an arrival role, the
-filters (banned words, invites, links with an allowlist, mention
-pile-ups, shouting, flooding — each with its own cost), warning
-escalation and expiry, a log room, and a shelf of stock answers. He
-resolves channels
-and roles by name, holds every number inside sane bounds, and says in one
-line when a change makes the place less safe — after making it, not
-instead.
-
-Whole features go the same way — *turn the filters on*, *stop announcing
-departures* — and that is the same switch the `/setup` panel shows, not a
-second one. If you tune a feature that is switched off he says so rather
-than storing a number nothing will read.
-
-**What he refuses**, in code, however the request is dressed up:
-
-- removing someone who is *in* the cooperative — that is a fundamental
-  vote, and he files it for you rather than doing it;
-- handing out the roles that decide who votes;
-- anyone above him in the role list, or the server owner — Discord
-  refuses, and he says the fix is moving his role up;
-- anything that would reveal a ballot.
-
-The first of those is a setting, because it is the house's rule and not
-his: `mod.protect_cooperative`. Turn it off and one person can have
-another removed with a sentence. He will tell you that, once, and then
-do as he is told.
 
 ## Giving the clerk a brain
 

@@ -870,22 +870,8 @@ def test_setup_rooms(clerk, data):
           made2 == [] and bound2 == []
           and sum(1 for s in skipped2 if "already bound" in s) == len(built))
 
-    print("\na room he will use but never make")
-    # The greeting used to guess where to go -- the system channel, then
-    # anything called general -- so a server that already greets people got
-    # greeted twice by a bot nobody had pointed anywhere.
-    check("with nothing to use, nothing is made and it says so",
-          any("welcome" in s and "nothing made" in s for s in skipped2))
-    greeter = types.SimpleNamespace(id=600, name="🛎️・welcome",
-                                    mention="#welcome")
-    dressed.text_channels = built + [greeter]
-    made3, bound3, _ = run(clerk.make_missing_rooms(dressed))
-    check("but a server that already has one has it adopted, not duplicated",
-          made3 == []
-          and any("welcome" in line and "unchanged" in line for line in bound3)
-          and bindings.bound_channel_id(3333, "welcome") == 600)
     import modules as _m
-    check("and the chat room is never adopted either: he makes his own, "
+    check("the chat room is never adopted: he makes his own, "
           "under his own name, so a server's existing #chat is not quietly "
           "turned into the only room he will answer in",
           "chat" not in _m.adoptable_rooms(3333)
@@ -931,11 +917,6 @@ def test_setup_rooms(clerk, data):
           "so a server that opens a category up does not open this with it",
           role in health_ow
           and health_ow[role].view_channel is False)
-    check("and the arrivals room is offered, never made: a bot that turns up "
-          "and gives you a #welcome has decided something that was not its "
-          "to decide",
-          "welcome" in modules.wanted_rooms(3232)
-          and "welcome" not in modules.wanted_rooms(3232, only_buildable=True))
     check("the cooperative is named in every room that is shut — let in on "
           "its own, kept out of the health room, and never merely left out",
           all(role in ow for _n, ow in seen if ow))
@@ -2392,18 +2373,13 @@ def test_modules(data):
     modules.apply_set(gid, ["governance"])
     check("its tools are still his", modules.tool_allowed(gid, "propose_bill"))
     check("a switched-off feature's are not",
-          not modules.tool_allowed(gid, "moderate_member")
-          and not modules.tool_allowed(gid, "open_poll"))
+          not modules.tool_allowed(gid, "open_poll"))
     check("and the tools that switch a feature back on belong to no feature, "
           "so switching everything off is not a locked door",
           all(modules.of_tool(name) is None
               for name in modules.UNGATED_TOOLS)
           and all(modules.tool_allowed(gid, name)
                   for name in modules.UNGATED_TOOLS))
-    check("a setting knows which feature reads it",
-          modules.of_setting("automod.links") == "moderation"
-          and modules.of_setting("mod.purge_max") == "moderation"
-          and modules.of_setting("welcome.message") == "welcome")
     modules.reset(gid)
 
 
@@ -2420,7 +2396,7 @@ def test_slate(data):
     are not there.
     """
     print("\nwhose slate this is")
-    import slate, warden
+    import slate
 
     store = data / "slate-store"
     store.mkdir(parents=True, exist_ok=True)
@@ -2441,8 +2417,11 @@ def test_slate(data):
     (store / "clerk_memory.json").write_text(json.dumps([{"id": 1}]))
     (store / "people.json").write_text(json.dumps({"5": {"notes": ["a"]}}))
     (store / "roles.json").write_text(json.dumps({"900": {"creator_id": 5}}))
-    warden.add_case(1, "warn", target_id=5, target_name="Hadi",
-                    moderator="Eugene", reason="spoilers")
+    # Something of the first server's own, in its own directory, to prove
+    # the wipe never reaches across into it.
+    theirs = settings.state_file(1, "warden_cases.json")
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text(json.dumps([{"kind": "warn"}]))
     state = json.loads((store / "clerk_state.json").read_text())
     state.update(bill_counter=8, health_message_id=555)
     (store / "clerk_state.json").write_text(json.dumps(state))
@@ -2467,7 +2446,7 @@ def test_slate(data):
     check("so do the notes on people, and the memory book",
           not (store / "people.json").exists()
           and not (store / "clerk_memory.json").exists())
-    check("and the roster, and who made which colour",
+    check("and the roster",
           not (store / "roster.json").exists()
           and not (store / "roles.json").exists())
     left = json.loads((store / "clerk_state.json").read_text())
@@ -2477,7 +2456,7 @@ def test_slate(data):
           and "bill_counter" not in left and "guild_id" in left)
     check("the previous server's own directory is untouched: they may come "
           "back to it, and it was never in the way",
-          len(warden.cases(1)) == 1)
+          json.loads(theirs.read_text()) == [{"kind": "warn"}])
     slate.claim(2)
     check("and the disk belongs to the new server afterwards",
           slate.owner() == 2 and not slate.stranded(2))
@@ -2512,416 +2491,6 @@ def test_slate(data):
     settings.configure(data)
 
 
-# ---------- the house rules Eugene keeps without a vote ----------
-
-def test_warden_settings(data):
-    print("\nsettings a conversation can change, and a conversation cannot break")
-    import warden
-
-    settings.configure(data / "warden-store")
-    gid = 4242
-
-    check("a setting nobody has touched reads as its default",
-          warden.get(gid, "goodbye.enabled") is False
-          and warden.get(gid, "warnings.timeout_at") == 3)
-    check("and whether a feature runs at all is not in here: that question "
-          "belongs to modules.py, and answering it twice is what let the "
-          "panel say the filters were on while nothing was filtered",
-          not any(k.endswith(".enabled") for k in warden.SPEC
-                  if k != "goodbye.enabled"))
-    check("every declared key answers", len(warden.config(gid)) == len(warden.SPEC))
-
-    ok, held = warden.set_value(gid, "goodbye.enabled", "yes")
-    check("a person's yes is a boolean by the time it is stored",
-          ok and held is True and warden.get(gid, "goodbye.enabled") is True)
-    ok, held = warden.set_value(gid, "warnings.timeout_at", "900")
-    check("a number outside its bounds is held at the edge, not refused",
-          ok and held == 20)
-    ok, held = warden.set_value(gid, "automod.links", "nuke")
-    check("a choice that is not one of the choices is refused, with the list",
-          not ok and "delete" in held)
-    ok, held = warden.set_value(gid, "mod.protect_cooperative", "maybe")
-    check("and so is a switch that is neither on nor off", not ok)
-    check("the refused value never reached the store",
-          warden.get(gid, "mod.protect_cooperative") is True)
-
-    ok, held = warden.set_value(gid, "automod.banned_words", "Spoilers, SPOILERS, cheese")
-    check("a list arrives from prose: split, lowered, deduped",
-          ok and held == ["spoilers", "cheese"])
-
-    ok, reason = warden.set_value(gid, "automod.enabeld", True)
-    check("a key that does not exist cannot be invented by asking", not ok)
-
-    check("only what the house chose is counted as theirs",
-          set(warden.overrides(gid)) == {"goodbye.enabled", "warnings.timeout_at",
-                                         "automod.banned_words"})
-    warden.set_value(gid, "goodbye.enabled", None)
-    check("and setting one to nothing puts it back on the default rather "
-          "than pinning it", warden.get(gid, "goodbye.enabled") is False
-          and "goodbye.enabled" not in warden.overrides(gid))
-
-    warden.reset(gid, "automod.")
-    check("a group resets without touching the others",
-          warden.overrides(gid) == {"warnings.timeout_at": 20})
-    warden.reset(gid)
-    check("and the lot resets", warden.overrides(gid) == {})
-    check("help is written for every key a model is shown",
-          all(spec["help"] for spec in warden.describe().values()))
-
-
-def test_automod():
-    print("\nthe filters")
-    import warden
-
-    off = {**{k: v["default"] for k, v in warden.SPEC.items()}}
-    check("with every rule left at its default, nothing is a violation — "
-          "the master switch is the moderation feature, checked before this "
-          "is ever called",
-          warden.scan(off, "http://evil.example WHAT A MESS") == [])
-
-    cfg = dict(off)
-    cfg.update({
-        "automod.banned_words": ["spoilers"],
-        "automod.invites": "delete",
-        "automod.links": "delete",
-        "automod.mass_mentions": 4,
-        "automod.mass_mentions_action": "timeout",
-        "automod.caps_percent": 70,
-        "automod.spam_messages": 3,
-        "automod.spam_seconds": 10,
-    })
-    check("an ordinary message is left alone", warden.scan(cfg, "morning all") == [])
-    check("a banned word is caught whole",
-          [h["rule"] for h in warden.scan(cfg, "no SPOILERS please")] == ["banned word"])
-    check("and not inside another word",
-          warden.scan(cfg, "antispoilersque") == [])
-    check("an invite elsewhere is caught",
-          any(h["rule"] == "invite link"
-              for h in warden.scan(cfg, "join discord.gg/abc123")))
-    check("a link to an allowed host is not a link",
-          warden.scan(cfg, "see https://gist.github.com/x") == [])
-    check("a link anywhere else is",
-          any(h["rule"] == "link" for h in warden.scan(cfg, "https://evil.example/x")))
-    check("shouting is measured on letters, not length",
-          warden.caps_share("HELLO THERE 123") == 100)
-    check("but a short shout is just enthusiasm",
-          warden.scan(cfg, "WHAT? NO!") == [])
-
-    import time as _time
-    now = _time.time()
-    check("three messages in the window is flooding",
-          any(h["rule"] == "flooding"
-              for h in warden.scan(cfg, "hi", recent=[now - 1, now - 2, now])))
-    check("three messages spread out is conversation",
-          warden.scan(cfg, "hi", recent=[now - 60, now - 30, now]) == [])
-
-    hits = warden.scan(cfg, "SPOILERS EVERYWHERE https://evil.example @a @b @c @d",
-                       mention_count=4)
-    ruling = warden.verdict(hits)
-    check("a message that breaks four rules is punished once",
-          ruling["action"] == "timeout")
-    check("and told all four reasons", len(ruling["rules"]) >= 3)
-    check("nothing broken means no verdict at all", warden.verdict([]) is None)
-
-
-def test_cases(data):
-    print("\nwarnings, and the case book")
-    import warden
-
-    settings.configure(data / "warden-store")
-    gid = 5150
-
-    first = warden.add_case(gid, "warn", target_id=9, target_name="Sam",
-                            moderator="Hadi", reason="")
-    check("a case is numbered from one", first["case"] == 1)
-    check("and a warning without a reason says so",
-          first["reason"] == "no reason given")
-    warden.add_case(gid, "warn", target_id=9, target_name="Sam",
-                    moderator="Hadi", reason="again")
-    warden.add_case(gid, "warn", target_id=8, target_name="Jo",
-                    moderator="Hadi", reason="unrelated")
-    check("warnings count per person",
-          len(warden.live_warnings(gid, 9)) == 2
-          and len(warden.live_warnings(gid, 8)) == 1)
-
-    old = warden.add_case(gid, "warn", target_id=7, target_name="Ada",
-                          moderator="Hadi", reason="ancient")
-    book = json.loads((settings.state_file(gid, warden.CASES)).read_text())
-    for case in book:
-        if case["case"] == old["case"]:
-            case["at"] = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    (settings.state_file(gid, warden.CASES)).write_text(json.dumps(book))
-    check("a warning past its expiry stops counting",
-          warden.live_warnings(gid, 7, expire_days=30) == [])
-    check("but never leaves the record",
-          len(warden.cases(gid, target_id=7, kind="warn")) == 1)
-
-    check("forgiveness clears the live ones", warden.clear_warnings(gid, 9) == 2)
-    check("and they stay cleared", warden.live_warnings(gid, 9) == [])
-
-    ok, _ = warden.set_tag(gid, "Rules", "Be kind.", "Hadi")
-    check("a tag is saved under a tidy name",
-          ok and warden.get_tag(gid, "  RULES ")["content"] == "Be kind.")
-    check("and dropped once", warden.drop_tag(gid, "rules")
-          and warden.drop_tag(gid, "rules") is False)
-
-    check("a template fills what it is given",
-          warden.render("Hi {user}, of {count}", user="Sam", count=3)
-          == "Hi Sam, of 3")
-    check("and leaves standing what it is not, rather than raising",
-          warden.render("Hi {nobody}") == "Hi {nobody}")
-
-
-def test_signoff(clerk, data):
-    """The second hand: what the heavy powers now wait for.
-
-    The failure this is built against is the quiet one. A gate that files
-    a request and reports it as done is worse than no gate at all --
-    everybody believes Sam is banned, nobody checks, and Sam is still
-    posting. So the checks here are mostly about the difference between
-    filed and done, at every point where the two could be confused.
-    """
-    print("\nnothing heavy happens without an administrator's name on it")
-    import powers
-    import sanction
-    import warden
-
-    store = data / "signoff-store"
-    settings.configure(store)
-    gid = 7788
-
-    class Role:
-        def __init__(self, name, position):
-            self.name, self.position, self.id = name, position, position
-        def __ge__(self, other):
-            return self.position >= other.position
-        def __lt__(self, other):
-            return self.position < other.position
-
-    class Person:
-        def __init__(self, pid, name, top=1, coop=False, admin=False):
-            self.id, self.name, self.display_name = pid, name.lower(), name
-            self.bot, self.coop, self.admin = False, coop, admin
-            self.top_role, self.roles = Role("theirs", top), []
-            self.told, self.timeouts = [], []
-        async def send(self, text):
-            self.told.append(text)
-        async def timeout(self, when, reason=None):
-            self.timeouts.append(when)
-        async def kick(self, reason=None):
-            guild.kicked.append(self.display_name)
-        async def edit(self, nick=None, reason=None):
-            self.display_name = nick or self.name
-
-    class Message:
-        def __init__(self, mid, content, view):
-            self.id, self.content, self.view = mid, content, view
-        async def edit(self, content=None, view=None):
-            self.content, self.view = content, view
-
-    class Channel:
-        def __init__(self, cid, name):
-            self.id, self.name = cid, name
-            self.posted, self.book, self.swept = [], {}, 0
-        async def send(self, content, view=None):
-            msg = Message(9000 + len(self.book), content, view)
-            self.posted.append(msg)
-            self.book[msg.id] = msg
-            return msg
-        async def fetch_message(self, mid):
-            return self.book[mid]
-        async def purge(self, limit=None, check=None, reason=None):
-            self.swept += 1
-            return ["a message"]
-        def permissions_for(self, _me):
-            return types.SimpleNamespace(send_messages=True)
-
-    desk = Channel(500, "health")
-    me = Person(99, "Eugene", top=5)
-    sam = Person(10, "Sam")
-    voter = Person(13, "Voter", coop=True)
-    boss = Person(14, "Boss", coop=True, admin=True)
-
-    class Guild:
-        def __init__(self):
-            self.id, self.name, self.owner_id = gid, "The Hangout", 1
-            self.me, self.roles = me, []
-            self.members = [sam, voter, boss, me]
-            self.text_channels = self.channels = [desk]
-            self.banned, self.kicked = [], []
-        def get_channel(self, cid):
-            return desk if cid == desk.id else None
-        def get_member(self, mid):
-            return next((m for m in self.members if m.id == mid), None)
-        def get_role(self, _rid):
-            return None
-        async def ban(self, target, reason=None, delete_message_seconds=0):
-            self.banned.append(target.display_name)
-
-    guild = Guild()
-    powers.configure(None, lambda m: bool(getattr(m, "coop", False)), None)
-    sanction.configure(None, lambda m: bool(getattr(m, "admin", False)))
-    # The desk resolves its room through bindings, which wants a real
-    # guild; the log setting short-circuits that and is the ordinary way
-    # a server points it anywhere in the first place.
-    warden.set_value(gid, "log.channel", desk.id)
-
-    def cards():
-        """Only the sign-off cards. The log room fills up with ordinary
-        journal lines too, and counting those as cards is how a test that
-        means "nothing was filed" quietly starts meaning nothing at all."""
-        return [m for m in desk.posted if "Sign-off #" in m.content]
-
-    def interaction(user, message):
-        replies = []
-        async def send_message(content, ephemeral=False):
-            replies.append(content)
-        async def edit_message(content=None, view=None):
-            message.content, message.view = content, view
-        return types.SimpleNamespace(
-            guild=guild, user=user, message=message, replies=replies,
-            response=types.SimpleNamespace(
-                send_message=send_message, edit_message=edit_message),
-        )
-
-    # ----- filing, not doing -----
-    out = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "ban", "reason": "spam"})))
-    check("a ban comes back filed rather than done",
-          out.get("done") is False and out.get("filed_for_sign_off") == 1)
-    check("and nobody is banned by the asking", guild.banned == [])
-    check("the model is told in words not to claim it happened",
-          "waiting" in out.get("tell_them", ""))
-    card = cards()[-1]
-    check("a card goes up naming the action and who asked for it",
-          "Ban Sam" in card.content and "Voter" in card.content)
-    check("and says plainly that nothing has happened yet",
-          "Nothing has happened yet" in card.content)
-    check("the request is on the desk, not in the case book",
-          len(sanction.pending(gid)) == 1
-          and warden.cases(gid, target_id=sam.id) == [])
-
-    # ----- asked for twice, filed once -----
-    again = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "ban", "reason": "spam"})))
-    check("the same request twice is one card, not two chances to ban him",
-          again.get("filed_for_sign_off") == 1 and len(cards()) == 1)
-    check("and the model is told it is the one already waiting",
-          "already filed" in again.get("tell_them", ""))
-
-    # ----- who may sign -----
-    press = interaction(voter, card)
-    run(sanction.press(press, True))
-    check("somebody who is not an administrator cannot sign it off",
-          press.replies and "administrator" in press.replies[0])
-    check("and pressing it changed nothing", guild.banned == []
-          and sanction.pending(gid))
-
-    press = interaction(boss, card)
-    run(sanction.press(press, True))
-    check("an administrator's press is what actually bans Sam",
-          guild.banned == ["Sam"])
-    check("the card becomes the receipt, naming who signed",
-          "Approved by Boss" in card.content)
-    check("and says what the hands reported back, not what was asked for",
-          "Banned" in card.content and "Sam" in card.content)
-    check("the buttons come off it", card.view is None)
-    check("and the case book has it now, under the name of whoever asked",
-          [c["moderator"] for c in warden.cases(gid, target_id=sam.id)] == ["Voter"])
-
-    again = interaction(boss, card)
-    run(sanction.press(again, True))
-    check("a second press does not ban him twice",
-          guild.banned == ["Sam"] and "already approved" in again.replies[0])
-
-    # ----- denial -----
-    run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "warn", "reason": "again"}))
-    card = cards()[-1]
-    run(sanction.press(interaction(boss, card), False))
-    check("a denied request says so and leaves no case behind",
-          "Denied by Boss" in card.content
-          and warden.cases(gid, target_id=sam.id, kind="warn") == [])
-
-    # ----- lapsing -----
-    run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "kick", "reason": "enough"}))
-    card = cards()[-1]
-    rows = json.loads(settings.state_file(gid, sanction.PENDING).read_text())
-    rows[-1]["expires_at"] = (datetime.now(timezone.utc)
-                              - timedelta(minutes=1)).isoformat()
-    settings.state_file(gid, sanction.PENDING).write_text(json.dumps(rows))
-    check("the sweep lapses what nobody got to", run(sanction.sweep(guild)) == 1)
-    check("the card says so rather than sitting there looking live",
-          "lapsed" in card.content and "Nothing" in card.content)
-    check("and lapsing is the end that does nothing", guild.kicked == [])
-    stale = interaction(boss, card)
-    run(sanction.press(stale, True))
-    check("signing a lapsed request is refused, not honoured",
-          guild.kicked == [] and "lapsed" in stale.replies[0])
-
-    # ----- the half that does not wait -----
-    before = len(cards())
-    out = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "untimeout"})))
-    check("lifting a timeout is not made to wait for a signature",
-          out.get("done") == "timeout lifted" and len(cards()) == before)
-
-    # ----- rooms and messages -----
-    run(powers.act_purge(guild, voter, {"channel": "health", "count": 5}))
-    check("a sweep is filed too, and sweeps nothing until it is signed",
-          desk.swept == 0 and "Delete 5 message(s)" in cards()[-1].content)
-    run(sanction.press(interaction(boss, cards()[-1]), True))
-    check("and then sweeps once", desk.swept == 1)
-
-    run(powers.act_channel(guild, voter, {"channel": "health", "action": "lock"}))
-    check("locking a room waits as well",
-          "Lock #health" in cards()[-1].content)
-
-    # ----- what is checked at the press, not at the asking -----
-    run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "ban", "reason": "later"}))
-    card = cards()[-1]
-    voter.coop = False  # removed from the roll while the card sat there
-    guild.banned.clear()
-    run(sanction.press(interaction(boss, card), True))
-    check("a request outliving the standing of whoever asked is not carried out",
-          guild.banned == [] and "no longer in the cooperative" in card.content)
-    voter.coop = True
-
-    # ----- refused at the asking, so no card is ever raised -----
-    before = len(cards())
-    out = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Nobody", "action": "ban"})))
-    check("a request that could never work is refused on the spot",
-          "goes by" in out.get("error", "") and len(cards()) == before)
-    out = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Boss", "action": "kick"})))
-    check("and the governance guard still bites before the desk sees it",
-          "vote, not a word" in out.get("error", "")
-          and len(cards()) == before)
-
-    # ----- the house may switch it off -----
-    warden.set_value(gid, "mod.require_signoff", False)
-    guild.banned.clear()
-    before = len(cards())
-    out = json.loads(run(powers.act_moderate(
-        guild, voter, {"who": "Sam", "action": "ban", "reason": "no gate"})))
-    check("with the requirement off he acts on the word alone, as he used to",
-          out.get("done") == "banned" and guild.banned == ["Sam"]
-          and len(cards()) == before)
-    warden.set_value(gid, "mod.require_signoff", True)
-
-    # ----- the settings are the house's, and reachable by talking -----
-    check("both switches are in the settings table under mod",
-          {"mod.require_signoff", "mod.signoff_minutes"} <= set(warden.SPEC))
-    check("and the sign-off store is per-server like everything else",
-          settings.state_file(gid, sanction.PENDING).parent
-          != settings.state_file(gid + 1, sanction.PENDING).parent)
-
-    settings.configure(data)
-
-
 def test_turn_shape(data):
     """What the model is actually handed, and in what order.
 
@@ -2934,7 +2503,7 @@ def test_turn_shape(data):
     wrong.
     """
     print("\nthe shape of one turn")
-    import brain, toolbox, warden  # noqa: F401
+    import brain, toolbox  # noqa: F401
 
     store = data / "turn-store"
     store.mkdir(parents=True, exist_ok=True)
@@ -3076,29 +2645,28 @@ def test_officer_gate(data):
     things. It exists for the day something else calls dispatch.
     """
     print("\nthe elevated tools are the cooperative's alone")
-    import warden  # noqa: F401  (registry is already loaded; kept explicit)
 
     check("the officer's tools are declared to the model",
-          {"moderate_member", "set_setting", "purge_messages"}
+          {"set_setting", "set_feature", "reset_settings"}
           <= {d["name"] for d in toolbox.declarations()})
     check("and every one of them sits in the officer tier",
           all(toolbox.REGISTRY[name]["tier"] == "officer"
-              for name in ("moderate_member", "purge_messages", "set_setting",
-                           "assign_role", "announce")))
+              for name in ("set_setting", "set_feature", "list_settings",
+                           "list_features", "reset_settings")))
     check("while the ordinary ones did not quietly get promoted",
           toolbox.REGISTRY["propose_bill"]["tier"] == "member"
           and toolbox.REGISTRY["get_bill"]["tier"] == "minor")
 
     outsider = types.SimpleNamespace(id=1, display_name="Stranger")
-    insider = types.SimpleNamespace(id=2, display_name="Hadi")
+    insider = types.SimpleNamespace(id=2, display_name="Somebody")
 
     toolbox.configure(HERE, data, in_cooperative=lambda m: m.id == 2)
     denied = json.loads(run(toolbox.dispatch(
-        GUILD, outsider, "moderate_member", {"who": "someone", "action": "ban"})))
+        GUILD, outsider, "set_setting", {"key": "floor_hours", "value": 1})))
     check("someone outside is refused before a handler is even looked up",
           "not in it" in denied.get("error", ""))
     allowed = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "moderate_member", {"who": "someone", "action": "ban"})))
+        GUILD, insider, "set_setting", {"key": "floor_hours", "value": 1})))
     check("someone inside gets through the gate",
           "not in it" not in allowed.get("error", ""))
     reading = json.loads(run(toolbox.dispatch(GUILD, outsider, "list_bills", {})))
@@ -3107,7 +2675,7 @@ def test_officer_gate(data):
 
     toolbox.configure(HERE, data, in_cooperative=None)
     shut = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "purge_messages", {"count": 50})))
+        GUILD, insider, "reset_settings", {})))
     check("a host that never said who is on the roll fails shut, not open",
           "roll" in shut.get("error", ""))
 
@@ -3116,7 +2684,7 @@ def test_officer_gate(data):
 
     toolbox.configure(HERE, data, in_cooperative=broken)
     burnt = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "moderate_member", {"who": "x", "action": "kick"})))
+        GUILD, insider, "set_feature", {"feature": "polls", "on": False})))
     check("and a check that throws is a no, not a yes",
           "the answer is no" in burnt.get("error", ""))
 
@@ -3126,77 +2694,6 @@ def test_officer_gate(data):
           len(refusals) >= 3 and all(e.get("detail") for e in refusals))
 
     toolbox.configure(HERE, data)  # back as the rest of the run expects it
-
-
-def test_officer_guards(clerk, data):
-    """What the hands refuse however the asking is phrased."""
-    print("\nthe three things the hands will not do")
-    import powers
-    import warden
-
-    settings.configure(data / "warden-store")
-
-    class Role:
-        def __init__(self, name, position, rid=None):
-            self.name, self.position, self.id = name, position, rid or position
-        def __ge__(self, other):
-            return self.position >= other.position
-        def __lt__(self, other):
-            return self.position < other.position
-
-    def person(pid, name, top=1, coop=False):
-        return types.SimpleNamespace(
-            id=pid, name=name.lower(), display_name=name, bot=False,
-            top_role=Role("theirs", top), roles=[], guild=None, coop=coop,
-        )
-
-    keyed = lambda m: bool(getattr(m, "coop", False))  # noqa: E731
-    powers.configure(None, keyed, None)
-
-    sam, sammy = person(10, "Sam"), person(11, "Sammy")
-    boss = person(12, "Boss", top=9)
-    voter = person(13, "Voter", coop=True)
-    me = person(99, "Eugene", top=5)
-    guild = types.SimpleNamespace(
-        id=6161, name="The Hangout", owner_id=1, me=me,
-        members=[sam, sammy, boss, voter, me],
-        get_member=lambda i: next((m for m in [sam, sammy, boss, voter] if m.id == i), None),
-        get_channel=lambda _i: None, get_role=lambda _i: None, roles=[],
-    )
-
-    found, why = powers.find_member(guild, "Sam")
-    check("an exact name wins over a longer one that starts the same",
-          found is sam)
-    found, why = powers.find_member(guild, "Sa")
-    check("but an ambiguous scrap is reported, never guessed at",
-          found is None and "could be any of" in why)
-    found, _ = powers.find_member(guild, "<@11>")
-    check("a mention is a person", found is sammy)
-    found, why = powers.find_member(guild, "Nobody")
-    check("and a stranger is said to be one", found is None and "goes by" in why)
-
-    check("someone above Eugene in the role list is refused with the fix",
-          "above me" in (powers._reachable(guild, boss) or ""))
-    check("and Eugene will not act on himself",
-          powers._reachable(guild, me) is not None)
-
-    check("a member of the cooperative cannot be kicked on one person's word",
-          "vote, not a word" in (powers._protected(guild, voter, "kick") or ""))
-    check("nor banned", powers._protected(guild, voter, "ban") is not None)
-    check("nor quietly silenced instead",
-          powers._protected(guild, voter, "timeout") is not None)
-    check("but they can still be warned, which decides nothing",
-          powers._protected(guild, voter, "warn") is None)
-    check("somebody who is not in it is ordinary business",
-          powers._protected(guild, sam, "kick") is None)
-
-    warden.set_value(guild.id, "mod.protect_cooperative", False)
-    check("and the house can lift that protection, because it is theirs",
-          powers._protected(guild, voter, "kick") is None)
-    warden.reset(guild.id)
-
-    check("nobody removes themselves through Eugene",
-          "yourself" in (powers._vet(guild, voter, voter, "kick") or ""))
 
 
 def main():
@@ -3214,9 +2711,6 @@ def main():
         test_duties(data)
         test_modules(data)
         test_slate(data)
-        test_warden_settings(data)
-        test_automod()
-        test_cases(data)
         settings.configure(data)  # back to the shared store
         test_officer_gate(data)
         clerk = load_clerk(data)
@@ -3252,8 +2746,6 @@ def main():
             test_empty_promises(data)
             test_prompt_caching(data)
             test_turn_shape(data)
-            test_officer_guards(clerk, data)
-            test_signoff(clerk, data)
             settings.configure(data)
         test_firewall(data)
         if clerk is not None:
