@@ -127,7 +127,8 @@ def find_role(guild, needle):
 # being counted.
 
 async def act_settings(guild, invoker, args):
-    """Every number, what it is set to, what it means, and its bounds."""
+    """Every number and switch, what it is set to, what it means, and --
+    for a number -- its bounds."""
     held = settings.voting(guild.id)
     chosen = settings.voting_overrides(guild.id)
     rows = {}
@@ -138,6 +139,14 @@ async def act_settings(guild, invoker, args):
             "what": blurb,
             "default": default,
             "between": [low, high],
+            "theirs": name in chosen,
+        }
+    for name, blurb in settings.VOTING_FLAG_HELP.items():
+        rows[name] = {
+            "now": held[name],
+            "what": blurb,
+            "default": settings.VOTING_FLAGS[name],
+            "on_or_off": True,
             "theirs": name in chosen,
         }
     return _ok(
@@ -152,19 +161,23 @@ async def act_set_setting(guild, invoker, args):
     so a number that would break the machinery comes back refused with the
     range it had to be in."""
     key = str(args.get("key") or "").strip()
-    if key not in settings.VOTING_RULES:
-        near = [k for k in settings.VOTING_RULES if key.lower() in k][:8]
+    if not settings.known_voting(key):
+        near = [k for k in settings.VOTING_HELP if key.lower() in k][:4]
+        near += [k for k in settings.VOTING_FLAG_HELP if key.lower() in k][:4]
         return _err(f"{key!r} is not a setting." +
                     (f" Did you mean: {', '.join(near)}?" if near else
                      " Call list_settings."))
     before = settings.voting(guild.id)[key]
     held, rejected = settings.set_voting(guild.id, **{key: args.get("value")})
     if rejected:
+        if settings.is_flag(key):
+            return _err(f"{key} is on or off, nothing else")
         _default, low, high, _cast = settings.VOTING_RULES[key]
         return _err(f"{key} has to be a number between {low} and {high}")
     now = held[key]
-    return _ok(done="set", key=key, was=before, now=now,
-               what=settings.VOTING_HELP[key])
+    what = (settings.VOTING_FLAG_HELP.get(key)
+            or settings.VOTING_HELP.get(key, ""))
+    return _ok(done="set", key=key, was=before, now=now, what=what)
 
 
 async def act_reset_settings(guild, invoker, args):

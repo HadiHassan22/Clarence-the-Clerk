@@ -45,7 +45,8 @@ answer in.
 |---|---|---|
 | Recent messages from **that room**, with display names | up to 40, 600 chars each | `_remember` / `_transcript`, `brain.py:591` |
 | Tool calls he made in that room and what came back | up to 14, 700 chars each | `_note_deed` / `_deed_log`, `brain.py:646` |
-| The message being answered, and who sent it | one | `_run_turn`, `brain.py:794` |
+| The message being answered, and who sent it | one | `_run_turn`, `brain.py:915` |
+| The message it is a reply to, and who sent it | one, 600 chars | `_quoted`, `brain.py:862` |
 | Roster size, how many are away, what a vote needs today | a line | `_roster_now`, `brain.py:340` |
 | Which features are switched on and off | a line | `_switches`, `brain.py:407` |
 | Server name, and the one-line description if `/setup` set one | a line | `_system_prompt` |
@@ -53,6 +54,12 @@ answer in.
 | Tool definitions for the features you have on | fixed text | `toolbox.declarations` |
 
 Roughly 4,000 tokens of fixed text plus the room's recent conversation.
+
+Replying to a message is what sends it. Discord shows the person who wrote it
+what their reply is attached to, and it is half of what the reply means, so it
+goes with the reply. That is the one thing here that can be older than the
+last forty lines, and it is fetched from the room the reply was sent in and
+nowhere else.
 
 **What is not sent:** individual ballots, ever, to anybody — they are
 stripped before anything reaches the model and destroyed when a vote closes.
@@ -98,6 +105,13 @@ On the host's disk, under `guilds/<server id>/`, never in this repository:
 
 Individual ballots live on a proposal only while the vote is open and are
 destroyed at close; the tally survives, the votes do not.
+
+A veto is held the same way. While the window on a passed proposal is open,
+the ids of whoever has vetoed sit on the proposal, for one purpose: stopping
+one person casting two. They are destroyed when the window shuts, whether or
+not it overturned anything. What survives is how many, and — where the house
+has not switched the veto to anonymous, so the names were already on the
+floor — who.
 
 `logs/` holds an audit line for every tool the model was allowed to run:
 which tool, its arguments, and what came back. Operational, on the host, and

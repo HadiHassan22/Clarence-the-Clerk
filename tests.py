@@ -892,7 +892,7 @@ def test_prompt_matches_the_tools(data):
             modules.set_enabled(gid, key, True)
         stable, volatile = brain._system_prompt(guild)
         named = set(re.findall(r"`([a-z_]{4,})`", stable + volatile))
-        settings_names = set(settings.VOTING_RULES)
+        settings_names = set(settings.VOTING_RULES) | set(settings.VOTING_FLAGS)
         unknown = named - every - settings_names - {"lookup"}
         check("and every tool-shaped name in it is a tool that exists",
               not unknown, )
@@ -1461,6 +1461,326 @@ def test_numbers_bite(clerk, data):
     finally:
         clerk.in_cooperative = original
         settings.set_voting(guild.id, fundamental_share=None, away_days=None)
+
+
+def test_veto(clerk, data):
+    """The last word: a proposal that carried, and a window in which the
+    house can still take it back."""
+    print("\nthe last word, after the ballot has closed")
+    import duties
+    import roster
+
+    roster.configure(data)
+    settings.configure(data)
+
+    # ---- the door has a price of its own ----
+    original = clerk.in_cooperative
+    clerk.in_cooperative = lambda m: True
+    guild = types.SimpleNamespace(
+        id=404, name="The Hangout",
+        members=[fake_member(i) for i in range(1, 9)],
+        owner_id=1, get_channel=lambda _id: None, get_role=lambda _id: None,
+        get_member=lambda _id: None,
+    )
+    try:
+        invite = {"no": 1, "title": "Invitation of Sam", "kind": "invite",
+                  "status": "on_floor", "ballots": {}}
+        ordinary = {"no": 2, "title": "t", "kind": "ordinary",
+                    "status": "on_floor", "ballots": {}}
+        check("an invitation starts where it always did, on a plain majority",
+              clerk.vote_state(guild, invite)["need"]
+              == clerk.vote_state(guild, ordinary)["need"] == 5)
+        settings.set_voting(guild.id, invite_share=0.75)
+        check("a house that wants the door dearer says so, and only the door "
+              "moves",
+              clerk.vote_state(guild, invite)["need"] == 6
+              and clerk.vote_state(guild, ordinary)["need"] == 5)
+        check("and a removal is untouched by it",
+              clerk.vote_state(guild, dict(ordinary, kind="kick"))["need"] == 6)
+        settings.set_voting(guild.id, invite_share=None)
+
+        # ---- who may veto what ----
+        check("an invitation may be vetoed out of the box",
+              clerk.veto_rule(guild, invite) == 1)
+        check("and nothing else may be",
+              clerk.veto_rule(guild, ordinary) is None)
+        settings.set_voting(guild.id, proposal_veto=True, proposal_vetoes=3,
+                            invite_vetoes=2)
+        check("a house can hand itself a veto over everything",
+              clerk.veto_rule(guild, ordinary) == 3)
+        check("and price the two separately",
+              clerk.veto_rule(guild, invite) == 2)
+        settings.set_voting(guild.id, invite_veto=False)
+        check("switching the door's veto off switches it off",
+              clerk.veto_rule(guild, invite) is None)
+        settings.set_voting(guild.id, invite_veto=None, proposal_veto=None,
+                            proposal_vetoes=None, invite_vetoes=None)
+
+        # ---- the window ----
+        now = clerk.now_utc()
+
+        def passed(hours_left=6, **over):
+            bill = {
+                "no": 7, "title": "Invitation of Sam", "kind": "invite",
+                "status": "passed", "author_id": 99, "act": 3,
+                "tally_line": "a sealed tally", "veto_message_id": 555,
+                "veto": {
+                    "until": (now + clerk.timedelta(hours=hours_left)).isoformat(),
+                    "needed": 1, "cast": [],
+                },
+            }
+            bill.update(over)
+            return bill
+
+        check("a window with time on it is open",
+              clerk.veto_open(passed()) is True)
+        check("one that has run out is not",
+              clerk.veto_open(passed(hours_left=-1)) is False)
+        check("a proposal that failed has no window: failing was the answer",
+              clerk.veto_open(passed(status="failed")) is False)
+        check("and neither has one already shut",
+              clerk.veto_open(passed(veto={"until": "x", "closed": True}))
+              is False)
+
+        # ---- casting one ----
+        said = []
+
+        class Pressed:
+            def __init__(self, user, message_id=555):
+                self.guild = guild
+                self.user = user
+                self.message = types.SimpleNamespace(id=message_id)
+                self.response = types.SimpleNamespace(
+                    send_message=self._say, is_done=lambda: False)
+
+            async def _say(self, content=None, **kw):
+                said.append(content)
+
+        overturned = []
+        live = {}
+        STUBS = ("bill_by", "update_bill", "refresh_veto", "overturn_bill")
+        keep = {name: getattr(clerk, name) for name in STUBS}
+        try:
+            clerk.bill_by = lambda g, field, value: live.get(value)
+            clerk.update_bill = lambda g, b: _async(None)
+            clerk.refresh_veto = lambda g, b: _async(None)
+            clerk.overturn_bill = lambda g, b: _async(overturned.append(b["no"]))
+
+            settings.set_voting(guild.id, invite_vetoes=2)
+            bill = passed()
+            live[555] = bill
+            run(clerk.cast_veto(Pressed(fake_member(3))))
+            check("a veto is recorded", len(bill["veto"]["cast"]) == 1)
+            check("named, since the house has not asked for anonymity",
+                  bill["veto"]["cast"][0].get("name") == "m3")
+            check("and one short of two does not overturn anything",
+                  not overturned and "1 veto would overturn" in said[-1])
+
+            run(clerk.cast_veto(Pressed(fake_member(3))))
+            check("the same person cannot veto twice",
+                  len(bill["veto"]["cast"]) == 1 and "already" in said[-1])
+
+            run(clerk.cast_veto(Pressed(fake_member(3)), withdraw=True))
+            check("but they can take it back", not bill["veto"]["cast"])
+            run(clerk.cast_veto(Pressed(fake_member(4)), withdraw=True))
+            check("and nobody can withdraw one they never cast",
+                  "no veto" in said[-1])
+
+            settings.set_voting(guild.id, veto_anonymous=True)
+            run(clerk.cast_veto(Pressed(fake_member(5))))
+            check("a house that wants the veto anonymous gets it: the id is "
+                  "held to stop a second one, the name is never taken",
+                  bill["veto"]["cast"] == [{"id": 5}])
+            settings.set_voting(guild.id, veto_anonymous=None)
+
+            run(clerk.cast_veto(Pressed(fake_member(6))))
+            check("the second veto of two overturns it", overturned == [7])
+
+            clerk.in_cooperative = lambda m: False
+            run(clerk.cast_veto(Pressed(fake_member(7))))
+            check("nobody outside the cooperative reaches the button",
+                  "cooperative" in said[-1])
+            clerk.in_cooperative = lambda m: True
+
+            live[555] = passed(hours_left=-1)
+            run(clerk.cast_veto(Pressed(fake_member(3))))
+            check("and a window that has run out refuses everybody",
+                  "closed" in said[-1])
+        finally:
+            for name, value in keep.items():
+                setattr(clerk, name, value)
+            settings.set_voting(guild.id, invite_vetoes=None)
+
+        # ---- what a closed window leaves behind ----
+        bill = passed()
+        bill["veto"]["cast"] = [{"id": 3, "name": "m3"}, {"id": 4}]
+        clerk.seal_veto(bill, overturned=True)
+        check("shutting the window destroys the ids, exactly like the ballots",
+              "cast" not in bill["veto"] and bill["veto"]["count"] == 2)
+        check("what survives is the count, and the names that were already "
+              "public on the floor",
+              bill["veto"]["by"] == ["m3"] and bill["veto"]["overturned"])
+
+        # ---- how it reads afterwards ----
+        report = clerk.closing_report(dict(passed(), status="vetoed"))
+        check("a vetoed proposal is neither passed nor failed",
+              report["ruling"] == "vetoed")
+        check("and wants nothing further of anybody: what could not be "
+              "undone was said at the time",
+              not report["outstanding"])
+        check("a passed proposal inside its window says the window is open",
+              any("take it back" in line
+                  for line in clerk.closing_report(passed())["done"]))
+        check("and one whose window has run says nothing of the sort",
+              not any("take it back" in line for line in
+                      clerk.closing_report(passed(hours_left=-1))["done"]))
+
+        pending = [dict(passed(), no=7, carried_out=None)]
+        check("a vetoed proposal drops off the list of what wants doing",
+              not duties.outstanding(
+                  [dict(passed(), status="vetoed")], clerk.closing_report)
+              and duties.outstanding(pending, clerk.closing_report))
+
+        # ---- and he is told about it, live, or he will call a vote done ----
+        import brain
+
+        brain.configure(None, HERE, data, lambda _m: True, None, None, None,
+                        numbers=lambda g: settings.voting(g.id))
+        try:
+            said = brain._veto_now(guild)
+            check("he is told the door keeps a last word",
+                  "The last word" in said and "invitation" in said.lower())
+            check("and told not to call such a vote finished",
+                  "not finished" in said)
+            settings.set_voting(guild.id, proposal_veto=True, veto_hours=6)
+            wider = brain._veto_now(guild)
+            check("a house that widened it is described as it is now",
+                  "Every proposal that carries" in wider and "6 hours" in wider)
+            settings.set_voting(guild.id, invite_veto=False, proposal_veto=False)
+            check("and a house that keeps none is told nothing at all, "
+                  "rather than a rule it does not have",
+                  brain._veto_now(guild) == "")
+            settings.set_voting(guild.id, invite_veto=None, proposal_veto=None,
+                                veto_hours=None)
+            check("it is a switch, so it rides in the half that is not cached",
+                  "The last word" in brain._system_prompt(guild)[1]
+                  and "The last word" not in brain._system_prompt(guild)[0])
+        finally:
+            brain.configure(None, HERE, data, lambda _m: True, None, None, None)
+    finally:
+        clerk.in_cooperative = original
+        settings.set_voting(
+            guild.id, **{k: None for k in settings.voting_overrides(guild.id)})
+
+
+def test_veto_undo(clerk, data):
+    """Overturning is not the same as failing, and what it cannot undo it
+    says out loud rather than leaving somebody to find out."""
+    print("\ntaking back what carried")
+    settings.configure(data)
+
+    kicked, dmed, revoked = [], [], []
+
+    class Arrival:
+        id = 21
+        bot = False
+        display_name = "Sam"
+
+        async def send(self, text):
+            dmed.append(text)
+
+        async def kick(self, reason=None):
+            kicked.append(reason)
+
+    class Link:
+        code = "abc123"
+
+        async def delete(self, reason=None):
+            revoked.append(reason)
+
+    arrival = Arrival()
+    people = {21: arrival}
+
+    async def invites():
+        return [Link()]
+
+    guild = types.SimpleNamespace(
+        id=505, name="The Hangout", members=[], owner_id=1,
+        get_channel=lambda _id: None, get_role=lambda _id: None,
+        get_member=lambda _id: people.get(_id),
+        invites=invites,
+    )
+
+    original = clerk.in_cooperative
+    STUBS = ("floor_for", "room", "health_log", "update_bill",
+             "update_outstanding", "annul_act")
+    keep = {name: getattr(clerk, name) for name in STUBS}
+    try:
+        clerk.in_cooperative = lambda m: False
+        clerk.floor_for = lambda g, b: None
+        clerk.room = lambda g, key: None
+        clerk.health_log = lambda g, text: _async(None)
+        clerk.update_bill = lambda g, b: _async(None)
+        clerk.update_outstanding = lambda g, silent=False: _async([])
+        clerk.annul_act = lambda g, b: _async(None)
+
+        bill = {"no": 9, "title": "Invitation of Sam", "kind": "invite",
+                "status": "passed", "author_id": 99, "act": 4,
+                "invite_code": "abc123", "target_id": 21,
+                "veto": {"until": clerk.now_utc().isoformat(),
+                         "needed": 1, "cast": [{"id": 3, "name": "m3"}]}}
+        run(clerk.overturn_bill(guild, bill))
+        check("the proposal is vetoed, not failed", bill["status"] == "vetoed")
+        check("the link is revoked", revoked and "No. 9" in revoked[0])
+        check("nobody was removed: the link was never used", not kicked)
+
+        # Now the same thing, with the link already spent and the invitee in.
+        async def spent():
+            return []
+
+        guild.invites = spent
+        bill = {"no": 10, "title": "Invitation of Sam", "kind": "invite",
+                "status": "passed", "author_id": 99,
+                "invite_code": "abc123", "joined_id": 21,
+                "veto": {"until": clerk.now_utc().isoformat(),
+                         "needed": 1, "cast": [{"id": 3}]}}
+        run(clerk.overturn_bill(guild, bill))
+        check("somebody who came in on a vetoed link goes back out",
+              kicked and "No. 10" in kicked[0])
+        check("and is told why, without it being made their fault",
+              any("nothing you did" in d for d in dmed))
+
+        # And the one case he refuses: they are on the roll now.
+        clerk.in_cooperative = lambda m: True
+        kicked.clear()
+        bill = {"no": 11, "title": "Invitation of Sam", "kind": "invite",
+                "status": "passed", "author_id": 99,
+                "invite_code": "abc123", "joined_id": 21,
+                "veto": {"until": clerk.now_utc().isoformat(),
+                         "needed": 1, "cast": [{"id": 3}]}}
+        done, left = run(clerk.revoke_invite(guild, bill))
+        check("but somebody who has since joined the cooperative is not "
+              "removed by the door's veto: that is a fundamental vote",
+              not kicked and any("fundamental" in line for line in left))
+
+        clerk.in_cooperative = lambda m: False
+        guild.owner_id = 21
+        done, left = run(clerk.revoke_invite(guild, dict(bill, no=12)))
+        check("nor is the person who owns the server, and the reason is "
+              "said rather than the case being quietly skipped",
+              not kicked and any("owns the server" in line for line in left))
+        guild.owner_id = 1
+
+        gone = {"no": 13, "kind": "invite", "status": "passed", "author_id": 99,
+                "invite_code": "abc123", "joined_id": 404}
+        done, left = run(clerk.revoke_invite(guild, gone))
+        check("and somebody who used the link and left again leaves nothing "
+              "for anybody to do",
+              not left and any("since left" in line for line in done))
+    finally:
+        clerk.in_cooperative = original
+        for name, value in keep.items():
+            setattr(clerk, name, value)
 
 
 def test_choice_ballots(clerk, data):
@@ -2780,6 +3100,8 @@ def main():
             test_voting(clerk, data)
             test_voting_numbers(data)
             test_numbers_bite(clerk, data)
+            test_veto(clerk, data)
+            test_veto_undo(clerk, data)
             test_choice_ballots(clerk, data)
             test_eligibility(clerk)
             test_duty_actions(clerk, data)

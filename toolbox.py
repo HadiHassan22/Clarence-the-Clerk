@@ -137,6 +137,24 @@ async def _get_bill(guild, invoker, args):
         if b["no"] == bill_no:
             b = copy.deepcopy(b)
             b.pop("ballots", None)  # individual votes: never
+            # A live door and the person who walked through it. The first
+            # is a key, the second is nothing the record has to publish;
+            # neither is anything he needs to answer a question about a
+            # proposal.
+            b.pop("invite_code", None)
+            b.pop("joined_id", None)
+            if b.get("veto"):
+                # How many, and who -- but only where the house had already
+                # named them on the floor. The identities behind an
+                # anonymous veto are held to stop one person casting two,
+                # and they leave by this door as little as a ballot does.
+                veto = b["veto"]
+                cast = veto.pop("cast", None)
+                if cast is not None:
+                    veto["count"] = len(cast)
+                    named = [c["name"] for c in cast if c.get("name")]
+                    if named:
+                        veto["by"] = named
             if b.get("kind") in PEOPLE_KINDS:
                 b.pop("tally", None)
                 b.pop("tally_line", None)
@@ -221,7 +239,6 @@ async def _server_info(guild, invoker, args):
         figures = _paths.get("numbers")
         held = figures(guild) if figures is not None else {}
         away_days = held.get("away_days", roster.AUTO_AWAY_DAYS)
-        share = held.get("fundamental_share")
         size = len(roster.active(guild, keyed, away_days=away_days))
         info["roster"] = {
             "counted": size,
@@ -230,8 +247,12 @@ async def _server_info(guild, invoker, args):
                 if not m.bot and keyed(m)
                 and roster.is_away(guild.id, m, away_days)
             ),
-            "normal_needs": roster.required(size, "normal", share),
-            "fundamental_needs": roster.required(size, "fundamental", share),
+            "normal_needs": roster.required(
+                size, "normal", roster.share_for("normal", held)),
+            "fundamental_needs": roster.required(
+                size, "fundamental", roster.share_for("fundamental", held)),
+            "invite_needs": roster.required(
+                size, "invite", roster.share_for("invite", held)),
             "note": "counted now, from who is here; thresholds are shares "
                     "of this, never fixed numbers. This is the cooperative's "
                     "roster: a poll open to the whole server is carried by a "
@@ -274,8 +295,9 @@ REGISTRY = {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["on_floor", "passed", "failed", "all"],
-                    "description": "for 'bills' only",
+                    "enum": ["on_floor", "passed", "failed", "vetoed", "all"],
+                    "description": "for 'bills' only; 'vetoed' means it "
+                                   "carried and the house took it back",
                 },
                 "limit": {"type": "integer", "description": "for 'acts' only, up to 50"},
             },

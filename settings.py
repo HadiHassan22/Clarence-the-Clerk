@@ -280,8 +280,12 @@ VOTING_RULES = {
     "floor_hours":        (48.0, 0.01, 24 * 30.0, float),
     "removal_hours":      (72.0, 0.01, 24 * 30.0, float),
     "fundamental_share":  (0.75, 0.5, 1.0, float),
+    "invite_share":       (0.5, 0.5, 1.0, float),
     "kick_min_yes":       (3, 1, 100, int),
     "away_days":          (14, 1, 365, int),
+    "veto_hours":         (24.0, 0.01, 24 * 30.0, float),
+    "invite_vetoes":      (1, 1, 100, int),
+    "proposal_vetoes":    (1, 1, 100, int),
 }
 
 # How each number reads to somebody who has to decide whether to change it.
@@ -292,12 +296,54 @@ VOTING_HELP = {
     "floor_hours": "how long an ordinary vote stays open if nothing settles it",
     "removal_hours": "the same, for a removal",
     "fundamental_share": "the share of the roster a removal or a rule change needs",
+    "invite_share": "the share of the roster an invitation needs (0.5 is a plain majority)",
     "kick_min_yes": "the fewest yes votes a removal can ever pass on",
     "away_days": "a quiet spell this long takes you out of the count",
+    "veto_hours": "how long after a proposal carries it can still be vetoed",
+    "invite_vetoes": "how many vetoes overturn a passed invitation",
+    "proposal_vetoes": "how many overturn any other passed proposal",
 }
 
+# The switches a house votes by, as against the numbers. Same store, same
+# door, and they are here rather than beside the feature switches in
+# modules.py because they are not features: they are the shape of a vote,
+# and they belong with the thresholds they modify.
+#
+# The invitation is the one proposal whose cost falls on everybody and
+# whose benefit is usually one person's, which is why the door is the only
+# one that comes with a last word attached. Everything else starts without
+# one: a veto over every proposal is a permanent hold for whoever wants it
+# most, and a house should have to ask for that on purpose.
+VOTING_FLAGS = {
+    "invite_veto": True,
+    "proposal_veto": False,
+    "veto_anonymous": False,
+}
 
-_voting_defaults = {name: rule[0] for name, rule in VOTING_RULES.items()}
+VOTING_FLAG_HELP = {
+    "invite_veto": "whether a passed invitation can still be vetoed",
+    "proposal_veto": "the same, for every other kind of proposal",
+    "veto_anonymous": "whether a veto is cast without naming who cast it",
+}
+
+# What counts as on and off when somebody types one rather than pressing it.
+TRUE_WORDS = {"1", "on", "true", "yes", "y", "enable", "enabled"}
+FALSE_WORDS = {"0", "off", "false", "no", "n", "disable", "disabled"}
+
+
+def is_flag(name):
+    return name in VOTING_FLAGS
+
+
+def known_voting(name):
+    """Whether this is something a house may set at all."""
+    return name in VOTING_RULES or name in VOTING_FLAGS
+
+
+_voting_defaults = {
+    **{name: rule[0] for name, rule in VOTING_RULES.items()},
+    **VOTING_FLAGS,
+}
 
 
 def configure_voting(**defaults):
@@ -306,15 +352,32 @@ def configure_voting(**defaults):
     `floor_hours` in server_config.yaml, which CONTRIBUTING tells people to
     wind down to seconds for a sandbox run."""
     for name, value in defaults.items():
-        if value is None or name not in VOTING_RULES:
+        if value is None or not known_voting(name):
             continue
         _voting_defaults[name] = clamp_voting(name, value)
 
 
+def as_flag(value):
+    """A switch, however it was typed. None when it is neither, so a caller
+    can refuse it by name rather than reading "maybe" as off."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    word = str(value).strip().lower()
+    if word in TRUE_WORDS:
+        return True
+    if word in FALSE_WORDS:
+        return False
+    return None
+
+
 def clamp_voting(name, value):
-    """One number, coerced and held inside its bounds. Returns None if it
-    is not a number at all, so a caller can say so rather than storing a
+    """One setting, coerced and held inside its bounds. Returns None if it
+    is not one at all, so a caller can say so rather than storing a
     string where a threshold goes."""
+    if is_flag(name):
+        return as_flag(value)
     default, low, high, cast = VOTING_RULES[name]
     try:
         value = cast(value)
@@ -324,15 +387,15 @@ def clamp_voting(name, value):
 
 
 def voting(guild_id=None) -> dict:
-    """Every number this house votes by: the defaults, with whatever the
-    house has chosen laid over them. Never partial -- a caller reads a
-    complete set or none of the numbers would be safe to use."""
+    """Every number and switch this house votes by: the defaults, with
+    whatever the house has chosen laid over them. Never partial -- a caller
+    reads a complete set or none of the numbers would be safe to use."""
     numbers = dict(_voting_defaults)
     if guild_id is None:
         return numbers
     stored = get(guild_id, VOTING) or {}
     for name, value in stored.items():
-        if name in VOTING_RULES:
+        if known_voting(name):
             held = clamp_voting(name, value)
             if held is not None:
                 numbers[name] = held
@@ -350,7 +413,7 @@ def set_voting(guild_id, **values):
     stored = dict(get(guild_id, VOTING) or {})
     accepted, rejected = {}, []
     for name, value in values.items():
-        if name not in VOTING_RULES:
+        if not known_voting(name):
             rejected.append(name)
             continue
         if value is None:
@@ -371,7 +434,7 @@ def voting_overrides(guild_id) -> dict:
     """Only what this house has actually chosen, for saying out loud which
     numbers are theirs and which are simply the ones he came with."""
     stored = get(guild_id, VOTING) or {}
-    return {k: v for k, v in stored.items() if k in VOTING_RULES}
+    return {k: v for k, v in stored.items() if known_voting(k)}
 
 
 # The environment variables a pre-settings host may still be carrying,

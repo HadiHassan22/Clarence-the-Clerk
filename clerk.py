@@ -681,10 +681,19 @@ class NotesView(discord.ui.View):
 
 # ---------- ballots ----------
 
+# The tier a kind of proposal is carried at, where it is not the ordinary
+# one. A removal sits a tier up because it is somebody's standing. An
+# invitation sits on a tier of its own, which starts life as the same plain
+# majority it always was -- the point of the tier is that a house can price
+# the door without touching what anything else costs.
+KIND_TIERS = {"kick": "fundamental", "invite": "invite"}
+
+
 def vote_tier(bill):
-    """Removals sit a tier up. Everything else is a plain majority, which is
-    what people already expect a vote to mean."""
-    return bill.get("tier") or ("fundamental" if bill.get("kind") == "kick" else "normal")
+    """Removals sit a tier up, invitations on a tier of their own.
+    Everything else is a plain majority, which is what people already
+    expect a vote to mean."""
+    return bill.get("tier") or KIND_TIERS.get(bill.get("kind"), "normal")
 
 
 def is_blind(bill):
@@ -719,7 +728,7 @@ def vote_state(guild, bill):
         "size": size,
         "tier": tier,
         "audience": COOPERATIVE_ONLY,
-        "need": roster.required(size, tier, figures["fundamental_share"]),
+        "need": roster.required(size, tier, roster.share_for(tier, figures)),
         "yes": yes,
         "no": no,
         "abstain": abstain,
@@ -1286,7 +1295,8 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         name = str(self.invitee).strip()
-        id_part = f" (Discord ID {str(self.discord_id).strip()})" if str(self.discord_id).strip() else ""
+        given = str(self.discord_id).strip()
+        id_part = f" (Discord ID {given})" if given else ""
         what = (
             f"{name}{id_part} shall be invited to {interaction.guild.name}. "
             f"If this passes, Eugene issues a single-use invite link, valid "
@@ -1300,6 +1310,10 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
             what=what,
             why=str(self.why),
             kind="invite",
+            # Kept because a vetoed invitation has to find whoever came
+            # through it, and a name in a sentence is not something to
+            # remove somebody on.
+            target_id=int(given) if given.isdigit() else None,
         )
 
 
@@ -1513,6 +1527,451 @@ async def seal_chamber(guild, bill):
         await category.delete(reason="Vote closed")
 
 
+# ---------- the last word ----------
+# A vote that has closed is not always over. A house may keep a window
+# open after a proposal carries, in which anybody who could have voted on
+# it can take it back, and enough of them do take it back.
+#
+# It exists for one case and generalises to the rest: the door. An
+# invitation is the only decision here whose cost falls on everybody in
+# the room and whose benefit is usually one person's, and a majority is a
+# thin thing to hand somebody a key on. So the veto starts on for
+# invitations and off for everything else -- a veto over every proposal is
+# a permanent hold for whoever wants one most, and a house should have to
+# ask for that on purpose rather than find it switched on.
+#
+# Both halves are the house's: `/setup` -> what we vote by, or a sentence
+# said to Eugene. Nothing here is a constant.
+
+# kind -> (the switch that allows it, the number that carries it).
+VETO_RULES = {"invite": ("invite_veto", "invite_vetoes")}
+VETO_DEFAULT_RULE = ("proposal_veto", "proposal_vetoes")
+
+
+def veto_rule(guild, bill):
+    """How many vetoes overturn this proposal, or None where none can.
+
+    Read fresh on every press, like every other threshold here: a house
+    that switches the veto off has switched it off for the windows already
+    open, and one that raises the count has raised it for them too.
+    """
+    switch, count = VETO_RULES.get(bill.get("kind"), VETO_DEFAULT_RULE)
+    held = numbers(guild)
+    if not held[switch]:
+        return None
+    return max(int(held[count]), 1)
+
+
+def veto_open(bill, at=None):
+    """Whether a passed proposal can still be taken back.
+
+    A proposal that never carried has nothing to veto: failing is already
+    the answer the veto would give.
+    """
+    veto = bill.get("veto")
+    if not veto or veto.get("closed") or bill.get("status") != "passed":
+        return False
+    try:
+        return (at or now_utc()) < datetime.fromisoformat(veto["until"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def vetoes(n):
+    return f"{n} veto" if n == 1 else f"{n} vetoes"
+
+
+def veto_content(guild, bill):
+    """The live face of the window, repainted on every press.
+
+    Who has vetoed is shown only where the house has not asked for the
+    veto to be anonymous. That switch is read when the veto is cast, not
+    when this is drawn: somebody who vetoed under a rule that named them
+    is named, and somebody who vetoed under one that did not, never is.
+    """
+    veto = bill.get("veto") or {}
+    cast = veto.get("cast") or []
+    needed = max(int(veto.get("needed", 1)), 1)
+    left = max(needed - len(cast), 0)
+    try:
+        until = datetime.fromisoformat(veto["until"])
+        clock = f"closes <t:{int(until.timestamp())}:R>"
+    except (KeyError, TypeError, ValueError):
+        clock = "open"
+
+    named = [c["name"] for c in cast if c.get("name")]
+    if named:
+        standing = "Vetoed by " + ", ".join(named) + "."
+    elif cast:
+        standing = f"{vetoes(len(cast))} cast."
+    else:
+        standing = "None cast."
+    door = ("the link goes no further and whoever came through it goes back "
+            "out" if bill.get("kind") == "invite"
+            else "the decision is struck from the record")
+    # `left` reaches zero when a house lowers the count under a window that
+    # is already open. Rare, and "0 vetoes would overturn it" is nonsense
+    # in the one place somebody would be reading closely.
+    margin = (f"{vetoes(left)} would overturn it"
+              if left else "That is already enough to overturn it")
+    return (
+        f"🛑 **The last word on Proposal No. {bill['no']}** · {clock}\n"
+        f"{standing} {margin}: {door}.\n"
+        f"-# Anyone who could have voted on this may veto it, and withdraw "
+        f"a veto while the window is open."
+    )
+
+
+async def refresh_veto(guild, bill):
+    """Repaint the window. Best-effort, like the ballot: a card that will
+    not redraw is not a reason to lose a veto that was cast."""
+    if guild is None or not bill.get("veto_message_id"):
+        return
+    floor = floor_for(guild, bill)
+    if floor is None:
+        return
+    try:
+        msg = await floor.fetch_message(bill["veto_message_id"])
+        await msg.edit(content=veto_content(guild, bill), view=VetoView())
+    except discord.HTTPException as e:
+        log.warning(f"could not repaint the veto on bill {bill['no']}: {e!r}")
+
+
+async def open_veto(guild, bill):
+    """Hold a window open on a proposal that has just carried."""
+    needed = veto_rule(guild, bill)
+    if needed is None:
+        return
+    hours = numbers(guild)["veto_hours"]
+    bill["veto"] = {
+        "until": (now_utc() + timedelta(hours=hours)).isoformat(),
+        "needed": needed,
+        "cast": [],
+    }
+    floor = floor_for(guild, bill)
+    if floor is None:
+        # Nowhere to put the button is nowhere to press it. Better to have
+        # no window than a window nobody can reach and a report promising
+        # one.
+        bill.pop("veto", None)
+        return
+    try:
+        msg = await floor.send(veto_content(guild, bill), view=VetoView())
+    except discord.HTTPException as e:
+        log.warning(f"could not open the veto on bill {bill['no']}: {e!r}")
+        bill.pop("veto", None)
+        return
+    bill["veto_message_id"] = msg.id
+
+
+def seal_veto(bill, overturned=False):
+    """Shut the window and destroy what it held.
+
+    The identities go the way the ballots go, and for the same reason: the
+    count is the record, the people are not. What survives is how many,
+    and -- where the house had not asked for anonymity, so the names were
+    already public on the floor -- who.
+    """
+    veto = bill.get("veto")
+    if not veto:
+        return
+    cast = veto.pop("cast", []) or []
+    veto["count"] = len(cast)
+    names = [c["name"] for c in cast if c.get("name")]
+    if names:
+        veto["by"] = names
+    veto["closed"] = True
+    veto["overturned"] = bool(overturned)
+
+
+async def close_veto(guild, bill):
+    """The window running out with the proposal still standing."""
+    seal_veto(bill)
+    floor = floor_for(guild, bill)
+    if floor and bill.get("veto_message_id"):
+        held = bill["veto"].get("count", 0)
+        tail = (f"{vetoes(held)} were cast, short of the "
+                f"{bill['veto'].get('needed', 1)} it would have taken."
+                if held else "Nobody vetoed.")
+        try:
+            msg = await floor.fetch_message(bill["veto_message_id"])
+            await msg.edit(
+                content=f"**The window has closed** on Proposal No. "
+                        f"{bill['no']}. {tail} It stands.",
+                view=None,
+            )
+        except discord.HTTPException as e:
+            log.warning(f"could not seal the veto on bill {bill['no']}: {e!r}")
+    await update_bill(guild, bill)
+    log.info(f"veto window closed on bill {bill['no']}, unused")
+
+
+async def annul_act(guild, bill):
+    """A decision taken back is struck from the record, never removed from
+    it. The number stays and says what happened to it: a record with a hole
+    where Decision 12 used to be is a record nobody can trust."""
+    acts = load_json(acts_path(guild), [])
+    for act in acts:
+        if act.get("act") == bill.get("act"):
+            act["annulled"] = "vetoed"
+            act["annulled_at"] = bill.get("vetoed_at")
+    save_json(acts_path(guild), acts)
+    record = room(guild, "decisions")
+    if record is None:
+        return
+    await record.send(view=Card([
+        f"## Decision {bill['act']}: struck\n"
+        f"Vetoed inside its window, so it is no longer a decision of the "
+        f"house. The number is kept struck rather than given to anything "
+        f"else."
+    ]))
+
+
+async def revoke_invite(guild, bill):
+    """Take the door back.
+
+    The link dies if nobody has spent it. If somebody has, they go back
+    out -- which is the whole reason the window is short, and why what
+    could not be undone is said out loud rather than left for somebody to
+    discover.
+
+    Returns (done, left): what happened, and what wants human hands.
+    """
+    done, left = [], []
+    code = bill.get("invite_code")
+    spent = None
+    if code:
+        try:
+            live = await guild.invites()
+            match = next((i for i in live if i.code == code), None)
+            if match is not None:
+                await match.delete(reason=f"Vetoed: Proposal No. {bill['no']}")
+                done.append("The link is dead, and it was never used.")
+                spent = False
+            else:
+                # A single-use invite leaves Discord the moment it is
+                # spent, so a code that was issued and is not there is one
+                # somebody walked through.
+                spent = True
+        except discord.HTTPException as e:
+            log.warning(f"could not revoke the invite on bill {bill['no']}: {e!r}")
+            left.append(
+                "The invite link could not be revoked; somebody with the "
+                "permission has to delete it by hand."
+            )
+
+    # Only somebody who can be shown to have come in on this link. Two
+    # ways to know: he watched them arrive on it, or the proposal named an
+    # id and the link is gone. A named id alone proves nothing -- the
+    # person a proposal is about may be standing in the server already, or
+    # have come in by another door entirely, and removing them for that
+    # would be the veto reaching somebody it was never about.
+    came_in = bill.get("joined_id") or (bill.get("target_id") if spent else None)
+    arrival = guild.get_member(came_in) if came_in else None
+    if arrival is not None:
+        # Three people this window does not reach. Somebody on the roll,
+        # because taking them off it is §7's fundamental vote and a veto on
+        # the door is not a way around it. The owner, because Discord will
+        # not have it. A bot, because a bot did not come in on an
+        # invitation. Each is said rather than quietly skipped.
+        why_not = (
+            f"is in the cooperative now, and removing one of those is a "
+            f"fundamental vote and not this" if in_cooperative(arrival)
+            else "owns the server" if arrival.id == guild.owner_id
+            else "is a bot" if arrival.bot else None
+        )
+        if why_not:
+            left.append(
+                f"{arrival.display_name} came in on this and {why_not}. "
+                f"Eugene has left them where they are."
+            )
+        else:
+            try:
+                await arrival.send(
+                    f"{guild.name} has taken back the invitation you came in "
+                    f"on. It is nothing you did: the cooperative keeps a "
+                    f"window to reverse one, and it used it."
+                )
+            except discord.HTTPException:
+                pass
+            try:
+                await arrival.kick(
+                    reason=f"Invitation vetoed: Proposal No. {bill['no']}"
+                )
+                done.append(f"{arrival.display_name} had already joined, and "
+                            f"has been removed.")
+            except discord.HTTPException as e:
+                log.warning(f"could not remove {arrival.id} on bill {bill['no']}: {e!r}")
+                left.append(
+                    f"{arrival.display_name} came in on this and could not be "
+                    f"removed. Somebody has to do it by hand."
+                )
+    elif came_in:
+        done.append("The link was spent, and whoever used it has since left "
+                    "of their own accord.")
+    elif spent:
+        done.append("The link was already spent.")
+        left.append(
+            "Somebody came through the link before it was taken back and "
+            "Eugene cannot tell who. Whoever it was is still in the server."
+        )
+
+    proposer = guild.get_member(bill.get("author_id") or 0)
+    if proposer is not None:
+        try:
+            await proposer.send(
+                f"Proposal No. {bill['no']} has been vetoed inside its "
+                f"window. The invitation is withdrawn and the link no longer "
+                f"works; do not send it on."
+            )
+        except discord.HTTPException:
+            pass
+    return done, left
+
+
+async def overturn_bill(guild, bill):
+    """A proposal the house has taken back inside its window.
+
+    Not the same thing as failing, and it is not recorded as one: it
+    carried, and then it was reversed. Both halves are true and the record
+    keeps both.
+    """
+    bill["status"] = "vetoed"
+    bill["vetoed_at"] = now_utc().isoformat()
+    seal_veto(bill, overturned=True)
+    veto = bill.get("veto") or {}
+
+    done, left = [], []
+    if bill.get("kind") == "invite":
+        done, left = await revoke_invite(guild, bill)
+    elif bill.get("kind") == "kick":
+        left.append(
+            "The removal had already been carried out. Eugene cannot undo "
+            "one; somebody has to invite them back."
+        )
+    if bill.get("act"):
+        await annul_act(guild, bill)
+        done.append(f"Decision {bill['act']} is struck from the record.")
+
+    names = veto.get("by")
+    who = ("Vetoed by " + ", ".join(names) if names
+           else f"Vetoed, by {vetoes(veto.get('count', 0))}")
+    floor = floor_for(guild, bill)
+    if floor:
+        segments = [
+            f"## Proposal No. {bill['no']}: overturned\n"
+            f"{who}, inside the window. It carried, and it no longer stands."
+        ]
+        if done:
+            segments.append("### Done\n" + "\n".join(f"- {line}" for line in done))
+        if left:
+            segments.append("### Still wanted\n"
+                            + "\n".join(f"- {line}" for line in left))
+        try:
+            await floor.send(view=Card(segments))
+        except discord.HTTPException as e:
+            log.warning(f"could not post the veto result on bill {bill['no']}: {e!r}")
+        if bill.get("veto_message_id"):
+            try:
+                msg = await floor.fetch_message(bill["veto_message_id"])
+                await msg.edit(
+                    content=f"**Overturned.** Proposal No. {bill['no']} was "
+                            f"vetoed inside its window.",
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+
+    await update_bill(guild, bill)
+    await health_log(guild, f"🛑 Proposal No. {bill['no']} vetoed after passing.")
+    log.info(f"bill overturned: no. {bill['no']} ({who})")
+    await update_outstanding(guild, silent=True)
+
+
+async def cast_veto(interaction, withdraw=False):
+    """One veto, or the taking back of one.
+
+    Withdrawing exists because the ballot has a retract and this is a
+    heavier thing than a ballot. A veto somebody cast in the first hour
+    and thought better of in the second should not be a proposal nobody
+    can revive.
+    """
+    guild = interaction.guild
+    bill = bill_by(guild, "veto_message_id", interaction.message.id)
+    if bill is None or not veto_open(bill):
+        return await interaction.response.send_message(
+            "That window has closed.", ephemeral=True
+        )
+    if not may_vote(bill, interaction.user):
+        return await interaction.response.send_message(
+            refusal_for(bill), ephemeral=True
+        )
+    needed = veto_rule(guild, bill)
+    if needed is None:
+        return await interaction.response.send_message(
+            "This house no longer keeps a veto over this kind of proposal.",
+            ephemeral=True,
+        )
+
+    veto = bill["veto"]
+    veto["needed"] = needed
+    cast = veto.setdefault("cast", [])
+    mine = next((c for c in cast if c.get("id") == interaction.user.id), None)
+    if withdraw:
+        if mine is None:
+            return await interaction.response.send_message(
+                "You have no veto on this to withdraw.", ephemeral=True
+            )
+        cast.remove(mine)
+        word = "Veto withdrawn."
+    elif mine is not None:
+        return await interaction.response.send_message(
+            "Your veto is already on this. Withdraw it if you have changed "
+            "your mind.",
+            ephemeral=True,
+        )
+    else:
+        entry = {"id": interaction.user.id}
+        if not numbers(guild)["veto_anonymous"]:
+            entry["name"] = interaction.user.display_name
+        cast.append(entry)
+        word = ("Vetoed. It is named on the floor." if "name" in entry
+                else "Vetoed. Nobody is told it was you.")
+
+    await update_bill(guild, bill)
+    left = max(needed - len(cast), 0)
+    tail = ("That overturns it." if left == 0 and not withdraw
+            else f"{vetoes(left)} would overturn it.")
+    await interaction.response.send_message(f"{word} {tail}", ephemeral=True)
+
+    if not withdraw and len(cast) >= needed:
+        return await overturn_bill(guild, bill)
+    await refresh_veto(guild, bill)
+
+
+class VetoView(discord.ui.View):
+    """The window, as two buttons. Persistent like every other view here:
+    a deploy in the middle of a window must not leave the last word sitting
+    on the floor with nothing behind it."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Veto", emoji="🛑",
+        style=discord.ButtonStyle.danger, custom_id="clerk:veto",
+    )
+    async def veto(self, interaction, button):
+        await cast_veto(interaction)
+
+    @discord.ui.button(
+        label="Withdraw", emoji="↩️",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:veto_withdraw",
+    )
+    async def withdraw(self, interaction, button):
+        await cast_veto(interaction, withdraw=True)
+
+
 async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     """Common closing: result card, published if passed, seal the notes
     thread, close the ballot, seal the debate."""
@@ -1569,6 +2028,11 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
 
     await seal_chamber(guild, bill)
 
+    # The window opens on the way out, so the button lands under the result
+    # it belongs to rather than under whatever is posted next.
+    if passed:
+        await open_veto(guild, bill)
+
     await update_bill(guild, bill)
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
 
@@ -1585,6 +2049,7 @@ def closing_report(bill):
     """What Eugene has already done, and what is left for human hands.
     Deterministic on purpose: Clarence relays this, he does not invent it."""
     passed = bill["status"] == "passed"
+    overturned = bill["status"] == "vetoed"
     kind = bill.get("kind", "ordinary")
     sealed = kind in ("invite", "kick")
 
@@ -1594,8 +2059,28 @@ def closing_report(bill):
     ]
     outstanding = []
 
+    if overturned:
+        # It carried and was taken back, which is neither of the other two
+        # rulings and must not be reported as either. What the reversal
+        # itself could not undo was said on the floor at the time; this is
+        # the standing answer to "what happened to No. 12".
+        done.append("It carried, and the house vetoed it inside its window.")
+        return {
+            "bill": bill["no"],
+            "title": bill.get("title", ""),
+            "ruling": "vetoed",
+            "tally": "sealed" if sealed else bill.get("tally_line", ""),
+            "act": bill.get("act"),
+            "done": done,
+            "outstanding": [],
+        }
 
     if passed:
+        if veto_open(bill):
+            done.append(
+                "It carried, and the window to take it back is still open: "
+                "anyone who could have voted on it may veto it until then."
+            )
         if bill.get("act"):
             done.append(f"Published as Decision {bill['act']} in the record.")
         if kind == "invite":
@@ -1667,6 +2152,11 @@ async def execute_invite(guild, bill):
         max_uses=1, max_age=604800, unique=True,
         reason=f"Invitation: Proposal No. {bill['no']}",
     )
+    # The code, never the url: it is what a veto needs to find this link
+    # again among the server's, and it is not the link itself, so a record
+    # that leaks is not a door that opens.
+    bill["invite_code"] = invite.code
+    await update_bill(guild, bill)
     try:
         await proposer.send(
             f"The cooperative has approved your invitation (Proposal No. {bill['no']}). "
@@ -1840,6 +2330,16 @@ async def _check_floor_in(guild):
     if not module_live(guild, "governance"):
         return
     for bill in load_json(bills_path(guild), []):
+        # A window that has run out is shut on the same clock the vote
+        # closes on. Left open, its buttons keep working, and a veto that
+        # arrives a week late is the one thing the window exists to stop.
+        veto = bill.get("veto")
+        if veto and not veto.get("closed") and not veto_open(bill):
+            try:
+                await close_veto(guild, bill)
+            except Exception as e:
+                log.error(f"failed to close the veto on bill {bill['no']}: {e!r}")
+            continue
         if bill.get("status") != "on_floor" or "ends_at" not in bill:
             continue
         if datetime.fromisoformat(bill["ends_at"]) <= now_utc():
@@ -2148,6 +2648,7 @@ async def act_propose_member(guild, invoker, args):
     bill = await file_bill(
         guild, invoker, title=f"Invitation of {name}"[:100],
         what=what, why=why, kind="invite",
+        target_id=int(discord_id) if discord_id else None,
     )
     if bill is None:
         return json.dumps({"error": "the votes channel is missing"})
@@ -2338,6 +2839,12 @@ async def act_mark_carried_out(guild, invoker, args):
     bill = bill_by(guild, "no", bill_no)
     if bill is None:
         return json.dumps({"error": f"no Proposal No. {bill_no} on record"})
+    if bill.get("status") == "vetoed":
+        return json.dumps(
+            {"error": f"Proposal No. {bill_no} carried and was vetoed inside "
+                      f"its window, so it is not a decision to carry out",
+             "status": "vetoed"}
+        )
     if bill.get("status") != "passed":
         return json.dumps(
             {"error": f"Proposal No. {bill_no} did not pass, so there is "
@@ -2762,8 +3269,12 @@ class SetupPanel(StewardView):
             "",
             *brain_lines(guild),
             f"Vote window: {numbers(guild)['floor_hours']:g}h (backstop only)"
+            # Both tables in the denominator: the overrides above count the
+            # switches too, and "12 of 9 numbers set here" is what counting
+            # only one of them produces.
             + (f" · {len(settings.voting_overrides(guild.id))} of "
-               f"{len(settings.VOTING_RULES)} numbers set here"
+               f"{len(settings.VOTING_RULES) + len(settings.VOTING_FLAGS)} "
+               f"set here"
                if settings.voting_overrides(guild.id) else ""),
             f"-# Commit `{COMMIT}`.",
         ]
@@ -3424,20 +3935,31 @@ async def open_brain(interaction, note=None):
 
 # What each number means lives in settings.py, beside its bounds.
 VOTING_BLURBS = settings.VOTING_HELP
+VOTING_SWITCHES = settings.VOTING_FLAG_HELP
+
+
+def shown_value(name, value):
+    """One setting as a person reads it. A switch is on or off; a number
+    that happens to be stored as 1.0 is 1."""
+    if settings.is_flag(name):
+        return "on" if value else "off"
+    return f"{value:g}" if isinstance(value, float) else str(value)
 
 
 def voting_lines(guild):
-    """Every number, what it means, and whether it is theirs or his."""
+    """Every number and switch, what it means, and whether it is theirs or
+    his."""
     held = numbers(guild)
     chosen = settings.voting_overrides(guild.id)
     rows = []
-    for name, blurb in VOTING_BLURBS.items():
-        value = held[name]
-        shown = f"{value:g}" if isinstance(value, float) else str(value)
-        # Not `-#` subtext: Discord only honours that at the start of a
-        # line, and this is the end of one.
-        mark = "" if name in chosen else " *(his default)*"
-        rows.append(f"- `{name}` **{shown}**: {blurb}{mark}")
+    for table in (VOTING_BLURBS, VOTING_SWITCHES):
+        for name, blurb in table.items():
+            # Not `-#` subtext: Discord only honours that at the start of a
+            # line, and this is the end of one.
+            mark = "" if name in chosen else " *(his default)*"
+            rows.append(
+                f"- `{name}` **{shown_value(name, held[name])}**: {blurb}{mark}"
+            )
     return rows
 
 
@@ -3525,10 +4047,65 @@ class NumberSelect(discord.ui.Select):
         )
 
 
+class SwitchSelect(discord.ui.Select):
+    """The on/off half. No modal behind it: there are two states and asking
+    somebody to type one of them is a form for nothing."""
+
+    def __init__(self, guild):
+        held = numbers(guild)
+        super().__init__(
+            placeholder="Turn one on or off…", min_values=0, max_values=1, row=1,
+            options=[
+                discord.SelectOption(
+                    label=f"{name}: {shown_value(name, held[name])}",
+                    value=name,
+                    description=blurb[:100],
+                ) for name, blurb in VOTING_SWITCHES.items()
+            ],
+        )
+
+    async def callback(self, interaction):
+        if not self.values:
+            return await open_numbers(interaction)
+        guild, name = interaction.guild, self.values[0]
+        was = numbers(guild)[name]
+        settings.set_voting(guild.id, **{name: not was})
+        now = numbers(guild)[name]
+        await health_log(
+            guild,
+            f"⚙️ `{name}` {shown_value(name, was)} → {shown_value(name, now)}, "
+            f"by {interaction.user.display_name}.",
+        )
+        log.info(f"voting switch {name}: {was} -> {now} "
+                 f"by {interaction.user.display_name}")
+        await open_numbers(
+            interaction,
+            f"`{name}` is **{shown_value(name, now)}**. "
+            + VETO_SWITCH_TAIL.get(name, "It applies from this moment."),
+        )
+
+
+# What flipping one actually means, said at the moment somebody flips it.
+# A veto is the one setting here that reaches backwards -- into windows
+# that are open right now -- and somebody switching it should be told that
+# rather than finding out from a button that stopped working.
+VETO_SWITCH_TAIL = {
+    "invite_veto": "It reaches the windows already open, so an invitation "
+                   "that carried in the last few hours is covered by "
+                   "whatever this now says.",
+    "proposal_veto": "It reaches the windows already open, so a proposal "
+                     "that carried in the last few hours is covered by "
+                     "whatever this now says.",
+    "veto_anonymous": "It applies to vetoes cast from now on. One already "
+                      "cast keeps the rule it was cast under.",
+}
+
+
 async def open_numbers(interaction, note=None):
     guild = interaction.guild
     view = StewardView(interaction.user.id)
     view.add_item(NumberSelect(guild))
+    view.add_item(SwitchSelect(guild))
     body = [
         f"## What {guild.name} votes by",
         *voting_lines(guild),
@@ -4067,31 +4644,47 @@ async def slash_bills(interaction: discord.Interaction):
     if not keyed_in(interaction):
         return await refuse(interaction, NOT_INSIDE)
 
+    filed = load_json(bills_path(interaction.guild), [])
     open_bills = sorted(
-        (b for b in load_json(bills_path(interaction.guild), [])
-         if b.get("status") == "on_floor"),
+        (b for b in filed if b.get("status") == "on_floor"),
         key=lambda b: b["no"],
     )
-    if not open_bills:
+    # A proposal in its window is closed and not finished, which is exactly
+    # the thing this command is for: somewhere to look and see what still
+    # wants you. Leaving it out is how somebody misses a window.
+    windows = sorted((b for b in filed if veto_open(b)), key=lambda b: b["no"])
+    if not open_bills and not windows:
         return await interaction.response.send_message(
             "Nothing is open. The floor is yours.", ephemeral=True
         )
-    lines = ["**Open for a vote**"]
-    # A title can run to a hundred characters, so a busy floor is trimmed
-    # rather than sent and refused by Discord for length.
-    for bill in open_bills[:10]:
-        ends = int(datetime.fromisoformat(bill["ends_at"]).timestamp())
-        mark = "⚡ " if is_priority(bill) else ""
-        where = floor_for(interaction.guild, bill)
-        lines.append(
-            f"{mark}**No. {bill['no']}: {bill['title']}**: "
-            f"{bill.get('author', 'someone')}, closes <t:{ends}:R>"
-            + (f" · {where.mention}" if where else "")
-        )
-    rest = len(open_bills) - 10
-    if rest > 0:
-        lines.append(f"-# And {rest} more.")
-    lines.append("-# ⚡ is one you will be chased about.")
+    lines = []
+    where = floor_for(interaction.guild, {})
+    if open_bills:
+        lines.append("**Open for a vote**")
+        # A title can run to a hundred characters, so a busy floor is
+        # trimmed rather than sent and refused by Discord for length.
+        for bill in open_bills[:10]:
+            ends = int(datetime.fromisoformat(bill["ends_at"]).timestamp())
+            mark = "⚡ " if is_priority(bill) else ""
+            lines.append(
+                f"{mark}**No. {bill['no']}: {bill['title']}**: "
+                f"{bill.get('author', 'someone')}, closes <t:{ends}:R>"
+                + (f" · {where.mention}" if where else "")
+            )
+        rest = len(open_bills) - 10
+        if rest > 0:
+            lines.append(f"-# And {rest} more.")
+        lines.append("-# ⚡ is one you will be chased about.")
+    if windows:
+        lines.append("")
+        lines.append("**Passed, and can still be taken back**")
+        for bill in windows[:5]:
+            shuts = int(datetime.fromisoformat(bill["veto"]["until"]).timestamp())
+            lines.append(
+                f"🛑 **No. {bill['no']}: {bill['title']}**: "
+                f"the window shuts <t:{shuts}:R>"
+                + (f" · {where.mention}" if where else "")
+            )
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
@@ -4478,6 +5071,7 @@ async def setup_hook():
     # ballot on the floor with dead buttons and no way to say so.
     bot.add_view(MultiBallotView())
     bot.add_view(NotesView())
+    bot.add_view(VetoView())
     # One or the other, never both. A command registered globally *and*
     # to a guild shows up twice in that guild's picker, and both copies
     # persist -- so doing both to be safe is the one option that is
@@ -4588,6 +5182,58 @@ async def on_ready():
         furniture_loop.start()
     if not duty_loop.is_running():
         duty_loop.start()
+
+
+def watched_invites(guild):
+    """Passed invitations whose link is still worth watching: issued, inside
+    a window that could still take it back, and nobody attributed to it yet."""
+    return [
+        b for b in load_json(bills_path(guild), [])
+        if b.get("kind") == "invite" and b.get("invite_code")
+        and not b.get("joined_id") and veto_open(b)
+    ]
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Which door somebody came through, while it still matters.
+
+    Asked only when a link Eugene issued is inside a window that could
+    still take it back, and only to answer one question: whether revoking
+    that link also means seeing the person who used it out again.
+
+    A single-use invite leaves Discord the moment it is spent, so a code
+    that was there and is not is the one they came in on. If two vanished
+    between one join and the next, nothing is written down: guessing here
+    removes the wrong person, and the veto says plainly that it could not
+    tell rather than acting on a coin flip.
+    """
+    guild = member.guild
+    if guild is None or not serves(guild) or member.bot:
+        return
+    if not module_live(guild, "governance"):
+        return
+    watched = watched_invites(guild)
+    if not watched:
+        return
+    try:
+        live = {invite.code for invite in await guild.invites()}
+    except discord.HTTPException as e:
+        # Reading the server's invites wants Manage Server, which he is not
+        # always given. Without it the veto falls back to the id on the
+        # proposal, if the proposer knew one.
+        log.warning(f"could not read invites in {guild.id}: {e!r}")
+        return
+    spent = [b for b in watched if b["invite_code"] not in live]
+    if len(spent) != 1:
+        return
+    bill = bill_by(guild, "no", spent[0]["no"])
+    if bill is None:
+        return
+    bill["joined_id"] = member.id
+    await update_bill(guild, bill)
+    log.info(f"guild {guild.id}: {member.id} arrived on the link from "
+             f"proposal no. {bill['no']}")
 
 
 @bot.event

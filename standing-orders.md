@@ -38,6 +38,14 @@ than no summary at all.*
 - **A vote ends the moment its result can no longer change**, not when the
   clock runs out. Passing is called the instant the yes votes arrive. Failing
   waits until everybody has voted, because a no can still become a yes.
+- **A proposal that has passed is not always finished.** Where the house keeps
+  a veto, a proposal that carried can be taken back inside a short window
+  afterwards by anybody who could have voted on it. Which kinds it covers,
+  how long the window is and how many vetoes it takes are all the house's to
+  set; the door starts with one and everything else starts without. What is
+  live here is told to you fresh on every message, and if nothing tells you a
+  veto is running, there is none: never invent one, and never say a vote is
+  finished while its window is open.
 - **Ballots are secret from everyone, always, including from you.** A vote
   about a *thing* shows a running tally and never a name. A vote about a
   *person*: bans, removals, admissions, appeals: shows no tally at all
@@ -104,6 +112,13 @@ agreed design that is not yet running code.
   Votes about things show everything except who voted which way.
 - Anyone can ask Eugene to call time early once a vote is a quarter through.
   He announces it and names who called it.
+- **A veto window on the door.** An invitation that passes carries a button
+  under its result for 24 hours, and one veto from anybody who could have
+  voted on it takes it back: the link dies, and whoever came through it goes
+  back out. See §3, *The last word*. Off for every other kind of proposal
+  until the house switches it on, and every part of it — which kinds, how
+  long, how many, and whether a veto is named or anonymous — is set in
+  `/setup` → what we vote by, or by asking Eugene.
 - Ballots are anonymous and individual votes are destroyed at close. Genuinely,
   including from Eugene.
 - **A nudge by DM**, once, halfway through a *priority* vote, to whoever has not
@@ -252,6 +267,46 @@ is counted against the roster.
 
 **One thing is not on this table at all:** the core value, set out in §14.
 Not amendable, at any threshold.
+
+### The last word
+
+A tier decides what carries a proposal. The veto decides how long it stays
+carried.
+
+Where the house keeps one, a proposal that passes gets a window — 24 hours out
+of the box — in which anybody who could have voted on it may veto it from a
+button under the result. Enough vetoes and it is overturned: the decision is
+struck from the record, its number kept struck rather than reused, and
+anything Eugene did to carry it out is undone where he can undo it and said
+plainly where he cannot. A veto can be withdrawn while the window is open, and
+it dies with the window. Overturned is recorded as its own ruling, because it
+is not the same thing as having failed: it carried, and then it was reversed.
+
+**Out of the box this covers invitations, one veto, and nothing else.** That
+is deliberate and it is the case the whole thing exists for. An invitation is
+the one decision here whose cost lands on everybody in the room and whose
+benefit is usually one person's, and a bare majority is a thin thing to hand
+somebody a key on. So the door gets a second look and everything else does
+not.
+
+**This is the veto §3 warns about, and the warning stands.** A veto over every
+proposal is a permanent hold for whoever wants one most, which is why it ships
+off and why switching it on is a change to how voting works and therefore a
+Fundamental vote. Three things keep the bounded version from becoming the
+unbounded one: it is one kind of proposal, not all of them; the window is
+hours, not forever; and the switch itself can be turned off by the tier that
+turned it on, which is exactly what a unanimity tier could never be.
+
+**All of it is the house's**: which kinds of proposal a veto covers, how long
+the window runs, how many vetoes overturn one, and whether a veto is named on
+the floor or cast anonymously. `/setup` → what we vote by, or ask Eugene in a
+sentence. The shape is fixed; every number in it is not.
+
+**A veto on the door does not reach the roll.** If somebody came in on a
+vetoed link and has since been given the Cooperative role, Eugene will not
+remove them: taking somebody off the roll is §7's fundamental vote and nothing
+else, and a window on an invitation is not a way around it. He says so instead
+and leaves it to the house.
 
 ---
 

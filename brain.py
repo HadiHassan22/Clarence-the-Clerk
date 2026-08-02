@@ -355,7 +355,6 @@ def _roster_now(guild):
     figures = _deps.get("numbers")
     held = figures(guild) if figures is not None else {}
     away_days = held.get("away_days", roster.AUTO_AWAY_DAYS)
-    share = held.get("fundamental_share")
     size = len(roster.active(guild, keyed, away_days=away_days))
     if not size:
         return ""
@@ -364,17 +363,63 @@ def _roster_now(guild):
         if not m.bot and keyed(m) and roster.is_away(guild.id, m, away_days)
     )
     aside = f", {away} away and not counted" if away else ""
+
+    def needs(tier):
+        return roster.required(size, tier, roster.share_for(tier, held))
+
+    # Only said when the house has actually priced the door differently.
+    # An invitation on a plain majority needs the same count as anything
+    # else, and a sentence saying so is forty tokens telling him nothing.
+    door = ""
+    if needs("invite") != needs("normal"):
+        door = f" An invitation carries on {needs('invite')}."
     return (
         f"\n# What a vote needs today\n"
         f"{size} on the roster{aside}. An ordinary proposal carries on "
-        f"{roster.required(size, 'normal', share)} yes votes; a fundamental "
+        f"{needs('normal')} yes votes; a fundamental "
         f"one -- a removal, or a change to the rules or to how voting works "
-        f"-- on {roster.required(size, 'fundamental', share)}. That is the "
+        f"-- on {needs('fundamental')}.{door} That is the "
         f"cooperative's own business; a poll open to the whole server is "
         f"carried instead by a majority of whoever votes, once enough of "
         f"them have. Counted just now. Quote these and nothing else: the "
         f"standing orders give the rule, not the number, and any figure you "
         f"remember is out of date.\n"
+    )
+
+
+def _veto_now(guild):
+    """The last word, where a house keeps one.
+
+    Volatile for the same reason the counts are: it is a switch a house can
+    flip mid-conversation, and a prompt that froze it would have him
+    telling somebody a closed vote is final while a veto button is sitting
+    on the floor underneath it. Read straight from the settings rather than
+    off the roster, so a house he cannot count is still a house he
+    describes correctly.
+    """
+    figures = _deps.get("numbers")
+    if figures is None or getattr(guild, "id", None) is None:
+        return ""
+    held = figures(guild) or {}
+    invites = bool(held.get("invite_veto"))
+    others = bool(held.get("proposal_veto"))
+    if not (invites or others):
+        return ""
+    what = ("Every proposal that carries" if others and invites else
+            "Every proposal that carries except an invitation" if others else
+            "An invitation that carries")
+    hours = held.get("veto_hours", 24)
+    needed = held.get("invite_vetoes" if invites else "proposal_vetoes", 1)
+    if invites and others and held.get("invite_vetoes") != held.get("proposal_vetoes"):
+        needed = f"{held.get('invite_vetoes')} on an invitation, "\
+                 f"{held.get('proposal_vetoes')} on anything else"
+    return (
+        f"\n# The last word\n"
+        f"{what} can still be taken back. For {hours:g} hours after it "
+        f"closes, anyone who could have voted on it may veto it from the "
+        f"button under the result, and {needed} veto(es) overturn it. So a "
+        f"vote that has passed is not finished until that window has run: "
+        f"say so rather than calling it done.\n"
     )
 
 
@@ -625,7 +670,7 @@ Saying "done" without having called the tool in THIS turn is a lie. Call it, rea
     # too -- fifty titles and a paragraph of open votes, on every message,
     # followed by a sentence telling him not to mention any of it. He has
     # `lookup`, and he is told above to call it.
-    volatile = f"""{_changed_note(guild)}{_roster_now(guild)}{_switches(guild)}
+    volatile = f"""{_changed_note(guild)}{_roster_now(guild)}{_veto_now(guild)}{_switches(guild)}
 Today is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}."""
     return [stable, volatile]
 

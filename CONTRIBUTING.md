@@ -59,6 +59,12 @@ is three minutes and touches no tracked file — that is the way to do it.
 server starts from, but it is a tracked file, so never commit that
 change.
 
+`veto_hours` wants the same treatment for the same reason: an invitation
+that passes holds a window open for a day out of the box, and the button
+under it is not much use to test if you have to wait one out. Wind it down
+beside `floor_hours`, and remember the two switches next to it —
+`invite_veto` and `proposal_veto` — decide whether a window opens at all.
+
 Run `python3 tests.py` before opening a pull request. The settings and
 harness tests need nothing but the standard library; the rest skip loudly
 if `requirements.txt` is not installed.

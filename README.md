@@ -101,6 +101,16 @@ somebody passes to you, not a ballot. `/invite` is a different door
 entirely — it is a vote about somebody who is not in the server yet, and
 what it hands out is a link.
 
+That door is the one thing here with a last word attached. An invitation
+that passes carries a **veto** button under its result for a day, and one
+veto from anybody who could have voted takes it back: the link dies, and
+whoever came through it goes back out. It is the only kind of proposal
+that starts with one, because it is the only one whose cost lands on
+everybody and whose benefit is usually one person's. **Numbers** on the
+panel switches it off, extends it to every proposal, prices the two
+separately, moves the window, and decides whether a veto is named on the
+floor or cast anonymously.
+
 **Nothing here names a server.** Eugene reads the name off Discord, so
 renaming the server is the whole of it — proposal text, his own
 description of himself and the health card all follow. What he cannot

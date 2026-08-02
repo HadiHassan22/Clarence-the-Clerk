@@ -35,7 +35,17 @@ AWAY_ROLE = "away"
 # is the default for everything, because it is the rule people already expect
 # from a vote. At eight on the roster it asks for five, which is the same
 # number a two-thirds rule would have produced anyway.
-TIERS = {"normal": None, "fundamental": 0.75}
+#
+# The door sits on a tier of its own, starting at a plain majority -- which
+# is what it always was -- so that a house can price an invitation without
+# touching what an ordinary proposal costs, and without a second rule
+# hidden inside the first one.
+TIERS = {"normal": None, "invite": 0.5, "fundamental": 0.75}
+
+# Which governance number moves a tier's share. A tier that is not here is
+# one the house has no figure for, and a plain majority stays a plain
+# majority however the settings are written.
+TIER_SHARES = {"invite": "invite_share", "fundamental": "fundamental_share"}
 
 # Per server, like everything else he writes down. It was one file at the
 # top of the data directory, which meant one person's last-seen time was
@@ -130,8 +140,25 @@ def active(guild, belongs, exclude=(), away_days=AUTO_AWAY_DAYS):
     )
 
 
-def required(size, tier="normal", fundamental_share=None):
+def share_for(tier, held=None):
+    """This house's own share for one tier, or None where it has no say.
+
+    Callers pass what they get back from here straight into `required`,
+    which is why the lookup lives beside the tiers rather than at each of
+    the four call sites: a tier that gains a share the house can set gains
+    it everywhere at once.
+    """
+    name = TIER_SHARES.get(tier)
+    if name is None or not held:
+        return None
+    return held.get(name)
+
+
+def required(size, tier="normal", share=None):
     """How many yes votes carry a roster of this size.
+
+    `share` is the house's own figure for *this* tier, from `share_for`;
+    None falls back to the tier's shipped share.
 
     Never returns more than the roster holds, so a threshold can't become
     unreachable, and never less than a majority, so a supermajority tier can
@@ -140,9 +167,8 @@ def required(size, tier="normal", fundamental_share=None):
     if size <= 0:
         return 1
     majority = size // 2 + 1
-    share = TIERS.get(tier)
-    if tier == "fundamental" and fundamental_share is not None:
-        share = fundamental_share
+    if share is None:
+        share = TIERS.get(tier)
     if share is None:
         return majority
     return min(size, max(math.ceil(size * share), majority))
