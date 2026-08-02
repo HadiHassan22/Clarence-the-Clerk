@@ -384,6 +384,7 @@ def test_debate_thread(clerk, data):
     class Message:
         def __init__(self, mid):
             self.id = mid
+            self.edits = 0
 
         async def create_thread(self, name=None, auto_archive_duration=None,
                                 **kwargs):
@@ -392,12 +393,21 @@ def test_debate_thread(clerk, data):
             threads.append(notes)
             return notes
 
+        async def edit(self, **kwargs):
+            self.edits += 1
+
     class Floor:
         id, mention, said = 500, "<#500>", 0
+        posted = []
 
         async def send(self, content=None, view=None):
             Floor.said += 1
-            return Message(600 + Floor.said)
+            message = Message(600 + Floor.said)
+            Floor.posted.append(message)
+            return message
+
+        async def fetch_message(self, mid):
+            return next(m for m in Floor.posted if m.id == mid)
 
         async def create_thread(self, **kwargs):
             built.append("a second thread")
@@ -416,15 +426,27 @@ def test_debate_thread(clerk, data):
     )
     author = types.SimpleNamespace(id=7, display_name="Robin", mention="@Robin")
 
-    keep_floor, keep_content = clerk.floor_for, clerk.ballot_content
+    keep_floor = clerk.floor_for
     clerk.floor_for = lambda _guild, _bill: floor
-    clerk.ballot_content = lambda _guild, _bill: "the ballot"
     try:
         bill = run(clerk.file_bill(
             guild, author, "A books channel",
             "There shall be a books channel.", "People here read."))
     finally:
-        clerk.floor_for, clerk.ballot_content = keep_floor, keep_content
+        clerk.floor_for = keep_floor
+
+    check("filing a proposal costs the floor one message, not four: the "
+          "proposal, the ballot and in the end the result are one card",
+          Floor.said == 1)
+    check("and the thread hangs off that card, so the ballot is the "
+          "proposal rather than a message under it",
+          bill["ballot_message_id"] == bill["message_id"])
+    shown = clerk.ballot_content(guild, bill)
+    check("which carries the proposal's own words",
+          "There shall be a books channel." in shown
+          and "People here read." in shown)
+    check("with the live ballot on the same card",
+          "yes needed" in shown)
 
     notes = next((t for t in threads if t.id == 200), None)
     check("nothing is built in the sidebar: no category, no text channel, "
@@ -1019,6 +1041,70 @@ def test_privacy_surfaces(clerk, data):
         settings.configure(data)
 
 
+def test_invite_message(clerk, data):
+    """The private word after an invitation carries. A house may write it,
+    which means the one thing that must survive whatever they write is the
+    link: a congratulation without one is worse than nothing."""
+    print("\nthe message after an invitation passes")
+
+    store = data / "invite-dm-store"
+    settings.configure(store)
+    gid = 7272
+    guild = types.SimpleNamespace(id=gid, name="Book Club")
+    proposer = types.SimpleNamespace(id=5, display_name="Robin")
+    bill = {"no": 12, "invitee": "Sam", "title": "Invitation of Sam"}
+    url = "https://discord.gg/abc123"
+    try:
+        shipped = clerk.invite_dm(guild, bill, proposer, url)
+        check("with nothing set he sends his own sentence, and it names "
+              "both the person invited and the person being written to",
+              "Sam" in shipped and "Robin" in shipped
+              and "No. 12" in shipped and url in shipped)
+
+        settings.put(gid, **{clerk.INVITE_DM:
+                             "Hello {proposer}, {name} is in: {link}"})
+        theirs = clerk.invite_dm(guild, bill, proposer, url)
+        check("a house that writes its own gets its own, filled in",
+              theirs == f"Hello Robin, Sam is in: {url}")
+
+        settings.put(gid, **{clerk.INVITE_DM: "Well done."})
+        check("and one that forgets the link still delivers it",
+              url in clerk.invite_dm(guild, bill, proposer, url))
+
+        settings.put(gid, **{clerk.INVITE_DM:
+                             "{proposer}, tell {their name} to use {link}"})
+        odd = clerk.invite_dm(guild, bill, proposer, url)
+        check("a placeholder he does not know comes back as typed rather "
+              "than raising, because the cost of raising here is a passed "
+              "invitation whose link never arrives",
+              "{their name}" in odd and odd.startswith("Robin,")
+              and url in odd)
+
+        settings.put(gid, **{clerk.INVITE_DM: None})
+        old = {"no": 3, "title": "Invitation of Ada"}
+        check("a proposal filed before any of this still knows who it was "
+              "for, off its own title",
+              "Ada" in clerk.invite_dm(guild, old, proposer, url))
+        check("and one that cannot say is vague rather than wrong",
+              "them" in clerk.invite_dm(
+                  guild, {"no": 4, "title": "Something else"}, proposer, url))
+
+        # The list the panel offers is the list that works, or the first
+        # anybody hears of the difference is a DM with a brace in it.
+        every = " ".join(f"{{{f}}}" for f in clerk.INVITE_DM_FIELDS)
+        settings.put(gid, **{clerk.INVITE_DM: every})
+        filled = clerk.invite_dm(guild, bill, proposer, url)
+        check("every placeholder the panel offers is one he fills in",
+              "{" not in filled and "}" not in filled)
+
+        long_url = "https://discord.gg/zzz"
+        settings.put(gid, **{clerk.INVITE_DM: "x" * 1000 + " {link}"})
+        check("and nothing Discord will refuse to send goes out",
+              len(clerk.invite_dm(guild, bill, proposer, long_url)) <= 2000)
+    finally:
+        settings.configure(data)
+
+
 def test_channel_choice(clerk, data):
     """Whether Apply may take over a channel you already have is the
     server's decision, and the panel has to say which way it is set."""
@@ -1551,10 +1637,13 @@ def test_veto(clerk, data):
                 self.user = user
                 self.message = types.SimpleNamespace(id=message_id)
                 self.response = types.SimpleNamespace(
-                    send_message=self._say, is_done=lambda: False)
+                    send_message=self._say, edit_message=self._say,
+                    is_done=lambda: False)
+                self.offered = None
 
             async def _say(self, content=None, **kw):
                 said.append(content)
+                self.offered = kw.get("view")
 
         overturned = []
         live = {}
@@ -1566,7 +1655,41 @@ def test_veto(clerk, data):
             clerk.refresh_veto = lambda g, b: _async(None)
             clerk.overturn_bill = lambda g, b: _async(overturned.append(b["no"]))
 
+            # ---- the press before the veto ----
+            # At one veto the button is the whole reversal, so the button
+            # is not the veto: it asks, and the answer is what counts.
+            bill = passed()
+            live[555] = bill
+            asked = Pressed(fake_member(3))
+            run(clerk.confirm_veto(asked))
+            check("pressing veto casts nothing by itself",
+                  not bill["veto"]["cast"])
+            check("it asks, naming the proposal",
+                  "Veto Proposal No. 7?" in said[-1])
+            check("and says what the next press would actually do, since at "
+                  "one veto there is no taking it back",
+                  "goes back out" in said[-1])
+            check("holding out the confirmation that would do it",
+                  isinstance(asked.offered, clerk.VetoConfirm)
+                  and asked.offered.host_id == 555)
+            run(clerk.cast_veto(Pressed(fake_member(3)),
+                                host_id=asked.offered.host_id))
+            check("which is the press that records one",
+                  [c["id"] for c in bill["veto"]["cast"]] == [3])
+            check("and it overturns, because one was all it wanted",
+                  overturned == [7])
+            overturned.clear()
+
             settings.set_voting(guild.id, invite_vetoes=2)
+            bill = passed()
+            live[555] = bill
+            asked = Pressed(fake_member(9))
+            run(clerk.confirm_veto(asked))
+            check("where more than one is wanted the question says so "
+                  "instead, and that the veto can be withdrawn",
+                  "1 more would be wanted" in said[-1]
+                  and "withdraw" in said[-1])
+
             bill = passed()
             live[555] = bill
             run(clerk.cast_veto(Pressed(fake_member(3))))
@@ -1671,6 +1794,232 @@ def test_veto(clerk, data):
         clerk.in_cooperative = original
         settings.set_voting(
             guild.id, **{k: None for k in settings.voting_overrides(guild.id)})
+
+
+def test_record_card(clerk, data):
+    """One message per proposal in the record, redrawn rather than added to.
+
+    The floor is for voting. Everything a close leaves behind -- the
+    ruling, what it still wants doing, the window to take it back and, in
+    the end, the strike -- is the same card in #decisions, edited.
+    """
+    print("\nthe record keeps one message per proposal, and edits it")
+    settings.configure(data)
+    guild = types.SimpleNamespace(
+        id=79, name="The Hangout", members=[],
+        get_channel=lambda _id: None, get_role=lambda _id: None,
+    )
+
+    def bill(**over):
+        b = {"no": 7, "title": "A kettle", "what": "We should buy a kettle.",
+             "author": "ada", "status": "passed", "act": 4,
+             "kind": "ordinary", "tally_line": "5 for, 1 against"}
+        b.update(over)
+        return b
+
+    def drawn(b):
+        return "\n".join(clerk.record_segments(guild, b))
+
+    text = drawn(bill())
+    check("a decision that carried is headed by its number",
+          text.startswith("## Decision 4: A kettle"))
+    check("and carries the proposal's own words, not a pointer to them",
+          "We should buy a kettle." in text)
+    check("with who filed it and how it went at the foot",
+          "From Proposal No. 7 by ada, passed with 5 for, 1 against." in text)
+
+    text = drawn(bill(status="failed", act=None))
+    check("one that failed is on the same kind of card, by proposal number, "
+          "so a vote that went nowhere is still somewhere",
+          text.startswith("## Proposal No. 7: A kettle") and "**Failed**" in text)
+
+    text = drawn(bill(what="x" * 5000))
+    check("a proposal too long for one card is trimmed rather than split "
+          "across two, and says that it was",
+          "Trimmed here" in text and len(text) < 4000)
+
+    # ---- what is still wanted rides on the decision itself ----
+    text = drawn(bill(outstanding=["Somebody has to buy it."]))
+    check("what a decision still wants is on the decision",
+          "### Still wanted" in text and "Somebody has to buy it." in text)
+    text = drawn(bill(outstanding=["Somebody has to buy it."],
+                      carried_out={"by": "bo"}))
+    check("and comes off it the moment somebody says they have done it, "
+          "under their name",
+          "### Still wanted" not in text and "Carried out by bo." in text)
+
+    # ---- the window, as a line rather than a message ----
+    now = clerk.now_utc()
+    window = {"until": (now + clerk.timedelta(hours=6)).isoformat(),
+              "needed": 1, "cast": []}
+    text = drawn(bill(veto=window))
+    check("an open window is one line at the foot of the decision",
+          "can be taken back" in text and text.count("🛑") == 1)
+    check("saying what it would take, without a paragraph about it",
+          "1 veto would overturn it" in text)
+    text = drawn(bill(veto=dict(window, needed=2,
+                                cast=[{"id": 3, "name": "m3"}])))
+    check("and who has vetoed so far, where the house names them",
+          "vetoed by m3" in text and "1 more to overturn" in text)
+    text = drawn(bill(veto=dict(window, needed=2, cast=[{"id": 3}])))
+    check("but never who, where the house asked for anonymity",
+          "1 veto cast" in text and "m3" not in text)
+
+    text = drawn(bill(veto={"until": "x", "closed": True, "count": 0}))
+    check("a window that ran out unused says so once and stops asking",
+          "closed unvetoed" in text)
+    text = drawn(bill(veto={"until": "x", "closed": True, "count": 1,
+                            "needed": 2}))
+    check("and one that ran out short says how short",
+          "1 veto of the 2 it wanted" in text)
+
+    # ---- and the strike ----
+    text = drawn(bill(status="vetoed", outstanding=["Sam has to be let back in."],
+                      veto={"closed": True, "overturned": True, "count": 1}))
+    check("a decision taken back is the same message, struck",
+          text.startswith("## Decision 4: struck"))
+    check("keeping the number rather than reusing it",
+          "kept struck rather than reused" in text)
+    check("the words of a decision that no longer stands come off it",
+          "We should buy a kettle." not in text)
+    check("what the reversal could not undo does not",
+          "Sam has to be let back in." in text)
+    check("and the window is not still advertised under it",
+          "can be taken back" not in text)
+
+
+def test_cards_survive(clerk, data):
+    """One message per proposal, edited for its whole life, only holds
+    while the message is there and the edits land. These are the ways it
+    does not, and what happens instead."""
+    print("\none message per proposal, and what puts it back")
+    settings.configure(data)
+    import discord
+
+    def http(status=500):
+        return discord.HTTPException(
+            types.SimpleNamespace(status=status, reason="x"), "x")
+
+    class Msg:
+        def __init__(self, mid, gone=False, refuses=False):
+            self.id, self.gone, self.refuses = mid, gone, refuses
+            self.edited = 0
+
+        async def edit(self, **kwargs):
+            if self.refuses:
+                raise http()
+            self.edited += 1
+
+    class Room:
+        def __init__(self, rid=900):
+            self.id, self.mention = rid, f"<#{rid}>"
+            self.sent, self.held = 0, {}
+
+        async def send(self, content=None, view=None):
+            self.sent += 1
+            msg = Msg(self.id * 10 + self.sent)
+            self.held[msg.id] = msg
+            return msg
+
+        async def fetch_message(self, mid):
+            msg = self.held.get(mid)
+            if msg is None:
+                raise discord.NotFound(
+                    types.SimpleNamespace(status=404, reason="x"), "x")
+            if msg.gone:
+                raise http(503)
+            return msg
+
+    saved = []
+    keep = {name: getattr(clerk, name)
+            for name in ("floor_for", "record_for", "outcome_for", "update_bill")}
+    room = Room()
+    guild = types.SimpleNamespace(
+        id=79, name="The Hangout", members=[],
+        get_channel=lambda _id: room if _id == room.id else None,
+        get_role=lambda _id: None, get_thread=lambda _id: None,
+    )
+    try:
+        clerk.floor_for = lambda g, b: room
+        clerk.record_for = lambda g, b: room
+        clerk.outcome_for = lambda g, b: room
+        clerk.update_bill = lambda g, b: _async(saved.append(b["no"]))
+
+        def bill(**over):
+            b = {"no": 7, "title": "A kettle", "what": "Buy one.",
+                 "author": "ada", "kind": "ordinary", "status": "on_floor",
+                 "ballots": {}, "tally_line": "5 for, 1 against"}
+            b.update(over)
+            return b
+
+        # ---- an edit that lands ----
+        live = bill()
+        run(clerk.paint_floor(guild, live))
+        check("a proposal with no card yet gets one", room.sent == 1)
+        run(clerk.paint_floor(guild, live))
+        check("and from then on it is edited, never posted again",
+              room.sent == 1
+              and room.held[live["ballot_message_id"]].edited == 1)
+
+        # ---- a card somebody deleted ----
+        deleted = dict(live)
+        room.held.pop(deleted["ballot_message_id"])
+        saved.clear()
+        run(clerk.paint_floor(guild, deleted))
+        check("a ballot somebody deleted is put back rather than leaving a "
+              "vote nobody can reach", room.sent == 2)
+        check("and the proposal is told where the new one is, so the next "
+              "press finds it",
+              deleted["ballot_message_id"] != live["ballot_message_id"]
+              and saved == [7])
+
+        # ---- a lookup that failed for some other reason ----
+        room.held[deleted["ballot_message_id"]].gone = True
+        before = room.sent
+        run(clerk.paint_floor(guild, deleted))
+        check("but a lookup that merely failed posts nothing: two cards for "
+              "one proposal is worse than a stale one, and the next boot "
+              "will try again", room.sent == before)
+        room.held[deleted["ballot_message_id"]].gone = False
+
+        # ---- an edit Discord refuses ----
+        old = bill(ballot_message_id=None)
+        run(clerk.paint_floor(guild, old))
+        room.held[old["ballot_message_id"]].refuses = True
+        before = room.sent
+        run(clerk.paint_floor(guild, old))
+        check("a ballot filed before proposals became one card cannot be "
+              "edited into one, and is not reposted either: it keeps its "
+              "own shape and its buttons still answer", room.sent == before)
+
+        # ---- the record ----
+        closed = bill(status="passed", act=4)
+        run(clerk.paint_record(guild, closed))
+        check("a closed proposal reaches the record", closed.get("record_message_id"))
+        room.held.pop(closed["record_message_id"])
+        saved.clear()
+        run(clerk.paint_record(guild, closed))
+        check("and a decision deleted out of the record goes back in, "
+              "because a ruling nobody can read is the worst of these",
+              saved == [7])
+
+        # ---- what a boot goes back over ----
+        check("a vote still on the floor is unfinished",
+              clerk.unfinished(bill()) is True)
+        check("so is a window still open",
+              clerk.unfinished(bill(status="passed", veto={
+                  "until": (clerk.now_utc()
+                            + clerk.timedelta(hours=2)).isoformat(),
+                  "needed": 1, "cast": []})) is True)
+        check("and so is a ruling that never reached the record",
+              clerk.unfinished(bill(status="failed")) is True)
+        check("but a decision that is said and settled is not, so a deploy "
+              "does not walk the whole book",
+              clerk.unfinished(bill(status="passed", record_message_id=1,
+                                    veto={"closed": True})) is False)
+    finally:
+        for name, value in keep.items():
+            setattr(clerk, name, value)
 
 
 def test_veto_undo(clerk, data):
@@ -1871,12 +2220,12 @@ def test_choice_ballots(clerk, data):
               "silence counts against it" in plain
               and "5 more yes votes carries it" in plain)
 
-        ids = [item.custom_id for item in clerk.MultiBallotView().children]
+        ids = [item.custom_id for item in clerk.MultiBallotRows().children]
         check("a bare view registers a button for every option a ballot "
               "can hold, so a restart cannot leave one dead",
               ids == [f"clerk:opt_{i}" for i in range(clerk.MULTI_MAX)]
               + ["clerk:opt_retract"])
-        live = [item.custom_id for item in clerk.MultiBallotView(options).children]
+        live = [item.custom_id for item in clerk.MultiBallotRows(options).children]
         check("and a real ballot answers on the same ids",
               live == ["clerk:opt_0", "clerk:opt_1", "clerk:opt_2",
                        "clerk:opt_retract"])
@@ -3095,12 +3444,15 @@ def main():
             test_upgrade_keeps_talking(clerk, data)
             test_privacy_surfaces(clerk, data)
             test_channel_choice(clerk, data)
+            test_invite_message(clerk, data)
             test_closing(clerk, data)
             test_close_floor_split(clerk, data)
             test_voting(clerk, data)
             test_voting_numbers(data)
             test_numbers_bite(clerk, data)
             test_veto(clerk, data)
+            test_record_card(clerk, data)
+            test_cards_survive(clerk, data)
             test_veto_undo(clerk, data)
             test_choice_ballots(clerk, data)
             test_eligibility(clerk)

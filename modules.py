@@ -108,13 +108,15 @@ ROOM_PLAN = {
         # nobody may write in is not a debate. This opens that and nothing
         # else -- the room stays his.
         "threads": True,
-        "topic": "Proposals up for a vote. Argue in the thread, ballots by "
-                 "button, always anonymous.",
+        "topic": "Proposals up for a vote, and nothing else. Argue in the "
+                 "thread, ballots by button, always anonymous. Results are "
+                 "in #decisions.",
     },
     "decisions": {
         "name": "decisions", "category": "governance",
         "visibility": "members", "read_only": True,
-        "topic": "Every decision ever made, numbered. The permanent record.",
+        "topic": "Every vote that has closed, one message each. Decisions "
+                 "numbered, and the window to take one back.",
     },
     "chat": {
         # His own room, made under his own name. A server with a channel

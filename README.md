@@ -73,6 +73,7 @@ server and says what is done and what is missing:
 
 [ Features ] [ Rooms ] [ Roles & votes ] [ Brain ] [ Numbers ]
 [ Channels ] [ Preview the structure ] [ Apply ] [ What this place is ]
+[ Invitation message ]
 ```
 
 **Nothing in your server changes until you press Apply**, and **Preview
@@ -102,14 +103,26 @@ entirely — it is a vote about somebody who is not in the server yet, and
 what it hands out is a link.
 
 That door is the one thing here with a last word attached. An invitation
-that passes carries a **veto** button under its result for a day, and one
-veto from anybody who could have voted takes it back: the link dies, and
-whoever came through it goes back out. It is the only kind of proposal
-that starts with one, because it is the only one whose cost lands on
-everybody and whose benefit is usually one person's. **Numbers** on the
-panel switches it off, extends it to every proposal, prices the two
-separately, moves the window, and decides whether a veto is named on the
-floor or cast anonymously.
+that passes carries a **veto** button on its decision in `#decisions` for
+a day, and one veto from anybody who could have voted takes it back: the
+link dies, and whoever came through it goes back out. Pressing it asks to
+be confirmed before anything is cast. It is the only kind of proposal that
+starts with one, because it is the only one whose cost lands on everybody
+and whose benefit is usually one person's. **Numbers** on the panel
+switches it off, extends it to every proposal, prices the two separately,
+moves the window, and decides whether a veto is named on the decision or
+cast anonymously.
+
+What that door hands out arrives as a private message to whoever
+proposed them, and **Invitation message** on the panel is where a house
+writes it in its own words. His default names both of them — *Robin: the
+cooperative has approved your invitation of Sam (Proposal No. 12). One
+link, single use, seven days: …* — and a house can put `{name}`,
+`{invitee}`, `{proposer}`, `{server}`, `{number}` and `{link}` wherever
+it likes. Anything else in braces is left on the page as typed rather
+than swallowed, and a message that leaves `{link}` out still gets the
+link on the end: the sentence is the house's, but a congratulation
+nobody can use is not a thing he will send. Leave it blank for his.
 
 **Nothing here names a server.** Eugene reads the name off Discord, so
 renaming the server is the whole of it — proposal text, his own
@@ -285,6 +298,17 @@ fundamental tier (a removal, a rule change) or one whose author filed it as
 priority with `/propose priority: True`. Ordinary proposals aren't chased — a
 bot that DMs about everything teaches people to ignore the one that
 mattered.
+
+**A proposal is one message and stays one message.** `#votes` gets a single
+card when it is filed — the proposal, its live ballot and its buttons — and
+that card is edited from then on: on every vote, when a runoff reopens it,
+and when it closes. Nothing is posted under it, ever. The argument happens
+in the thread hanging off it, and what the vote came to goes to
+`#decisions`, which likewise keeps one message per proposal and edits it as
+the window opens, the report lands and, if it is taken back, the decision
+is struck. Filing used to cost four messages and closing another four; a
+room you have to scroll is a room where the open vote is the thing you
+miss.
 
 Each annex has a default model, chosen to be cheap rather than clever —
 the clerk answers in a sentence or two, and a frontier model is several

@@ -111,14 +111,24 @@ agreed design that is not yet running code.
 - Votes about people stay blind: turnout is shown, the running count is not.
   Votes about things show everything except who voted which way.
 - Anyone can ask Eugene to call time early once a vote is a quarter through.
-  He announces it and names who called it.
-- **A veto window on the door.** An invitation that passes carries a button
-  under its result for 24 hours, and one veto from anybody who could have
-  voted on it takes it back: the link dies, and whoever came through it goes
-  back out. See §3, *The last word*. Off for every other kind of proposal
-  until the house switches it on, and every part of it — which kinds, how
-  long, how many, and whether a veto is named or anonymous — is set in
-  `/setup` → what we vote by, or by asking Eugene.
+  It is said on the ballot itself, naming who called it.
+- **One message per proposal, in each room, from filing to the last word.**
+  The floor gets one card when a proposal is filed: the proposal, the live
+  ballot and the buttons. It is edited on every vote, edited when a runoff
+  reopens it, and edited again to say how it went. Nothing is ever posted
+  under it. The ruling, what it still wants doing and the window to take it
+  back are one card in `#decisions`, edited the same way. Argument goes in
+  the thread. A room nobody can scroll is a room where the vote that
+  needed you is the one you miss.
+- **A veto window on the door.** An invitation that passes carries two
+  buttons on its decision in `#decisions` for 24 hours, and one veto from
+  anybody who could have voted on it takes it back: the link dies, and
+  whoever came through it goes back out. Vetoing asks to be confirmed
+  first, because at one veto the button is the whole thing and a misclick
+  should not be. See §3, *The last word*. Off for every other kind of
+  proposal until the house switches it on, and every part of it — which
+  kinds, how long, how many, and whether a veto is named or anonymous — is
+  set in `/setup` → what we vote by, or by asking Eugene.
 - Ballots are anonymous and individual votes are destroyed at close. Genuinely,
   including from Eugene.
 - **A nudge by DM**, once, halfway through a *priority* vote, to whoever has not
@@ -274,13 +284,16 @@ A tier decides what carries a proposal. The veto decides how long it stays
 carried.
 
 Where the house keeps one, a proposal that passes gets a window — 24 hours out
-of the box — in which anybody who could have voted on it may veto it from a
-button under the result. Enough vetoes and it is overturned: the decision is
-struck from the record, its number kept struck rather than reused, and
-anything Eugene did to carry it out is undone where he can undo it and said
-plainly where he cannot. A veto can be withdrawn while the window is open, and
-it dies with the window. Overturned is recorded as its own ruling, because it
-is not the same thing as having failed: it carried, and then it was reversed.
+of the box — in which anybody who could have voted on it may veto it from the
+buttons on its decision in `#decisions`. Pressing veto asks first and casts
+nothing until the second press: at the default of one veto there is no window
+left to withdraw in, and that is too much to hang on a misclick. Enough vetoes
+and it is overturned: the decision is struck from the record, its number kept
+struck rather than reused, and anything Eugene did to carry it out is undone
+where he can undo it and said plainly where he cannot. A veto can be withdrawn
+while the window is open, and it dies with the window. Overturned is recorded
+as its own ruling, because it is not the same thing as having failed: it
+carried, and then it was reversed.
 
 **Out of the box this covers invitations, one veto, and nothing else.** That
 is deliberate and it is the case the whole thing exists for. An invitation is

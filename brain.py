@@ -393,8 +393,8 @@ def _veto_now(guild):
     Volatile for the same reason the counts are: it is a switch a house can
     flip mid-conversation, and a prompt that froze it would have him
     telling somebody a closed vote is final while a veto button is sitting
-    on the floor underneath it. Read straight from the settings rather than
-    off the roster, so a house he cannot count is still a house he
+    on the decision underneath it. Read straight from the settings rather
+    than off the roster, so a house he cannot count is still a house he
     describes correctly.
     """
     figures = _deps.get("numbers")
@@ -417,7 +417,8 @@ def _veto_now(guild):
         f"\n# The last word\n"
         f"{what} can still be taken back. For {hours:g} hours after it "
         f"closes, anyone who could have voted on it may veto it from the "
-        f"button under the result, and {needed} veto(es) overturn it. So a "
+        f"buttons on the decision in #decisions, which asks to be confirmed "
+        f"before anything is cast, and {needed} veto(es) overturn it. So a "
         f"vote that has passed is not finished until that window has run: "
         f"say so rather than calling it done.\n"
     )

@@ -111,7 +111,7 @@ the ids of whoever has vetoed sit on the proposal, for one purpose: stopping
 one person casting two. They are destroyed when the window shuts, whether or
 not it overturned anything. What survives is how many, and — where the house
 has not switched the veto to anonymous, so the names were already on the
-floor — who.
+decision in the open — who.
 
 `logs/` holds an audit line for every tool the model was allowed to run:
 which tool, its arguments, and what came back. Operational, on the host, and

@@ -368,8 +368,30 @@ def may_vote(bill, member):
 
 
 def floor_for(guild, bill):
-    """The room a vote is held in."""
+    """The room a vote is held in.
+
+    Voting, and nothing else. What a vote *came to* is not voting: the
+    result, the report of what it set in motion and the window to take it
+    back all belong to the record, and a floor carrying four cards after
+    every close is a floor nobody can find the open ballot in.
+    """
     return room(guild, "votes")
+
+
+def record_for(guild, bill):
+    """The room a vote's outcome is kept in."""
+    return room(guild, "decisions")
+
+
+def outcome_for(guild, bill):
+    """Where a result is announced.
+
+    The record, always, where the house keeps one. A server that has not
+    got a decisions channel falls back to the floor, because a ruling
+    announced nowhere is worse than a ruling announced in the wrong room --
+    but that is the fallback and not the shape.
+    """
+    return record_for(guild, bill) or floor_for(guild, bill)
 
 
 def electorate(guild, bill):
@@ -457,15 +479,25 @@ async def next_bill_number(guild):
 # ---------- rendering ----------
 
 class Card(discord.ui.LayoutView):
-    """One gold-striped container holding a list of text segments."""
+    """One gold-striped container holding text segments, and whatever
+    buttons the thing it draws still has.
 
-    def __init__(self, segments):
+    Everything long-lived Eugene posts is one of these, redrawn rather than
+    added to: a proposal on the floor from filing to result, and a
+    proposal in the record from its ruling to the window closing on it.
+    Persistent, because a deploy in the middle of either must not leave a
+    card sitting there with nothing behind its buttons.
+    """
+
+    def __init__(self, segments=(), rows=()):
         super().__init__(timeout=None)
         container = discord.ui.Container(accent_colour=ACCENT)
         for i, segment in enumerate(segments):
             if i:
                 container.add_item(discord.ui.Separator())
             container.add_item(discord.ui.TextDisplay(segment))
+        for row in rows:
+            container.add_item(row)
         self.add_item(container)
 
 
@@ -788,26 +820,11 @@ def choice_body(st):
     )
 
 
-def ballot_content(guild, bill):
+def ballot_body(guild, bill):
     """The live face of a vote, whatever shape it is. Rewritten on every
     ballot cast, so the progress toward the threshold is visible the whole
     way rather than arriving as a surprise at close."""
     st = vote_state(guild, bill)
-    chamber = chamber_of(guild, bill)
-    where = f" · debate in {chamber.mention}" if chamber else ""
-    try:
-        ends = datetime.fromisoformat(bill["ends_at"])
-        clock = f" · closes <t:{int(ends.timestamp())}:R>"
-    except (KeyError, ValueError):
-        clock = ""
-
-    round_note = " (runoff)" if bill.get("round", 1) > 1 else ""
-    # Said out loud because it is a claim on other people's inbox, and one
-    # nobody should discover only by being direct-messaged about it -- or
-    # by noticing that they were not.
-    kind_note = " · ⚡ priority" if is_priority(bill) else ""
-    head = (f"**Proposal No. {bill['no']}: {bill['title']}**"
-            f"{round_note}{kind_note}{where}{clock}")
     if st["options"]:
         body = choice_body(st)
     elif is_blind(bill):
@@ -824,34 +841,201 @@ def ballot_content(guild, bill):
             + (f"  ·  🤍 {st['abstain']}" if st["abstain"] else "")
         )
     return (
-        f"{head}\n\n{body}\n\n"
+        f"{body}\n\n"
         f"-# Change or retract any time. Nobody ever sees how you voted."
     )
 
 
+def closed_body(guild, bill):
+    """What the ballot says once it is over.
+
+    The whole of the close, on the message the vote was already on. Not a
+    card under it: the floor is for votes that are open, and this is what
+    is left of one that is not.
+    """
+    secret = bill.get("kind") in ("invite", "kick")
+    shown = "The tally is sealed." if secret else bill.get("tally_line", "")
+    if bill.get("status") == "vetoed":
+        verdict = "Carried, and vetoed inside its window."
+    elif bill.get("decided"):
+        verdict = f"Decided: {bill['decided']}."
+    else:
+        verdict = "Passed." if bill.get("status") == "passed" else "Failed."
+    line = f"**Ballot closed.** {verdict} {shown}"
+    if bill.get("closed_early_by"):
+        line += f" Closed early by {bill['closed_early_by']}."
+    record = record_for(guild, bill)
+    if record and bill.get("act"):
+        line += f"\n-# Decision {bill['act']}, in {record.mention}."
+    elif record:
+        line += f"\n-# In {record.mention}."
+    return line
+
+
+# A card holds 4000 characters. What and Why may be written to 4000 each,
+# so the long ones are shown as far as they fit and the whole of them goes
+# in the thread, where length costs nobody anything.
+FLOOR_LIMIT = 2800
+
+
+def floor_text(bill):
+    """The proposal itself, and whatever would not fit."""
+    parts = []
+    for label, body in (("What", bill.get("what")), ("Why", bill.get("why"))):
+        if (body or "").strip():
+            parts.append(f"### {label}\n{body.strip()}")
+    whole = "\n\n".join(parts)
+    if len(whole) <= FLOOR_LIMIT:
+        return whole, ""
+    return (whole[:FLOOR_LIMIT].rstrip()
+            + "…\n-# Too long for one card. The whole of it is in the "
+              "thread.", whole)
+
+
+def floor_segments(guild, bill):
+    """Everything a proposal shows on the floor, drawn from scratch.
+
+    One message from filing to close: the proposal, the live ballot and,
+    in the end, the result, all on the card the thread hangs off. It used
+    to be four messages and a fifth for the result, which is four more
+    than a vote needs.
+    """
+    chamber = chamber_of(guild, bill)
+    where = f" · debate in {chamber.mention}" if chamber else ""
+    try:
+        ends = datetime.fromisoformat(bill["ends_at"])
+        clock = f" · closes <t:{int(ends.timestamp())}:R>"
+    except (KeyError, ValueError):
+        clock = ""
+
+    round_note = " (runoff)" if bill.get("round", 1) > 1 else ""
+    # Said out loud because it is a claim on other people's inbox, and one
+    # nobody should discover only by being direct-messaged about it -- or
+    # by noticing that they were not.
+    kind_note = " · ⚡ priority" if is_priority(bill) else ""
+    open_now = bill.get("status") == "on_floor"
+    segments = [
+        f"## Proposal No. {bill['no']}: {bill['title']}{round_note}{kind_note}\n"
+        f"-# By {bill.get('author', 'someone')}{where}"
+        + (clock if open_now else "")
+    ]
+    shown, _ = floor_text(bill)
+    if shown:
+        segments.append(shown)
+    if open_now and bill.get("runoff_note"):
+        segments.append(f"-# {bill['runoff_note']}")
+    segments.append(ballot_body(guild, bill) if open_now
+                    else closed_body(guild, bill))
+    return segments
+
+
+def ballot_content(guild, bill):
+    """The card as one piece of text. What the floor actually shows."""
+    return "\n\n".join(floor_segments(guild, bill))
+
+
+async def find_card(channel, message_id):
+    """The card, or what to do about not having it.
+
+    Three answers, and they are not the same answer. The message, where it
+    is there. `None` where Discord says it is gone, which is recoverable:
+    put another one up. `False` where the lookup itself failed, which is
+    not: something transient is wrong and reposting would leave two cards
+    for one proposal, so that one waits and is tried again.
+    """
+    if channel is None or not message_id:
+        return None
+    try:
+        return await channel.fetch_message(message_id)
+    except discord.NotFound:
+        return None
+    except discord.HTTPException as e:
+        log.warning(f"could not read message {message_id}: {e!r}")
+        return False
+
+
+async def paint_floor(guild, bill):
+    """Redraw the proposal's one message on the floor. Best-effort: a vote
+    that cannot redraw is still a valid vote, so a failure here never
+    blocks one."""
+    floor = floor_for(guild, bill)
+    if guild is None or floor is None:
+        return
+    rows = ballot_rows(bill) if bill.get("status") == "on_floor" else ()
+    view = Card(floor_segments(guild, bill), rows)
+    msg = await find_card(floor, bill.get("ballot_message_id"))
+    if msg is False:
+        return
+    if msg is None:
+        # One message per proposal holds only while the message is there.
+        # Somebody who deletes a live ballot must not thereby delete the
+        # vote, so it goes back up and the proposal is told where.
+        try:
+            fresh = await floor.send(view=view)
+        except discord.HTTPException as e:
+            return log.warning(f"could not put the floor card for bill "
+                               f"{bill['no']} back up: {e!r}")
+        bill["message_id"] = fresh.id
+        bill["ballot_message_id"] = fresh.id
+        await update_bill(guild, bill)
+        return log.info(f"floor card for bill {bill['no']} was gone; reposted")
+    try:
+        await msg.edit(view=view)
+    except discord.HTTPException:
+        # A ballot posted before the proposal became one card cannot be
+        # edited into one: Discord will not put the layout on a message
+        # that went up without it. Those keep their old shape and their
+        # old buttons, which still answer, rather than freezing mid-vote.
+        try:
+            await msg.edit(content=ballot_content(guild, bill))
+        except discord.HTTPException as e:
+            log.warning(f"could not repaint the floor card for bill "
+                        f"{bill['no']}: {e!r}")
+
+
 async def refresh_ballot(guild, bill):
-    """Repaint the ballot message. Best-effort: a vote that cannot redraw
-    is still a valid vote, so a failure here never blocks one."""
     if guild is None or bill.get("status") != "on_floor":
         return
-    floor = floor_for(guild, bill)
-    if floor is None or not bill.get("ballot_message_id"):
-        return
-    try:
-        msg = await floor.fetch_message(bill["ballot_message_id"])
-        await msg.edit(content=ballot_content(guild, bill))
-    except discord.HTTPException as e:
-        log.warning(f"could not repaint ballot for bill {bill['no']}: {e!r}")
+    await paint_floor(guild, bill)
 
 
-async def repaint_open_ballots(guild):
-    """Redraw every vote still on the floor. Runs once at boot, alongside
-    the furniture restamp and for the same reason: a deploy that changes
-    how a ballot describes itself should reach the votes already open,
-    not just the next one filed."""
+def unfinished(bill):
+    """Whether a proposal still has something that has to be right.
+
+    Three cases, and between them they are every card whose contents can
+    still be wrong. A vote on the floor, whose counts move. A window still
+    open, whose buttons have to work and whose clock has to run out. And a
+    vote that closed without reaching the record, which is the one that
+    matters most: the ruling is in the file and nowhere anybody can read
+    it. Everything else is finished, said, and not worth an API call a
+    deploy.
+    """
+    return (bill.get("status") == "on_floor"
+            or veto_open(bill)
+            or (bill.get("status") in ("passed", "failed", "vetoed")
+                and not bill.get("record_message_id")))
+
+
+async def repaint_cards(guild):
+    """Redraw everything still unfinished. Runs at boot, alongside the
+    furniture restamp and for the same reason: a card is edited for the
+    whole of a proposal's life, so an edit that did not land -- a deploy
+    mid-vote, a rate limit, a room that was briefly unreachable -- would
+    otherwise stay wrong for good. This is where that comes right, and
+    where a card somebody deleted goes back up.
+    """
     for bill in load_json(bills_path(guild), []):
-        if bill.get("status") == "on_floor":
-            await refresh_ballot(guild, bill)
+        if not unfinished(bill):
+            continue
+        try:
+            if bill.get("status") == "on_floor":
+                await paint_floor(guild, bill)
+            else:
+                await paint_record(guild, bill)
+        except Exception as e:
+            # One proposal that will not draw must not stop the next.
+            log.error(f"could not settle the cards on bill "
+                      f"{bill.get('no')}: {e!r}")
 
 
 def vote_settled(st):
@@ -984,9 +1168,9 @@ async def cast_ballot(interaction, choice=None, index=None):
     await maybe_autoclose(interaction.guild, bill)
 
 
-class BallotView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+class BallotRow(discord.ui.ActionRow):
+    """A yes/no ballot, as a row rather than a view of its own, so it can
+    sit on the proposal's card instead of on a message under it."""
 
     async def _vote(self, interaction, choice):
         await cast_ballot(interaction, choice)
@@ -1012,15 +1196,12 @@ class BallotView(discord.ui.View):
         await self._vote(interaction, None)
 
 
-class MemberBallotView(discord.ui.View):
+class MemberBallotRow(discord.ui.ActionRow):
     """The ballot for admitting someone. Three choices instead of two,
     because in a house this small "I do not know them well enough to say"
     is an honest answer, and the two-button ballot made it look like
     absence. It goes to neither side: passage is still yes against no,
     which is what the standing orders say."""
-
-    def __init__(self):
-        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Yes", emoji="✅",
@@ -1054,36 +1235,50 @@ class MemberBallotView(discord.ui.View):
 MULTI_MAX = 10
 
 
-class MultiBallotView(discord.ui.View):
-    """Choice ballot: one button per option. A registered instance with
-    dummy labels handles routing after restarts; the real labels live on
-    the message itself.
+class MultiBallotRows(list):
+    """Choice ballot: one button per option, across as many rows as it
+    takes. A bare instance with dummy labels handles routing after
+    restarts; the real labels live on the message itself.
 
     The buttons are the only thing here that differs from a yes/no ballot.
     Everything a press then does -- who may vote, recording it, repainting
     the message, ending the vote once it is decided -- is `cast_ballot`,
-    the same as every other ballot in the server."""
+    the same as every other ballot in the server.
+    """
 
     def __init__(self, options=None):
-        super().__init__(timeout=None)
-        labels = options if options is not None else [f"Option {i + 1}" for i in range(MULTI_MAX)]
+        super().__init__()
+        labels = options if options is not None else [
+            f"Option {i + 1}" for i in range(MULTI_MAX)
+        ]
+        row = discord.ui.ActionRow()
         for i, label in enumerate(labels[:MULTI_MAX]):
+            if len(row.children) == 5:
+                self.append(row)
+                row = discord.ui.ActionRow()
             button = discord.ui.Button(
                 label=str(label)[:80],
                 style=discord.ButtonStyle.primary,
                 custom_id=f"clerk:opt_{i}",
-                row=i // 5,
             )
             button.callback = self._make_callback(i)
-            self.add_item(button)
+            row.add_item(button)
+        if row.children:
+            self.append(row)
+        last = discord.ui.ActionRow()
         retract = discord.ui.Button(
             label="Retract",
             style=discord.ButtonStyle.secondary,
             custom_id="clerk:opt_retract",
-            row=2,
         )
         retract.callback = self._retract
-        self.add_item(retract)
+        last.add_item(retract)
+        self.append(last)
+
+    @property
+    def children(self):
+        """Every button across the rows, for anything counting them."""
+        return [button for row in self for button in row.children]
 
     def _make_callback(self, index):
         async def callback(interaction):
@@ -1094,9 +1289,18 @@ class MultiBallotView(discord.ui.View):
         await cast_ballot(interaction)
 
 
+def ballot_rows(bill):
+    """The buttons a proposal's card carries, by what kind of vote it is."""
+    if bill.get("options"):
+        return MultiBallotRows(bill["options"])
+    if bill.get("kind") == "invite":
+        return [MemberBallotRow()]
+    return [BallotRow()]
+
+
 async def file_bill(guild, author, title, what, why, kind="ordinary",
                     options=None, target_id=None, floor_hours=None,
-                    eligible_ids=None, priority=False):
+                    eligible_ids=None, priority=False, invitee=None):
     """Shared filing pipeline for all proposal kinds. Returns the filed
     proposal,
     or None if the room it belongs in is missing. Callers own their
@@ -1113,24 +1317,6 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         hours=floor_hours or numbers(guild)["floor_hours"]
     )
 
-    stamp = await floor.send(
-        view=Card([f"## Proposal No. {number}: {title}\nSubmitted by {author.mention}"])
-    )
-    # One thread per proposal, and it hangs off the proposal itself. There
-    # was briefly a second one beside it for the argument, which meant two
-    # rooms in the sidebar for one vote and a guess to make before typing
-    # about which of them a thought belonged in. A week, because a vote runs
-    # for days and a thread that files itself away mid-argument reads as the
-    # argument being over.
-    notes_thread = await stamp.create_thread(
-        name=(bill_name(number, title) + ": notes")[:100],
-        auto_archive_duration=10080,
-    )
-    notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
-    for label, body in (("What", what), ("Why", why)):
-        for i, piece in enumerate(chunk_text(body)):
-            prefix = f"### {label}\n" if i == 0 else ""
-            await floor.send(prefix + piece)
     record = {
         "no": number,
         "title": title,
@@ -1138,14 +1324,15 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         "audience": audience,
         "priority": bool(priority),
         "target_id": target_id,
+        # The name as it was typed, kept apart from the title so the DM
+        # after an invitation carries can say who it is for without
+        # reading a sentence back for it.
+        "invitee": invitee,
         "eligible_ids": eligible_ids,
         "author_id": author.id,
         "author": author.display_name,
         "what": what,
         "why": why,
-        "message_id": stamp.id,
-        "notes_message_id": notes_msg.id,
-        "notes_thread_id": notes_thread.id,
         "submitted_at": now_utc().isoformat(),
         "ends_at": ends_at.isoformat(),
         "status": "on_floor",
@@ -1154,18 +1341,37 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         "ballots": {},
         "notes": {},
     }
-    # The buttons are the only thing that varies by kind. The message above
-    # them is the same live face for every vote, painted from the proposal
-    # itself, so a ballot shows what it needs from its first second rather
-    # than only once somebody has voted.
-    if options:
-        view = MultiBallotView(options)
-    elif kind == "invite":
-        view = MemberBallotView()
-    else:
-        view = BallotView()
-    ballot = await floor.send(ballot_content(guild, record), view=view)
-    record["ballot_message_id"] = ballot.id
+    # One message, and it is the proposal, the ballot and in the end the
+    # result. The buttons are the only thing that varies by kind; the card
+    # above them is painted from the proposal itself, so a ballot shows
+    # what it needs from its first second rather than once somebody votes.
+    card = await floor.send(
+        view=Card(floor_segments(guild, record), ballot_rows(record))
+    )
+    record["message_id"] = card.id
+    record["ballot_message_id"] = card.id
+
+    # One thread per proposal, and it hangs off the proposal itself. There
+    # was briefly a second one beside it for the argument, which meant two
+    # rooms in the sidebar for one vote and a guess to make before typing
+    # about which of them a thought belonged in. A week, because a vote runs
+    # for days and a thread that files itself away mid-argument reads as the
+    # argument being over.
+    notes_thread = await card.create_thread(
+        name=(bill_name(number, title) + ": notes")[:100],
+        auto_archive_duration=10080,
+    )
+    record["notes_thread_id"] = notes_thread.id
+    # Anything too long for the card goes here whole, ahead of the prompt,
+    # so a proposal is never shortened out of somewhere it can be read.
+    _, overflow = floor_text(record)
+    for piece in chunk_text(overflow) if overflow else ():
+        await notes_thread.send(piece)
+    notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
+    record["notes_message_id"] = notes_msg.id
+    # The thread did not exist when the card went up, so the card did not
+    # know where the argument was. One edit, not a second message.
+    await paint_floor(guild, record)
 
     path = bills_path(guild)
     bills = load_json(path, [])
@@ -1310,6 +1516,7 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
             what=what,
             why=str(self.why),
             kind="invite",
+            invitee=name,
             # Kept because a vetoed invitation has to find whoever came
             # through it, and a name in a sentence is not something to
             # remove somebody on.
@@ -1453,10 +1660,13 @@ class SubmitBillView(discord.ui.View):
 
 # ---------- closing the floor ----------
 
-async def publish_act(guild, bill, decided=None):
-    record = room(guild, "decisions")
-    if record is None:
-        return ""
+def number_act(guild, bill, decided=None):
+    """Give a decision its number and put it in the book.
+
+    The book is acts.json and it is the record that matters: what gets
+    posted is a copy of it, and a long decision is trimmed in the copy
+    while the book keeps every word.
+    """
     acts = load_json(acts_path(guild), [])
     act_no = len(acts) + 1
     acts.append(
@@ -1473,18 +1683,103 @@ async def publish_act(guild, bill, decided=None):
     )
     save_json(acts_path(guild), acts)
     bill["act"] = act_no
-    await record.send(view=Card([f"## Decision {act_no}: {bill['title']}"]))
-    for piece in chunk_text(bill["what"]):
-        await record.send(piece)
-    segments = []
-    if decided:
-        segments.append(f"### Decided\n{decided}")
-    segments.append(
-        f"-# From Proposal No. {bill['no']} by {bill['author']}. "
-        f"Passed with {bill['tally_line']}."
-    )
-    await record.send(view=Card(segments))
-    return f"\n-# Recorded as Decision {act_no} in the record."
+    return act_no
+
+
+# A card holds 4000 characters and a proposal may be written to 4000 of
+# its own, so the longest ones do not fit under a heading and a foot.
+RECORD_LIMIT = 3200
+
+
+def record_segments(guild, bill):
+    """Everything a proposal leaves in the record, drawn from scratch.
+
+    One message per proposal, edited as it changes: numbered when it
+    carries, marked when the window shuts, struck if it is taken back. A
+    decision that arrives in three messages and grows two more over the
+    next day is five things to scroll for one thing that happened.
+    """
+    passed = bill.get("status") == "passed"
+    struck = bill.get("status") == "vetoed"
+    act = bill.get("act")
+
+    if struck:
+        head = (f"## Decision {act}: struck" if act
+                else f"## Proposal No. {bill['no']}: overturned")
+        head += (f"\n{bill['title']}: carried, then vetoed inside its "
+                 f"window. The number is kept struck rather than reused.")
+    elif passed and act:
+        head = f"## Decision {act}: {bill['title']}"
+    else:
+        head = (f"## Proposal No. {bill['no']}: {bill['title']}\n"
+                f"**{'Passed' if passed else 'Failed'}**")
+    segments = [head]
+
+    body = (bill.get("what") or "").strip()
+    if body and not struck:
+        if len(body) > RECORD_LIMIT:
+            body = (body[:RECORD_LIMIT].rstrip()
+                    + "…\n-# Trimmed here. Ask Eugene for it in full.")
+        segments.append(body)
+    if bill.get("decided") and not struck:
+        segments.append(f"### Decided\n{bill['decided']}")
+
+    foot = (f"-# From Proposal No. {bill['no']} by "
+            f"{bill.get('author', 'someone')}, "
+            f"{'passed' if passed or struck else 'failed'} with "
+            f"{bill.get('tally_line', 'no tally')}.")
+    done = bill.get("carried_out") or {}
+    if done.get("by"):
+        foot += f" Carried out by {done['by']}."
+    window = veto_line(bill)
+    if window:
+        foot += f" {window}"
+    segments.append(foot)
+
+    # Dropped the moment somebody says they have done it, because a
+    # decision that keeps asking after it has been carried out is the
+    # reason nobody reads the ones that are still asking.
+    if bill.get("outstanding") and not done:
+        segments.append("### Still wanted\n"
+                        + "\n".join(f"- {line}" for line in bill["outstanding"]))
+    return segments
+
+
+async def paint_record(guild, bill):
+    """Put the proposal in the record, or redraw the copy already there.
+
+    Best-effort on the redraw, like the ballot: a card that will not repaint
+    is not a reason to lose what the repaint was about.
+    """
+    where = outcome_for(guild, bill)
+    if where is None:
+        return
+    view = Card(record_segments(guild, bill),
+                [VetoRow()] if veto_open(bill) else ())
+    mid = bill.get("record_message_id")
+    channel = guild.get_channel(bill.get("record_channel_id") or 0) or where
+    msg = await find_card(channel, mid) if mid else None
+    if msg is False:
+        return
+    if msg is not None:
+        try:
+            return await msg.edit(view=view)
+        except discord.HTTPException as e:
+            return log.warning(f"could not repaint the record on bill "
+                               f"{bill['no']}: {e!r}")
+    # Either it has never been in the record, or the card that was there
+    # has been deleted. Both want the same thing, and a decision that is
+    # not in the record is the worse of the two to leave alone.
+    try:
+        msg = await where.send(view=view)
+    except discord.HTTPException as e:
+        log.warning(f"could not post bill {bill['no']} to the record: {e!r}")
+        return
+    if mid:
+        log.info(f"record card for bill {bill['no']} was gone; reposted")
+    bill["record_channel_id"] = where.id
+    bill["record_message_id"] = msg.id
+    await update_bill(guild, bill)
 
 
 async def seal_chamber(guild, bill):
@@ -1581,64 +1876,60 @@ def vetoes(n):
     return f"{n} veto" if n == 1 else f"{n} vetoes"
 
 
-def veto_content(guild, bill):
-    """The live face of the window, repainted on every press.
+def veto_line(bill):
+    """The window, as one line at the foot of the record.
 
     Who has vetoed is shown only where the house has not asked for the
     veto to be anonymous. That switch is read when the veto is cast, not
     when this is drawn: somebody who vetoed under a rule that named them
     is named, and somebody who vetoed under one that did not, never is.
     """
-    veto = bill.get("veto") or {}
+    veto = bill.get("veto")
+    if not veto:
+        return ""
     cast = veto.get("cast") or []
     needed = max(int(veto.get("needed", 1)), 1)
-    left = max(needed - len(cast), 0)
-    try:
-        until = datetime.fromisoformat(veto["until"])
-        clock = f"closes <t:{int(until.timestamp())}:R>"
-    except (KeyError, TypeError, ValueError):
-        clock = "open"
 
+    if veto.get("closed"):
+        if veto.get("overturned"):
+            return ""
+        held = veto.get("count", 0)
+        return (f"🛑 The window closed with {vetoes(held)} of the {needed} "
+                f"it wanted." if held else "🛑 The window closed unvetoed.")
+    if not veto_open(bill):
+        return ""
+
+    try:
+        shuts = int(datetime.fromisoformat(veto["until"]).timestamp())
+        clock = f"can be taken back until <t:{shuts}:R>"
+    except (KeyError, TypeError, ValueError):
+        clock = "can still be taken back"
     named = [c["name"] for c in cast if c.get("name")]
-    if named:
-        standing = "Vetoed by " + ", ".join(named) + "."
-    elif cast:
-        standing = f"{vetoes(len(cast))} cast."
-    else:
-        standing = "None cast."
-    door = ("the link goes no further and whoever came through it goes back "
-            "out" if bill.get("kind") == "invite"
-            else "the decision is struck from the record")
     # `left` reaches zero when a house lowers the count under a window that
-    # is already open. Rare, and "0 vetoes would overturn it" is nonsense
-    # in the one place somebody would be reading closely.
-    margin = (f"{vetoes(left)} would overturn it"
-              if left else "That is already enough to overturn it")
-    return (
-        f"🛑 **The last word on Proposal No. {bill['no']}** · {clock}\n"
-        f"{standing} {margin}: {door}.\n"
-        f"-# Anyone who could have voted on this may veto it, and withdraw "
-        f"a veto while the window is open."
-    )
+    # is already open. Rare, and "0 more" is nonsense in the one place
+    # somebody would be reading closely.
+    left = max(needed - len(cast), 0)
+    if named:
+        standing = f"vetoed by {', '.join(named)}"
+    elif cast:
+        standing = f"{vetoes(len(cast))} cast"
+    else:
+        standing = f"{vetoes(needed)} would overturn it"
+    tail = f", {left} more to overturn" if cast and left else ""
+    return f"🛑 {clock} · {standing}{tail}."
 
 
 async def refresh_veto(guild, bill):
-    """Repaint the window. Best-effort, like the ballot: a card that will
-    not redraw is not a reason to lose a veto that was cast."""
-    if guild is None or not bill.get("veto_message_id"):
-        return
-    floor = floor_for(guild, bill)
-    if floor is None:
-        return
-    try:
-        msg = await floor.fetch_message(bill["veto_message_id"])
-        await msg.edit(content=veto_content(guild, bill), view=VetoView())
-    except discord.HTTPException as e:
-        log.warning(f"could not repaint the veto on bill {bill['no']}: {e!r}")
+    await paint_record(guild, bill)
 
 
 async def open_veto(guild, bill):
-    """Hold a window open on a proposal that has just carried."""
+    """Hold a window open on a proposal that has just carried.
+
+    It is a line and two buttons at the foot of the decision in the record,
+    not a message of its own: the floor is for voting, and a vote that has
+    closed should not still be taking up room on it.
+    """
     needed = veto_rule(guild, bill)
     if needed is None:
         return
@@ -1648,20 +1939,6 @@ async def open_veto(guild, bill):
         "needed": needed,
         "cast": [],
     }
-    floor = floor_for(guild, bill)
-    if floor is None:
-        # Nowhere to put the button is nowhere to press it. Better to have
-        # no window than a window nobody can reach and a report promising
-        # one.
-        bill.pop("veto", None)
-        return
-    try:
-        msg = await floor.send(veto_content(guild, bill), view=VetoView())
-    except discord.HTTPException as e:
-        log.warning(f"could not open the veto on bill {bill['no']}: {e!r}")
-        bill.pop("veto", None)
-        return
-    bill["veto_message_id"] = msg.id
 
 
 def seal_veto(bill, overturned=False):
@@ -1687,21 +1964,7 @@ def seal_veto(bill, overturned=False):
 async def close_veto(guild, bill):
     """The window running out with the proposal still standing."""
     seal_veto(bill)
-    floor = floor_for(guild, bill)
-    if floor and bill.get("veto_message_id"):
-        held = bill["veto"].get("count", 0)
-        tail = (f"{vetoes(held)} were cast, short of the "
-                f"{bill['veto'].get('needed', 1)} it would have taken."
-                if held else "Nobody vetoed.")
-        try:
-            msg = await floor.fetch_message(bill["veto_message_id"])
-            await msg.edit(
-                content=f"**The window has closed** on Proposal No. "
-                        f"{bill['no']}. {tail} It stands.",
-                view=None,
-            )
-        except discord.HTTPException as e:
-            log.warning(f"could not seal the veto on bill {bill['no']}: {e!r}")
+    await paint_record(guild, bill)
     await update_bill(guild, bill)
     log.info(f"veto window closed on bill {bill['no']}, unused")
 
@@ -1716,15 +1979,6 @@ async def annul_act(guild, bill):
             act["annulled"] = "vetoed"
             act["annulled_at"] = bill.get("vetoed_at")
     save_json(acts_path(guild), acts)
-    record = room(guild, "decisions")
-    if record is None:
-        return
-    await record.send(view=Card([
-        f"## Decision {bill['act']}: struck\n"
-        f"Vetoed inside its window, so it is no longer a decision of the "
-        f"house. The number is kept struck rather than given to anything "
-        f"else."
-    ]))
 
 
 async def revoke_invite(guild, bill):
@@ -1841,9 +2095,11 @@ async def overturn_bill(guild, bill):
     seal_veto(bill, overturned=True)
     veto = bill.get("veto") or {}
 
-    done, left = [], []
+    # What the reversal managed is not worth a paragraph -- the record says
+    # it was struck. What it could not manage is, because that wants hands.
+    left = []
     if bill.get("kind") == "invite":
-        done, left = await revoke_invite(guild, bill)
+        _, left = await revoke_invite(guild, bill)
     elif bill.get("kind") == "kick":
         left.append(
             "The removal had already been carried out. Eugene cannot undo "
@@ -1851,36 +2107,20 @@ async def overturn_bill(guild, bill):
         )
     if bill.get("act"):
         await annul_act(guild, bill)
-        done.append(f"Decision {bill['act']} is struck from the record.")
 
     names = veto.get("by")
     who = ("Vetoed by " + ", ".join(names) if names
            else f"Vetoed, by {vetoes(veto.get('count', 0))}")
-    floor = floor_for(guild, bill)
-    if floor:
-        segments = [
-            f"## Proposal No. {bill['no']}: overturned\n"
-            f"{who}, inside the window. It carried, and it no longer stands."
-        ]
-        if done:
-            segments.append("### Done\n" + "\n".join(f"- {line}" for line in done))
-        if left:
-            segments.append("### Still wanted\n"
-                            + "\n".join(f"- {line}" for line in left))
-        try:
-            await floor.send(view=Card(segments))
-        except discord.HTTPException as e:
-            log.warning(f"could not post the veto result on bill {bill['no']}: {e!r}")
-        if bill.get("veto_message_id"):
-            try:
-                msg = await floor.fetch_message(bill["veto_message_id"])
-                await msg.edit(
-                    content=f"**Overturned.** Proposal No. {bill['no']} was "
-                            f"vetoed inside its window.",
-                    view=None,
-                )
-            except discord.HTTPException:
-                pass
+    # The reversal is the same message the decision was, struck. Nothing
+    # goes back to the floor: the vote there closed a day ago, and nothing
+    # new is posted here either -- a decision that is taken back should not
+    # cost the record two more cards to say so.
+    if left:
+        bill["outstanding"] = left
+    await paint_record(guild, bill)
+    # And the closed ballot, so a floor somebody scrolls back through does
+    # not still show it as having carried.
+    await paint_floor(guild, bill)
 
     await update_bill(guild, bill)
     await health_log(guild, f"🛑 Proposal No. {bill['no']} vetoed after passing.")
@@ -1888,7 +2128,76 @@ async def overturn_bill(guild, bill):
     await update_outstanding(guild, silent=True)
 
 
-async def cast_veto(interaction, withdraw=False):
+def bill_at(guild, message_id):
+    """The proposal a pressed card belongs to.
+
+    Two fields, because a window that was open when the last word moved
+    onto the decision is still sitting on a message of its own, and its
+    buttons have to keep working.
+    """
+    return (bill_by(guild, "record_message_id", message_id)
+            or bill_by(guild, "veto_message_id", message_id))
+
+
+def veto_refusal(guild, bill, user):
+    """Why this press cannot be a veto, or None where it can."""
+    if bill is None or not veto_open(bill):
+        return "That window has closed."
+    if not may_vote(bill, user):
+        return refusal_for(bill)
+    if veto_rule(guild, bill) is None:
+        return "This house no longer keeps a veto over this kind of proposal."
+    return None
+
+
+async def veto_reply(interaction, text, replacing=False):
+    """Answer a press. One that came by way of the confirmation replaces it,
+    so the question does not sit there already answered."""
+    if replacing:
+        await interaction.response.edit_message(content=text, view=None)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+async def confirm_veto(interaction):
+    """The press before the veto.
+
+    At the house's default of one, the button is the whole thing: the link
+    dies and whoever walked through it goes back out, with no window left
+    to withdraw in. That is too much to hang on a misclick under a card
+    somebody was only reading, so it asks first and nothing is recorded
+    until the second press.
+    """
+    guild = interaction.guild
+    bill = bill_at(guild, interaction.message.id)
+    refusal = veto_refusal(guild, bill, interaction.user)
+    if refusal:
+        return await veto_reply(interaction, refusal)
+    cast = bill["veto"].get("cast") or []
+    if any(c.get("id") == interaction.user.id for c in cast):
+        return await veto_reply(
+            interaction,
+            "Your veto is already on this. Withdraw it if you have changed "
+            "your mind.",
+        )
+
+    left = max(veto_rule(guild, bill) - len(cast), 0)
+    if left <= 1:
+        undone = ("the link dies and whoever came through it goes back out"
+                  if bill.get("kind") == "invite"
+                  else "the decision is struck from the record")
+        stake = f"Yours is the last one wanted, so {undone} at once."
+    else:
+        stake = (f"{left - 1} more would be wanted after yours, and you can "
+                 f"withdraw it while the window is open.")
+    await interaction.response.send_message(
+        f"🛑 **Veto Proposal No. {bill['no']}?** {stake}",
+        view=VetoConfirm(interaction.message.id),
+        ephemeral=True,
+    )
+
+
+async def cast_veto(interaction, withdraw=False, host_id=None):
     """One veto, or the taking back of one.
 
     Withdrawing exists because the ballot has a retract and this is a
@@ -1897,72 +2206,67 @@ async def cast_veto(interaction, withdraw=False):
     can revive.
     """
     guild = interaction.guild
-    bill = bill_by(guild, "veto_message_id", interaction.message.id)
-    if bill is None or not veto_open(bill):
-        return await interaction.response.send_message(
-            "That window has closed.", ephemeral=True
-        )
-    if not may_vote(bill, interaction.user):
-        return await interaction.response.send_message(
-            refusal_for(bill), ephemeral=True
-        )
-    needed = veto_rule(guild, bill)
-    if needed is None:
-        return await interaction.response.send_message(
-            "This house no longer keeps a veto over this kind of proposal.",
-            ephemeral=True,
-        )
+    # A confirmed veto is pressed on the ephemeral question, not on the
+    # record, so the card it is about has to be carried to it.
+    replacing = host_id is not None
+    bill = bill_at(guild, host_id or interaction.message.id)
+    refusal = veto_refusal(guild, bill, interaction.user)
+    if refusal:
+        return await veto_reply(interaction, refusal, replacing)
 
+    needed = veto_rule(guild, bill)
     veto = bill["veto"]
     veto["needed"] = needed
     cast = veto.setdefault("cast", [])
     mine = next((c for c in cast if c.get("id") == interaction.user.id), None)
     if withdraw:
         if mine is None:
-            return await interaction.response.send_message(
-                "You have no veto on this to withdraw.", ephemeral=True
+            return await veto_reply(
+                interaction, "You have no veto on this to withdraw.", replacing
             )
         cast.remove(mine)
         word = "Veto withdrawn."
     elif mine is not None:
-        return await interaction.response.send_message(
+        return await veto_reply(
+            interaction,
             "Your veto is already on this. Withdraw it if you have changed "
             "your mind.",
-            ephemeral=True,
+            replacing,
         )
     else:
         entry = {"id": interaction.user.id}
         if not numbers(guild)["veto_anonymous"]:
             entry["name"] = interaction.user.display_name
         cast.append(entry)
-        word = ("Vetoed. It is named on the floor." if "name" in entry
+        word = ("Vetoed. It is named on the record." if "name" in entry
                 else "Vetoed. Nobody is told it was you.")
 
     await update_bill(guild, bill)
     left = max(needed - len(cast), 0)
     tail = ("That overturns it." if left == 0 and not withdraw
             else f"{vetoes(left)} would overturn it.")
-    await interaction.response.send_message(f"{word} {tail}", ephemeral=True)
+    await veto_reply(interaction, f"{word} {tail}", replacing)
 
     if not withdraw and len(cast) >= needed:
         return await overturn_bill(guild, bill)
     await refresh_veto(guild, bill)
 
 
-class VetoView(discord.ui.View):
-    """The window, as two buttons. Persistent like every other view here:
-    a deploy in the middle of a window must not leave the last word sitting
-    on the floor with nothing behind it."""
+class VetoRow(discord.ui.ActionRow):
+    """The window, as two buttons, kept as a row so it can sit inside the
+    decision's own card instead of on a message of its own.
 
-    def __init__(self):
-        super().__init__(timeout=None)
+    Neither is red. A red button on a card everybody reads is a button
+    somebody presses, and the thing behind this one is the heaviest reversal
+    the house has.
+    """
 
     @discord.ui.button(
         label="Veto", emoji="🛑",
-        style=discord.ButtonStyle.danger, custom_id="clerk:veto",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:veto",
     )
     async def veto(self, interaction, button):
-        await cast_veto(interaction)
+        await confirm_veto(interaction)
 
     @discord.ui.button(
         label="Withdraw", emoji="↩️",
@@ -1972,9 +2276,37 @@ class VetoView(discord.ui.View):
         await cast_veto(interaction, withdraw=True)
 
 
+class VetoConfirm(discord.ui.View):
+    """The question between the button and the veto. Ephemeral and
+    short-lived on purpose: it is a question, not a record. It carries the
+    id of the card it was opened from, because the press that answers it
+    lands on a message of its own."""
+
+    def __init__(self, host_id):
+        super().__init__(timeout=180)
+        self.host_id = host_id
+
+    @discord.ui.button(label="Yes, veto it", emoji="🛑",
+                       style=discord.ButtonStyle.secondary)
+    async def yes(self, interaction, button):
+        await cast_veto(interaction, host_id=self.host_id)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction, button):
+        await interaction.response.edit_message(
+            content="Nothing was cast.", view=None
+        )
+
+
 async def finalize_bill(guild, bill, passed, tally_line, decided=None):
-    """Common closing: result card, published if passed, seal the notes
-    thread, close the ballot, seal the debate."""
+    """Common closing: the ballot shut where it stands, the ruling put in
+    the record, the notes and the debate sealed.
+
+    Nothing new is posted to the floor. The room is for votes that are open
+    and the ballot itself is already sitting there, so the result is an
+    edit to it rather than a card under it, and everything else about the
+    close belongs to the record.
+    """
     bill["status"] = "passed" if passed else "failed"
     bill["closed_at"] = now_utc().isoformat()
     # the tally is all the record needs from here; individual ballots are
@@ -1984,36 +2316,18 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     # member should never learn the margin
     secret = bill.get("kind") in ("invite", "kick")
     bill["tally_line"] = "a sealed tally" if secret else tally_line
-    shown = "The tally is sealed." if secret else tally_line
+    if decided:
+        bill["decided"] = decided
     floor = floor_for(guild, bill)
 
-    act_line = ""
     if passed:
-        act_line = await publish_act(guild, bill, decided)
+        number_act(guild, bill, decided)
 
     if floor:
-        if decided:
-            headline = (
-                f"## Proposal No. {bill['no']}: {bill['title']}\n"
-                f"**Decided: {decided}**\n{shown}{act_line}"
-            )
-        else:
-            verdict = "Passed" if passed else "Failed"
-            headline = (
-                f"## Proposal No. {bill['no']}: {bill['title']}\n"
-                f"**{verdict}**  {shown}{act_line}"
-            )
-        await floor.send(view=Card([headline]))
-        try:
-            ballot_msg = await floor.fetch_message(bill["ballot_message_id"])
-            await ballot_msg.edit(
-                content=f"**Ballot closed** for Proposal No. {bill['no']}. {shown}",
-                view=None,
-            )
-        except discord.HTTPException:
-            pass
         thread_id = bill.get("notes_thread_id")
         if thread_id:
+            # The thread is being locked, so the last thing in it says why
+            # rather than leaving somebody to work out that it went quiet.
             try:
                 thread = guild.get_thread(thread_id) or await guild.fetch_channel(thread_id)
                 count = sum(len(s) for s in bill.get("notes", {}).values())
@@ -2028,10 +2342,19 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
 
     await seal_chamber(guild, bill)
 
-    # The window opens on the way out, so the button lands under the result
-    # it belongs to rather than under whatever is posted next.
+    # The window opens before either card is drawn, so each goes up once
+    # already saying what it will say rather than being edited a moment
+    # later. The number has to exist by then too, for the floor to point at.
     if passed:
         await open_veto(guild, bill)
+    await paint_record(guild, bill)
+    if bill.get("veto") and not bill.get("record_message_id"):
+        # The card the buttons were going on never went up. A window
+        # nobody can reach is not a window, and it must not be one the
+        # closing report goes on to promise.
+        bill.pop("veto", None)
+        log.warning(f"no record card for bill {bill['no']}, so no window")
+    await paint_floor(guild, bill)
 
     await update_bill(guild, bill)
     log.info(f"bill closed: no. {bill['no']} {bill['status']} ({tally_line})")
@@ -2062,8 +2385,8 @@ def closing_report(bill):
     if overturned:
         # It carried and was taken back, which is neither of the other two
         # rulings and must not be reported as either. What the reversal
-        # itself could not undo was said on the floor at the time; this is
-        # the standing answer to "what happened to No. 12".
+        # itself could not undo is on the struck decision in the record;
+        # this is the standing answer to "what happened to No. 12".
         done.append("It carried, and the house vetoed it inside its window.")
         return {
             "bill": bill["no"],
@@ -2072,7 +2395,7 @@ def closing_report(bill):
             "tally": "sealed" if sealed else bill.get("tally_line", ""),
             "act": bill.get("act"),
             "done": done,
-            "outstanding": [],
+            "outstanding": bill.get("outstanding", []),
         }
 
     if passed:
@@ -2123,19 +2446,98 @@ def closing_report(bill):
 
 async def post_closing_report(guild, bill):
     """The standing item after every close, so a passed decision never looks
-    finished when it is not."""
-    floor = floor_for(guild, bill)
-    if floor is None:
-        return closing_report(bill)
+    finished when it is not.
+
+    Only what is still wanted reaches the record, and it goes onto the
+    decision's own card. The rest of the report -- the vote closed, the
+    ballots destroyed, the notes sealed -- is true of every close there has
+    ever been, and a line that is on every decision is a line nobody reads.
+    Clarence still gets all of it to say once, out loud, at the time.
+    """
     report = closing_report(bill)
-    segments = ["### Done\n" + "\n".join(f"- {line}" for line in report["done"])]
     if report["outstanding"]:
-        segments.append(
-            "### Still wanted\n"
-            + "\n".join(f"- {line}" for line in report["outstanding"])
-        )
-    await floor.send(view=Card(segments))
+        bill["outstanding"] = report["outstanding"]
+        await paint_record(guild, bill)
+        await update_bill(guild, bill)
     return report
+
+
+# ---------- the private word after an invitation carries ----------
+# The one message Eugene sends that nobody else ever sees, and the one a
+# house is most likely to want in its own words: it is the first thing a
+# newcomer is shown, second hand, by whoever forwards it. The shipped
+# sentence is his voice, and a house that has taught him to sound like
+# something else in `voice` should not have this one paragraph still
+# speaking in his.
+INVITE_DM = "invite_dm"
+
+DEFAULT_INVITE_DM = (
+    "{proposer}: the cooperative has approved your invitation of {name} "
+    "(Proposal No. {number}). One link, single use, seven days: {link}"
+)
+
+# What a house may write into one. `{name}` is the invitee because that is
+# what somebody reaches for first; `{invitee}` is the same thing said
+# plainly, for anyone who reads `{name}` as the person being written to.
+INVITE_DM_FIELDS = {
+    "name": "who the invitation is for",
+    "invitee": "the same, said plainly",
+    "proposer": "who proposed them, and who this is sent to",
+    "server": "the name of this server",
+    "number": "the proposal number it passed under",
+    "link": "the invite link itself",
+}
+
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def fill(template, values):
+    """Substitute what is known and leave alone what is not.
+
+    Not `str.format`: a steward who writes `{their name}` or an unmatched
+    brace would get a KeyError or a ValueError, and the cost of that is
+    not a bad message -- it is a passed invitation whose link never
+    arrives. Anything off the list comes back on the page as typed, which
+    is at least visible and fixable.
+    """
+    return _PLACEHOLDER.sub(
+        lambda m: str(values.get(m.group(1), m.group(0))), template
+    )
+
+
+def invitee_name(bill):
+    """Who an invitation was for. Filed on the proposal since this landed;
+    read back off the title for the ones already on the floor, which both
+    filing routes build the same way."""
+    named = (bill.get("invitee") or "").strip()
+    if named:
+        return named
+    title = (bill.get("title") or "").strip()
+    prefix = "Invitation of "
+    if title.startswith(prefix):
+        return title[len(prefix):].strip() or "them"
+    return "them"
+
+
+def invite_dm(guild, bill, proposer, url):
+    """The message the proposer gets, in the house's words if it has any."""
+    template = settings.get(guild.id, INVITE_DM) or DEFAULT_INVITE_DM
+    name = invitee_name(bill)
+    text = fill(template, {
+        "name": name,
+        "invitee": name,
+        "proposer": getattr(proposer, "display_name", "you"),
+        "server": guild.name,
+        "number": bill.get("no"),
+        "link": url,
+    }).strip()
+    # The link is the whole point of the message, so a template that
+    # forgot it -- or spent its one mention on a placeholder that does not
+    # exist -- gets it on the end rather than sending somebody a
+    # congratulation they cannot use.
+    if url and url not in text:
+        text = f"{text}\n{url}".strip()
+    return text[:2000]
 
 
 async def execute_invite(guild, bill):
@@ -2158,10 +2560,7 @@ async def execute_invite(guild, bill):
     bill["invite_code"] = invite.code
     await update_bill(guild, bill)
     try:
-        await proposer.send(
-            f"The cooperative has approved your invitation (Proposal No. {bill['no']}). "
-            f"One link, single use, seven days: {invite.url}"
-        )
+        await proposer.send(invite_dm(guild, bill, proposer, invite.url))
     except discord.HTTPException:
         desk = room(guild, "proposals")
         if desk:
@@ -2288,29 +2687,14 @@ async def close_multi(guild, bill):
     # measure from here instead.
     bill["round_opened_at"] = now_utc().isoformat()
 
-    floor = floor_for(guild, bill)
-    if floor:
-        try:
-            old = await floor.fetch_message(bill["ballot_message_id"])
-            await old.edit(
-                content=f"**Round 1 closed** for Proposal No. {bill['no']}: "
-                f"no majority. {tally_line}",
-                view=None,
-            )
-        except discord.HTTPException:
-            pass
-        await floor.send(
-            view=Card([
-                f"## Proposal No. {bill['no']}: {bill['title']}: runoff\n"
-                f"No option won a majority ({tally_line}). The vote "
-                f"reopens with the leading options; regroup around what "
-                f"can win."
-            ])
-        )
-        ballot = await floor.send(
-            ballot_content(guild, bill), view=MultiBallotView(finalists)
-        )
-        bill["ballot_message_id"] = ballot.id
+    # A runoff is the same vote, so it is the same card: new buttons, new
+    # clock, and a line saying why. It used to close the old ballot, post a
+    # card explaining the runoff and post a second ballot under it, which
+    # is three messages to say that a vote carried on.
+    bill["runoff_note"] = (f"No option won a majority ({tally_line}). The "
+                           f"vote reopens with the leading options; regroup "
+                           f"around what can win.")
+    await paint_floor(guild, bill)
 
     await update_bill(guild, bill)
     log.info(f"runoff opened: proposal no. {bill['no']} ({tally_line})")
@@ -2647,7 +3031,7 @@ async def act_propose_member(guild, invoker, args):
     )
     bill = await file_bill(
         guild, invoker, title=f"Invitation of {name}"[:100],
-        what=what, why=why, kind="invite",
+        what=what, why=why, kind="invite", invitee=name,
         target_id=int(discord_id) if discord_id else None,
     )
     if bill is None:
@@ -2687,15 +3071,9 @@ async def close_floor(guild, invoker, bill_no):
                          "this one yet",
                 "closable_from": opens.isoformat()}
 
-    floor = floor_for(guild, bill)
-    if floor:
-        await floor.send(
-            view=Card([
-                f"### Time called on Proposal No. {bill['no']}\n"
-                f"{invoker.mention} has closed the vote early. Anyone who "
-                f"had not voted no longer can."
-            ])
-        )
+    # Said on the ballot the close lands on rather than in a card of its
+    # own: whoever the early close cut off is looking at the ballot.
+    bill["closed_early_by"] = getattr(invoker, "display_name", "somebody")
     await close_bill(guild, bill)
     if bill.get("status") == "on_floor":
         return {"bill": bill["no"],
@@ -2861,6 +3239,7 @@ async def act_mark_carried_out(guild, invoker, args):
         "at": now_utc().isoformat(),
     }
     await update_bill(guild, bill)
+    await paint_record(guild, bill)
     log.info(f"decision {bill_no} marked carried out by {invoker.display_name}")
     return json.dumps(
         {
@@ -3253,6 +3632,10 @@ class SetupPanel(StewardView):
     @discord.ui.button(label="What this place is", style=discord.ButtonStyle.secondary, row=1)
     async def house(self, interaction, button):
         await interaction.response.send_modal(HouseModal(interaction.guild))
+
+    @discord.ui.button(label="Invitation message", style=discord.ButtonStyle.secondary, row=2)
+    async def invite_message(self, interaction, button):
+        await interaction.response.send_modal(InviteDMModal(interaction.guild))
 
     @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary, row=1)
     async def details(self, interaction, button):
@@ -4189,6 +4572,82 @@ class HouseModal(discord.ui.Modal, title="What is this server for?"):
         await show_panel(interaction, note)
 
 
+# ---------- the word after an invitation carries ----------
+
+def invite_dm_preview(guild, user):
+    """What the house's template comes out as, with a stand-in for
+    everything only a real invitation knows. Shown at the moment somebody
+    writes one, because a template with a typo in a placeholder reads
+    perfectly well until it is filled in."""
+    return invite_dm(
+        guild,
+        {"no": 12, "invitee": "Sam"},
+        user,
+        "https://discord.gg/example",
+    )
+
+
+class InviteDMModal(discord.ui.Modal, title="After an invitation passes"):
+    """The private message the proposer gets with the link in it.
+
+    A house writes its own or takes his. Nothing about the door changes
+    here: the vote, the veto window and the single-use link are code, and
+    this is only the sentence they arrive wrapped in.
+    """
+
+    # Written off the same table `invite_dm` fills from, so the list
+    # somebody is shown cannot come to differ from the list that works.
+    message = discord.ui.TextInput(
+        label="Blank for his own words.",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+        placeholder=" ".join(f"{{{f}}}" for f in INVITE_DM_FIELDS)[:100],
+    )
+
+    def __init__(self, guild):
+        super().__init__()
+        # Prefilled with whatever is in force, his default included, so
+        # somebody who wants a small change to the shipped sentence edits
+        # it rather than retyping it from the screen behind this one.
+        self.message.default = (
+            settings.get(guild.id, INVITE_DM) or DEFAULT_INVITE_DM
+        )
+
+    async def on_submit(self, interaction):
+        guild = interaction.guild
+        text = str(self.message).strip()[:1000]
+        # Submitting the prefill unchanged is not a house writing his
+        # sentence down as its own: it is a house that did not want to
+        # change it, and it should keep following the default rather than
+        # holding a frozen copy of what the default was today.
+        own = text if text and text != DEFAULT_INVITE_DM else None
+        settings.put(guild.id, **{INVITE_DM: own})
+        log.info(f"guild {guild.id} invite DM: "
+                 f"{'set' if own else 'back to the default'} "
+                 f"by {interaction.user.display_name}")
+        await health_log(
+            guild,
+            "⚙️ The message after an invitation carries is "
+            + ("the house's own" if own else "back to his default")
+            + f", by {interaction.user.display_name}.",
+        )
+        preview = "\n".join(
+            f"> {line}" for line in
+            invite_dm_preview(guild, interaction.user).splitlines()
+        )
+        await show_panel(
+            interaction,
+            ("**The word after an invitation passes** is yours now."
+             if own else
+             "**The word after an invitation passes** is his own again.")
+            + " It goes privately to whoever proposed them:\n"
+            + preview
+            + "\n-# The link is added on the end if the message leaves "
+              "`{link}` out, so nobody is congratulated and given nothing.",
+        )
+
+
 # ---------- the structure that comes out ----------
 
 def structure_preview(guild):
@@ -4676,6 +5135,10 @@ async def slash_bills(interaction: discord.Interaction):
             lines.append(f"-# And {rest} more.")
         lines.append("-# ⚡ is one you will be chased about.")
     if windows:
+        # The window is on the decision now, not on the floor, so this
+        # points at the record: sending somebody to the wrong room to find
+        # a button that shuts in an hour is how a window gets missed.
+        record = record_for(interaction.guild, {})
         lines.append("")
         lines.append("**Passed, and can still be taken back**")
         for bill in windows[:5]:
@@ -4683,7 +5146,7 @@ async def slash_bills(interaction: discord.Interaction):
             lines.append(
                 f"🛑 **No. {bill['no']}: {bill['title']}**: "
                 f"the window shuts <t:{shuts}:R>"
-                + (f" · {where.mention}" if where else "")
+                + (f" · {record.mention}" if record else "")
             )
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
@@ -5064,14 +5527,14 @@ async def setup_hook():
             "settings say"
         )
     bot.add_view(SubmitBillView())
-    bot.add_view(BallotView())
-    bot.add_view(MemberBallotView())
+    bot.add_view(Card(rows=[BallotRow()]))
+    bot.add_view(Card(rows=[MemberBallotRow()]))
     # Dummy labels: this instance exists only to route clerk:opt_* presses
     # after a restart. Without it a deploy mid-vote leaves every choice
     # ballot on the floor with dead buttons and no way to say so.
-    bot.add_view(MultiBallotView())
+    bot.add_view(Card(rows=MultiBallotRows()))
     bot.add_view(NotesView())
-    bot.add_view(VetoView())
+    bot.add_view(Card(rows=[VetoRow()]))
     # One or the other, never both. A command registered globally *and*
     # to a guild shows up twice in that guild's picker, and both copies
     # persist -- so doing both to be safe is the one option that is
@@ -5168,7 +5631,7 @@ async def on_ready():
                          f"guild {guild.id}")
             await ensure_furniture(guild, restamp=first)
             if first:
-                await repaint_open_ballots(guild)
+                await repaint_cards(guild)
                 state = load_json(state_path(guild), {})
                 if state.get("announced_commit") != COMMIT:
                     state["announced_commit"] = COMMIT
