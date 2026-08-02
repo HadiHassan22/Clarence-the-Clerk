@@ -106,8 +106,13 @@ agreed design that is not yet running code.
   however many end up voting. If everyone has voted, it closes then too,
   whichever kind it is.
 - **A live ballot that shows its own progress** — how many yes it has, how many
-  it needs, how many people have not voted yet — repainted on every ballot cast.
-  A choice ballot shows a bar per option and the turnout, repainted the same way.
+  it needs, how many people have not voted yet — on one line, repainted on every
+  ballot cast. A choice ballot puts the turnout and every option's count on that
+  same line, in the order of the buttons under it.
+- **A card is four lines.** Title, the opening of the What, a line of the Why,
+  and the line the ballot stands on. A floor is a queue of things to vote on,
+  and a hundred proposals at full height is a hundred nobody reads past the
+  third of. Whatever will not fit is whole in the thread, a click away.
 - Votes about people stay blind: turnout is shown, the running count is not.
   Votes about things show everything except who voted which way.
 - Anyone can ask Eugene to call time early once a vote is a quarter through.

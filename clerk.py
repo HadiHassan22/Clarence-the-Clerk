@@ -790,15 +790,20 @@ def vote_state(guild, bill):
     return st
 
 
-def bar(done, total, width=10):
+def bar(done, total, width=8):
     total = max(total, 1)
     filled = max(0, min(width, round(width * done / total)))
     return "█" * filled + "░" * (width - filled)
 
 
-def choice_body(st):
-    """The live face of a choice ballot: one bar per option, measured
-    against the count that would settle it outright.
+def choice_line(st):
+    """The live standing of a choice ballot, on one line: turnout, every
+    option with its count, and the number that would settle it.
+
+    It used to be a bar per option, which is a vote that costs twelve lines
+    to say what nine words say. The options are on the buttons underneath
+    in the same order, so the line is read against them rather than
+    repeating them at size.
 
     A choice ballot is a vote about a thing, so it shows everything, for
     the same reason `is_blind` gives -- hiding the standing on a question
@@ -806,43 +811,36 @@ def choice_body(st):
     people whether their option is worth arguing for while there is still
     time to argue.
     """
-    rule = (
-        "this runoff goes to whichever leads at close"
-        if st["round"] > 1
-        else "otherwise a majority of votes cast at close, or a runoff"
+    tallies = " · ".join(
+        f"**{o}** {n}" if n and n == st["leader"] else f"{o} {n}"
+        for o, n in st["counts"].items()
     )
-    rows = "\n".join(
-        f"`{bar(n, st['clinch'])}` **{o}**: {n}" for o, n in st["counts"].items()
-    )
-    return (
-        f"🗳️ **{st['voted']} of {st['size']} voted**\n{rows}\n"
-        f"-# {st['clinch']} carries an option outright; {rule}."
-    )
+    return (f"`{bar(st['voted'], st['size'])}` {st['voted']} of {st['size']} "
+            f"voted · {tallies} · {st['clinch']} carries it")
 
 
-def ballot_body(guild, bill):
-    """The live face of a vote, whatever shape it is. Rewritten on every
-    ballot cast, so the progress toward the threshold is visible the whole
-    way rather than arriving as a surprise at close."""
+def ballot_line(guild, bill):
+    """Where a vote stands, in one line and no more.
+
+    Rewritten on every ballot cast, so progress toward the threshold is
+    visible the whole way rather than arriving as a surprise at close. One
+    line because the floor is a queue of these: what a voter needs is the
+    bar, the count and the threshold, and everything that was around them
+    -- that a vote about a person keeps its count quiet, that a ballot can
+    be changed, that nobody ever sees how you voted -- is true of every
+    vote there has ever been. It is said once, in the receipt for the
+    ballot you just cast, where it is about you.
+    """
     st = vote_state(guild, bill)
     if st["options"]:
-        body = choice_body(st)
-    elif is_blind(bill):
-        body = (
-            f"🗳️ `{bar(st['voted'], st['size'])}` **{st['voted']} of "
-            f"{st['size']} voted** · needs **{st['need']} yes**\n"
-            f"-# No running count on a vote about a person."
-        )
-    else:
-        body = (
-            f"✅ `{bar(st['yes'], st['need'])}` **{st['yes']} of {st['need']} "
-            f"yes needed**\n"
-            f"❌ {st['no']}  ·  ⬜ {st['waiting']} yet to vote"
-            + (f"  ·  🤍 {st['abstain']}" if st["abstain"] else "")
-        )
+        return choice_line(st)
+    if is_blind(bill):
+        return (f"`{bar(st['voted'], st['size'])}` {st['voted']} of "
+                f"{st['size']} voted · needs {st['need']} yes")
     return (
-        f"{body}\n\n"
-        f"-# Change or retract any time. Nobody ever sees how you voted."
+        f"`{bar(st['yes'], st['need'])}` {st['yes']} of {st['need']} yes · "
+        f"❌ {st['no']} · ⬜ {st['waiting']}"
+        + (f" · 🤍 {st['abstain']}" if st["abstain"] else "")
     )
 
 
@@ -872,36 +870,74 @@ def closed_body(guild, bill):
     return line
 
 
-# A card holds 4000 characters. What and Why may be written to 4000 each,
-# so the long ones are shown as far as they fit and the whole of them goes
-# in the thread, where length costs nobody anything.
-FLOOR_LIMIT = 2800
+# What and Why may be written to 4000 characters each. The floor shows an
+# opening of one and a line of the other; anything cut goes whole into the
+# thread, where length costs nobody anything.
+FLOOR_WHAT = 300
+FLOOR_WHY = 160
+
+
+def clip(text, limit):
+    """One run of text cut to a length at a word boundary. Returns the
+    piece and whether anything was lost. Line breaks go with it: a proposal
+    written as six short lines should cost the floor one."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text, False
+    cut = text.rfind(" ", 0, limit)
+    return text[:cut if cut > limit // 2 else limit].rstrip(" ,.;:") + "…", True
 
 
 def floor_text(bill):
-    """The proposal itself, and whatever would not fit."""
-    parts = []
-    for label, body in (("What", bill.get("what")), ("Why", bill.get("why"))):
-        if (body or "").strip():
-            parts.append(f"### {label}\n{body.strip()}")
-    whole = "\n\n".join(parts)
-    if len(whole) <= FLOOR_LIMIT:
-        return whole, ""
-    return (whole[:FLOOR_LIMIT].rstrip()
-            + "…\n-# Too long for one card. The whole of it is in the "
-              "thread.", whole)
+    """As much of the proposal as the floor shows, and the whole of it for
+    the thread when that is less than all of it.
+
+    The floor is a list of things to vote on, not the place to read them
+    at length: a hundred proposals at full height is a hundred proposals
+    nobody scrolls past the third of, and the ones further down are voted
+    on by whoever had the patience. So it shows an opening of the What at
+    reading size and a line of the Why under it, and the whole of both is
+    a click away in the thread the card already carries -- which is the
+    room the argument is in anyway.
+    """
+    what = (bill.get("what") or "").strip()
+    why = (bill.get("why") or "").strip()
+    shown_what, cut_what = clip(what, FLOOR_WHAT)
+    shown_why, cut_why = clip(why, FLOOR_WHY)
+    lines = [line for line in (shown_what,
+                               f"-# Why: {shown_why}" if shown_why else "")
+             if line]
+    whole = "\n\n".join(f"### {label}\n{body}"
+                        for label, body in (("What", what), ("Why", why))
+                        if body)
+    return "\n".join(lines), (whole if cut_what or cut_why else "")
 
 
-def floor_segments(guild, bill):
+def floor_segments(guild, bill, text=True):
     """Everything a proposal shows on the floor, drawn from scratch.
 
     One message from filing to close: the proposal, the live ballot and,
     in the end, the result, all on the card the thread hangs off. It used
     to be four messages and a fifth for the result, which is four more
     than a vote needs.
+
+    And one segment rather than four, because a card of separated blocks
+    with a heading over each is a page, and the floor is a queue: title,
+    the proposal as far as it fits, and one line saying where the vote
+    stands and when it shuts. Everything on it is something you would act
+    on -- what it is, what it says, how close it is, how long you have.
+
+    The thread is not named here. It hangs off this card, so Discord draws
+    it under the message already, and pointing at it in words is one more
+    line saying what the room is already showing.
+
+    `text` is off for the one case where the proposal is already on the
+    floor in its own right: a ballot posted before any of this, which sits
+    under the What and the Why as separate messages of their own. Those
+    cannot be edited into a card, so they are repainted as content, and
+    repeating the proposal there would print it twice in the same screen.
     """
-    chamber = chamber_of(guild, bill)
-    where = f" · debate in {chamber.mention}" if chamber else ""
+    open_now = bill.get("status") == "on_floor"
     try:
         ends = datetime.fromisoformat(bill["ends_at"])
         clock = f" · closes <t:{int(ends.timestamp())}:R>"
@@ -909,29 +945,28 @@ def floor_segments(guild, bill):
         clock = ""
 
     round_note = " (runoff)" if bill.get("round", 1) > 1 else ""
-    # Said out loud because it is a claim on other people's inbox, and one
-    # nobody should discover only by being direct-messaged about it -- or
-    # by noticing that they were not.
-    kind_note = " · ⚡ priority" if is_priority(bill) else ""
-    open_now = bill.get("status") == "on_floor"
-    segments = [
-        f"## Proposal No. {bill['no']}: {bill['title']}{round_note}{kind_note}\n"
-        f"-# By {bill.get('author', 'someone')}{where}"
-        + (clock if open_now else "")
-    ]
-    shown, _ = floor_text(bill)
+    # Marked because it is a claim on other people's inbox, and one nobody
+    # should discover only by being direct-messaged about it -- or by
+    # noticing that they were not. It leads the line so a floor of fifty
+    # can be skimmed for the ones that will chase you.
+    flag = "⚡ " if is_priority(bill) else ""
+    lines = [f"**{flag}No. {bill['no']}: {bill['title']}**{round_note}"]
+    shown, _ = floor_text(bill) if text else ("", "")
     if shown:
-        segments.append(shown)
+        lines.append(shown)
     if open_now and bill.get("runoff_note"):
-        segments.append(f"-# {bill['runoff_note']}")
-    segments.append(ballot_body(guild, bill) if open_now
-                    else closed_body(guild, bill))
-    return segments
+        lines.append(f"-# {bill['runoff_note']}")
+    if open_now:
+        lines.append(f"-# {ballot_line(guild, bill)} · "
+                     f"{bill.get('author', 'someone')}{clock}")
+    else:
+        lines.append(closed_body(guild, bill))
+    return ["\n".join(lines)]
 
 
-def ballot_content(guild, bill):
+def ballot_content(guild, bill, text=True):
     """The card as one piece of text. What the floor actually shows."""
-    return "\n\n".join(floor_segments(guild, bill))
+    return "\n\n".join(floor_segments(guild, bill, text))
 
 
 async def find_card(channel, message_id):
@@ -986,8 +1021,10 @@ async def paint_floor(guild, bill):
         # edited into one: Discord will not put the layout on a message
         # that went up without it. Those keep their old shape and their
         # old buttons, which still answer, rather than freezing mid-vote.
+        # Without the proposal's own words, which are already up there in
+        # the messages that ballot was posted under.
         try:
-            await msg.edit(content=ballot_content(guild, bill))
+            await msg.edit(content=ballot_content(guild, bill, text=False))
         except discord.HTTPException as e:
             log.warning(f"could not repaint the floor card for bill "
                         f"{bill['no']}: {e!r}")
@@ -1263,17 +1300,20 @@ class MultiBallotRows(list):
             )
             button.callback = self._make_callback(i)
             row.add_item(button)
-        if row.children:
-            self.append(row)
-        last = discord.ui.ActionRow()
         retract = discord.ui.Button(
             label="Retract",
             style=discord.ButtonStyle.secondary,
             custom_id="clerk:opt_retract",
         )
         retract.callback = self._retract
-        last.add_item(retract)
-        self.append(last)
+        # On the end of the options where they leave room for it. A row of
+        # its own for one grey button is a line of card per ballot, and the
+        # floor pays that on every choice vote open at once.
+        if len(row.children) == 5:
+            self.append(row)
+            row = discord.ui.ActionRow()
+        row.add_item(retract)
+        self.append(row)
 
     @property
     def children(self):
@@ -1362,16 +1402,14 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
         auto_archive_duration=10080,
     )
     record["notes_thread_id"] = notes_thread.id
-    # Anything too long for the card goes here whole, ahead of the prompt,
-    # so a proposal is never shortened out of somewhere it can be read.
+    # Whatever the card had to cut goes here whole, ahead of the prompt and
+    # first in the thread, so the floor can be a list without the proposal
+    # being shortened out of anywhere it can be read.
     _, overflow = floor_text(record)
     for piece in chunk_text(overflow) if overflow else ():
         await notes_thread.send(piece)
     notes_msg = await notes_thread.send(NOTES_PROMPT, view=NotesView())
     record["notes_message_id"] = notes_msg.id
-    # The thread did not exist when the card went up, so the card did not
-    # know where the argument was. One edit, not a second message.
-    await paint_floor(guild, record)
 
     path = bills_path(guild)
     bills = load_json(path, [])
@@ -1402,6 +1440,31 @@ async def file_from_modal(interaction, **kwargs):
 
 
 # ---------- submitting bills ----------
+
+# The two proposals Eugene writes the What for himself. A person writing
+# one says what they mean; these are generated, and a generated sentence
+# is the same sentence under every name, so it says the one thing that
+# differs and stops. Both used to spell out the mechanism as well -- that
+# an invitation is a single-use link, valid seven days, sent privately,
+# and a place in the room rather than in the cooperative; that a removal
+# needs all but two, that the subject cannot vote and keeps the window to
+# plead, that the tally is never published -- which is four sentences
+# nobody is voting on, since they are true of every invitation and every
+# removal there will ever be. They are in the standing orders, they are on
+# the ballot's own line where they are live figures rather than the count
+# at filing, and they are in the receipt at the moment they take effect.
+# Here they were just the height that pushed the next proposal off screen.
+
+def invite_what(guild, name, discord_id=""):
+    """The What on an invitation: who, and where."""
+    tail = f" (Discord ID {discord_id})" if discord_id else ""
+    return f"{name}{tail} will be invited to {guild.name}."
+
+
+def removal_what(guild, name):
+    """The What on a removal: who, and where from."""
+    return f"{name} will be removed from {guild.name}."
+
 
 class BillModal(discord.ui.Modal, title="Make a proposal"):
     def __init__(self, priority=False, prefill=None):
@@ -1502,18 +1565,10 @@ class InviteModal(discord.ui.Modal, title="Propose an invitation"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         name = str(self.invitee).strip()
         given = str(self.discord_id).strip()
-        id_part = f" (Discord ID {given})" if given else ""
-        what = (
-            f"{name}{id_part} shall be invited to {interaction.guild.name}. "
-            f"If this passes, Eugene issues a single-use invite link, valid "
-            f"seven days, delivered privately to the proposer. It is a place "
-            f"in the room; it is not a place in the cooperative and not a "
-            f"vote."
-        )
         await file_from_modal(
             interaction,
             title=f"Invitation of {name}"[:100],
-            what=what,
+            what=invite_what(interaction.guild, name, given),
             why=str(self.why),
             kind="invite",
             invitee=name,
@@ -1538,15 +1593,6 @@ class KickModal(discord.ui.Modal, title="Propose a removal"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        eligible_now = len([m for m in self.target.guild.members if in_cooperative(m) and not m.bot]) - 1
-        what = (
-            f"{self.target.display_name} shall be removed from "
-            f"{self.target.guild.name}. "
-            f"Removal requires yes from all eligible voters but two; the "
-            f"subject cannot vote and keeps the whole window to plead. The "
-            f"tally will never be published. Eligible voters at filing: "
-            f"{eligible_now}; the threshold is computed at close."
-        )
         eligible_ids = [
             m.id for m in self.target.guild.members
             if in_cooperative(m) and not m.bot and m.id != self.target.id
@@ -1554,7 +1600,7 @@ class KickModal(discord.ui.Modal, title="Propose a removal"):
         await file_from_modal(
             interaction,
             title=f"Removal of {self.target.display_name}"[:100],
-            what=what,
+            what=removal_what(self.target.guild, self.target.display_name),
             why=str(self.why),
             kind="kick",
             target_id=self.target.id,
@@ -3022,16 +3068,10 @@ async def act_propose_member(guild, invoker, args):
         return json.dumps({"error": "a proposal without reasons is not a proposal"})
     if discord_id and not discord_id.isdigit():
         return json.dumps({"error": "a Discord ID is digits only, or leave it out"})
-    tail = f" (Discord ID {discord_id})" if discord_id else ""
-    what = (
-        f"{name}{tail} shall be invited to {guild.name}. If this passes, "
-        f"Eugene issues a single-use invite link, valid seven days, "
-        f"delivered privately to the proposer. It is a place in the room; "
-        f"it is not a place in the cooperative and not a vote."
-    )
     bill = await file_bill(
         guild, invoker, title=f"Invitation of {name}"[:100],
-        what=what, why=why, kind="invite", invitee=name,
+        what=invite_what(guild, name, discord_id), why=why,
+        kind="invite", invitee=name,
         target_id=int(discord_id) if discord_id else None,
     )
     if bill is None:
@@ -3129,16 +3169,10 @@ async def act_propose_removal(guild, invoker, args):
 
     eligible = [m for m in guild.members
                 if in_cooperative(m) and not m.bot and m.id != target.id]
-    what = (
-        f"{target.display_name} shall be removed from {guild.name}. "
-        f"Removal requires yes from all eligible voters but two; the subject "
-        f"cannot vote and keeps the whole window to plead. The tally will "
-        f"never be published. Eligible voters at filing: {len(eligible)}; the "
-        f"threshold is computed at close."
-    )
     bill = await file_bill(
         guild, invoker, title=f"Removal of {target.display_name}"[:100],
-        what=what, why=why, kind="kick", target_id=target.id,
+        what=removal_what(guild, target.display_name), why=why,
+        kind="kick", target_id=target.id,
         floor_hours=numbers(guild)["removal_hours"],
         eligible_ids=[m.id for m in eligible],
     )

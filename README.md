@@ -310,6 +310,13 @@ is struck. Filing used to cost four messages and closing another four; a
 room you have to scroll is a room where the open vote is the thing you
 miss.
 
+**And that message is four lines.** A title, the opening of the What, a
+line of the Why, and one line for where the ballot stands and when it
+shuts — everything on it is something you would act on. The rest of the
+proposal is whole in the thread, which is a click away and where the
+argument is anyway. The floor is a queue of things to vote on, and fifty
+of them at full height is fifty nobody reads past the third of.
+
 Each annex has a default model, chosen to be cheap rather than clever —
 the clerk answers in a sentence or two, and a frontier model is several
 times the price for a job that size. The modal's second field overrules

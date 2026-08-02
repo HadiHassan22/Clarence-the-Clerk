@@ -446,7 +446,12 @@ def test_debate_thread(clerk, data):
           "There shall be a books channel." in shown
           and "People here read." in shown)
     check("with the live ballot on the same card",
-          "yes needed" in shown)
+          " yes · " in shown and "⬜" in shown)
+    check("in one block and no headings: the floor is a queue of these, so "
+          "a card is four lines, not a page",
+          len(clerk.floor_segments(guild, bill)) == 1
+          and "###" not in shown and "##" not in shown
+          and len(shown.splitlines()) <= 4)
 
     notes = next((t for t in threads if t.id == 200), None)
     check("nothing is built in the sidebar: no category, no text channel, "
@@ -467,6 +472,28 @@ def test_debate_thread(clerk, data):
     check("the prompt at the top of it invites both: argue here, or file a "
           "position for the record",
           any("Argue it out here" in (line or "") for line in notes.sent))
+    check("and a proposal short enough to show whole leaves nothing else "
+          "in it: the thread is for the argument, not a second copy",
+          len(notes.sent) == 1)
+
+    long_what = " ".join(f"clause {i} of what is being proposed"
+                         for i in range(1, 30))
+    clerk.floor_for = lambda _guild, _bill: floor
+    try:
+        big = run(clerk.file_bill(guild, author, "A long one",
+                                  long_what, "Because it is long."))
+    finally:
+        clerk.floor_for = keep_floor
+    card = clerk.ballot_content(guild, big)
+    excerpt = clerk.floor_text(big)[0].splitlines()[0]
+    check("a proposal too long for a card is shown as far as it reads and "
+          "cut at a word, not at a character",
+          long_what not in card and card.count("…") == 1
+          and long_what.startswith(excerpt.rstrip("…") + " "))
+    check("and the whole of it goes first into the thread, so the floor "
+          "can be a list without the proposal being shortened out of "
+          "anywhere it can be read",
+          any(long_what in (line or "") for line in threads[-1].sent))
 
     run(clerk.seal_chamber(guild, bill))
     check("closing has nothing separate to shut, since the thread is "
@@ -549,19 +576,22 @@ def test_filing(clerk, data):
           out.get("author") == "Robin")
     check("the ballot is advertised as three-way and sealed",
           "abstain" in out.get("ballot", "") and "sealed" in out.get("ballot", ""))
-    check("the text names the person and the consequence",
-          "Sam" in filed.get("what", "")
-          and "single-use invite link" in filed.get("what", ""))
+    check("the text names the person and the consequence, and stops: what "
+          "is true of every invitation ever filed is not what anybody is "
+          "voting on",
+          filed.get("what", "").startswith("Sam ")
+          and "will be invited to" in filed.get("what", "")
+          and len(filed.get("what", "")) < 80)
     check("a supplied Discord ID is carried into the bill",
           "123456789012345678" in filed.get("what", ""))
     check("their reasons are preserved verbatim",
           "in the group chat for a year" in filed.get("why", ""))
     # Two doors, and they were read as one for a while: an invitation is
-    # somebody let into the server, never somebody handed a vote. The bill
-    # is what a voter reads before deciding, so it has to say which.
-    check("the bill says outright that it is not a seat in the cooperative",
-          "not a place in the cooperative" in filed.get("what", ""))
-    check("and the tool that files it says the same to the model",
+    # somebody let into the server, never somebody handed a vote. It is no
+    # longer spelled out on the bill, so the guard that keeps the model
+    # from filing one for the other is the tool description.
+    check("the tool that files it says outright that it is not a seat in "
+          "the cooperative",
           "puts nobody in the cooperative"
           in toolbox.BILL_TOOLS["propose"]["description"])
     check("and somebody outside is sent to the door that exists",
@@ -1453,12 +1483,14 @@ def test_voting(clerk, data):
 
         shown = clerk.ballot_content(guild, bill({"1": "yes", "2": "no"}))
         check("a vote about a thing shows its progress",
-              "1 of 5 yes needed" in shown and "❌ 1" in shown)
+              "1 of 5 yes" in shown and "❌ 1" in shown)
         hidden = clerk.ballot_content(
             guild, bill({"1": "yes", "2": "no"}, kind="invite"))
         check("a vote about a person shows turnout and nothing else",
               "2 of 8 voted" in hidden and "❌" not in hidden)
-        check("and says why it is quiet", "about a person" in hidden)
+        check("and it is the whole of the ballot: one line, no paragraph "
+              "under it explaining what is true of every vote",
+              clerk.ballot_line(guild, bill({"1": "yes"})).count("\n") == 0)
     finally:
         clerk.in_cooperative = original
 
@@ -2183,17 +2215,17 @@ def test_choice_ballots(clerk, data):
                                         get_role=lambda _id: None),
                   clinched)) is False)
 
-        face = clerk.ballot_content(guild, poll({"1": "Tuesday", "2": "Sunday"}))
-        check("the ballot shows a bar for each option, not a paragraph",
-              face.count("`") == 6 and "**Tuesday**: 1" in face)
+        face = clerk.ballot_line(guild, poll({"1": "Tuesday", "2": "Sunday"}))
+        check("every option and its count sit on one line, not a bar apiece: "
+              "the options are on the buttons underneath in the same order",
+              face.count("\n") == 0 and "Thursday 0" in face)
+        check("with whatever leads in bold, so the standing reads at a "
+              "glance", "**Tuesday** 1" in face and "**Thursday**" not in face)
         check("and the turnout, live", "2 of 8 voted" in face)
-        check("and says what would end it", "5 carries an option" in face)
-        check("a first round says a runoff may follow", "runoff" in face)
+        check("and says what would end it", "5 carries it" in face)
         runoff = clerk.ballot_content(
             guild, poll({}, round=2, options=["Tuesday", "Sunday"]))
         check("a runoff says so in its heading", "(runoff)" in runoff)
-        check("and that the leader takes it",
-              "whichever leads at close" in runoff)
 
         check("the receipt names who leads",
               "**Tuesday** leads with 2"
