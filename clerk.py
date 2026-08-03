@@ -729,10 +729,17 @@ def vote_tier(bill):
 
 
 def is_blind(bill):
-    """Votes about a person never show a running count. You should not have
-    to watch a tally climb toward throwing somebody out, and nobody arriving
-    should be able to work out their own margin. Votes about things show
-    everything: hiding the count on a channel rename is just ceremony."""
+    """Votes about a person never show a running count while they are open.
+    You should not have to watch a tally climb toward throwing somebody out,
+    and a count that is still moving is the one people lobby against. Votes
+    about things show everything: hiding the count on a channel rename is
+    just ceremony.
+
+    Blind is about the vote in progress, not the result. Every close
+    publishes its numbers, this kind included -- see `finalize_bill`. What
+    is secret forever is who cast which ballot, which is a different rule
+    and a stronger one.
+    """
     return bill.get("kind") in ("invite", "kick")
 
 
@@ -851,8 +858,7 @@ def closed_body(guild, bill):
     card under it: the floor is for votes that are open, and this is what
     is left of one that is not.
     """
-    secret = bill.get("kind") in ("invite", "kick")
-    shown = "The tally is sealed." if secret else bill.get("tally_line", "")
+    shown = bill.get("tally_line", "")
     if bill.get("status") == "vetoed":
         verdict = "Carried, and vetoed inside its window."
     elif bill.get("decided"):
@@ -2358,10 +2364,12 @@ async def finalize_bill(guild, bill, passed, tally_line, decided=None):
     # the tally is all the record needs from here; individual ballots are
     # destroyed at close so a closed vote cannot be reconstructed by anyone
     bill.pop("ballots", None)
-    # people-bills (invite, kick) never publish numbers: a barely-admitted
-    # member should never learn the margin
-    secret = bill.get("kind") in ("invite", "kick")
-    bill["tally_line"] = "a sealed tally" if secret else tally_line
+    # Every close publishes its numbers, people-bills included. They used to
+    # print "a sealed tally" while acts.json kept the real figures anyway,
+    # so the seal was on the card and not on the data: a decision the house
+    # could read out of a file but not off its own record. One rule now --
+    # the split is public, and who cast which ballot never is.
+    bill["tally_line"] = tally_line
     if decided:
         bill["decided"] = decided
     floor = floor_for(guild, bill)
@@ -2420,7 +2428,6 @@ def closing_report(bill):
     passed = bill["status"] == "passed"
     overturned = bill["status"] == "vetoed"
     kind = bill.get("kind", "ordinary")
-    sealed = kind in ("invite", "kick")
 
     done = [
         "The vote is closed and the ballots are destroyed; only the tally survives.",
@@ -2438,7 +2445,7 @@ def closing_report(bill):
             "bill": bill["no"],
             "title": bill.get("title", ""),
             "ruling": "vetoed",
-            "tally": "sealed" if sealed else bill.get("tally_line", ""),
+            "tally": bill.get("tally_line", ""),
             "act": bill.get("act"),
             "done": done,
             "outstanding": bill.get("outstanding", []),
@@ -2483,7 +2490,7 @@ def closing_report(bill):
         "bill": bill["no"],
         "title": bill.get("title", ""),
         "ruling": "passed" if passed else "failed",
-        "tally": "sealed" if sealed else bill.get("tally_line", ""),
+        "tally": bill.get("tally_line", ""),
         "act": bill.get("act"),
         "done": done,
         "outstanding": outstanding,
@@ -2619,16 +2626,22 @@ async def execute_invite(guild, bill):
 
 
 async def execute_kick(guild, bill):
-    """A passed removal proposal: sealed farewell, role withdrawn, removal."""
+    """A passed removal proposal: private farewell, role withdrawn, removal."""
     member = guild.get_member(bill.get("target_id"))
     if member is None:
         return await health_log(
             guild, f"Proposal No. {bill['no']}: the subject had already left."
         )
     try:
+        # The count goes on the decision in the record, where the house can
+        # read it. It does not go in here. Somebody being shown the door is
+        # owed the fact and not the arithmetic of it, and they cannot reach
+        # the record to be argued with anyway. What is said here is only
+        # what was never in doubt: nobody ever sees an individual ballot.
         await member.send(
-            f"{guild.name} has voted for your removal. The "
-            f"tally is sealed and will remain so. Eugene wishes you well."
+            f"{guild.name} has voted for your removal. How any one person "
+            f"voted is not recorded anywhere and never was. Eugene wishes "
+            f"you well."
         )
     except discord.HTTPException:
         pass
@@ -2648,9 +2661,12 @@ async def close_bill(guild, bill):
     abstain = sum(1 for v in ballots.values() if v == "abstain")
     bill["tally"] = {"yes": yes, "no": no}
     if bill.get("kind") == "invite":
-        # recorded, and deliberately not counted: the standing orders
-        # decide passage on yes against no, and call abstention a
-        # delegation rather than a veto
+        # Recorded, and not subtracted from anything. The threshold is a
+        # share of the roster, so an abstention neither carries the door
+        # nor lowers what carries it: it is a seat that showed up and
+        # said nothing, and it lands where silence lands. Printed because
+        # "4 yes of 7, and 2 of the rest were present" is a different
+        # story from "4 yes of 7, and 3 said no".
         bill["tally"]["abstain"] = abstain
 
     if bill.get("kind") == "kick":
@@ -2666,7 +2682,11 @@ async def close_bill(guild, bill):
         required = max(len(eligible) - 2, numbers(guild)["kick_min_yes"])
         bill["threshold"] = {"eligible": len(eligible), "required": required}
         passed = yes >= required
-        await finalize_bill(guild, bill, passed, f"✅ {yes} / ❌ {no}")
+        # The bar goes on the line with the count, the same as every other
+        # close. A removal's threshold is not a share of the roster, so
+        # without it printed there is no reading 2 / 3 correctly.
+        line = f"✅ {yes} / ❌ {no} · needed {required} of {len(eligible)}"
+        await finalize_bill(guild, bill, passed, line)
         if passed:
             await execute_kick(guild, bill)
         return
@@ -3078,7 +3098,8 @@ async def act_propose_member(guild, invoker, args):
         return json.dumps({"error": "the votes channel is missing"})
     return json.dumps({"filed": bill["no"], "proposed": name,
                        "author": bill["author"], "closes_at": bill["ends_at"],
-                       "ballot": "yes, no, or abstain; anonymous; tally sealed at close"})
+                       "ballot": "yes, no, or abstain; anonymous; no running "
+                                 "count while it is open, tally published at close"})
 
 
 # A proposal can be closed before its window runs out, but not the instant
@@ -4011,7 +4032,7 @@ class GrantSelect(discord.ui.UserSelect):
 
 class RevokeSelect(discord.ui.UserSelect):
     """Undoing a typo, not removing a person. An actual removal is
-    `/remove`: a vote at the fundamental tier with a sealed tally."""
+    `/remove`: a vote at the fundamental tier, blind while it runs."""
 
     def __init__(self, row):
         super().__init__(
@@ -5121,7 +5142,7 @@ async def slash_close(interaction: discord.Interaction, number: int):
     lines = [f"Proposal No. {report['bill']} {report['ruling']}."]
     if report.get("act"):
         lines.append(f"It is on the record as Decision {report['act']}.")
-    if report.get("tally") and report["tally"] != "sealed":
+    if report.get("tally"):
         lines.append(report["tally"])
     if report.get("outstanding"):
         lines += ["", "Still wanted:"] + [f"- {item}" for item in report["outstanding"]]

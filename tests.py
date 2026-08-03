@@ -312,6 +312,11 @@ def test_annexes():
 
 def test_firewall(data):
     print("\nthe anonymity firewall still holds over an invite bill")
+    # The tests above this one point the harness at stores of their own and
+    # do not point it back, so without this the lookup below reads a
+    # directory with no bills in it and every "is not in the result" check
+    # here passes against an error message. Which is what it was doing.
+    toolbox.configure(HERE, data)
     (data / "bills.json").write_text(json.dumps([{
         "no": 1, "title": "t", "kind": "invite", "status": "passed",
         "author": "x", "ballots": {"111": "yes", "222": "abstain"},
@@ -319,8 +324,9 @@ def test_firewall(data):
         "invite_url": "https://discord.gg/secret", "notes": {}}]))
     bill = json.loads(run(toolbox.dispatch(GUILD, CITIZEN, "lookup", {"kind": "bill", "number": 1})))
     check("individual ballots are stripped", "ballots" not in bill)
-    check("the tally is sealed, abstentions included",
-          "tally" not in bill and "tally_line" not in bill)
+    check("the closing tally comes through, because it is on the decision "
+          "in the record and hiding it here only blinds the clerk",
+          bill.get("tally", {}).get("yes") == 5 and bill.get("tally_line") == "5/1/2")
     check("the invite link is never handed to the model", "invite_url" not in bill)
 
 
@@ -574,8 +580,11 @@ def test_filing(clerk, data):
     check("it is filed as an invite bill", filed.get("kind") == "invite")
     check("the citizen who asked is the author, not the clerk",
           out.get("author") == "Robin")
-    check("the ballot is advertised as three-way and sealed",
-          "abstain" in out.get("ballot", "") and "sealed" in out.get("ballot", ""))
+    check("the ballot is advertised as three-way, blind while it runs, "
+          "and published at close",
+          "abstain" in out.get("ballot", "")
+          and "no running count" in out.get("ballot", "")
+          and "published at close" in out.get("ballot", ""))
     check("the text names the person and the consequence, and stops: what "
           "is true of every invitation ever filed is not what anybody is "
           "voting on",
@@ -1202,14 +1211,15 @@ def test_closing(clerk, data):
           any("by hand" in line for line in structural["outstanding"]))
 
     invite = report(kind="invite", title="Invitation of Sam")
-    check("an invite tally stays sealed in the report", invite["tally"] == "sealed")
+    check("an invite reports its tally like any other close",
+          invite["tally"] == "✅ 3 / ❌ 1")
     check("the issued link is reported as done",
           any("invite link" in line for line in invite["done"]))
     check("and passing the link on is left to the proposer",
           any("proposer sends the link" in line for line in invite["outstanding"]))
 
     kick = report(kind="kick", title="Removal of X")
-    check("a removal tally stays sealed", kick["tally"] == "sealed")
+    check("a removal reports its tally too", kick["tally"] == "✅ 3 / ❌ 1")
     check("a carried-out removal leaves nothing outstanding", not kick["outstanding"])
 
     failed = report(status="failed", act=None)
@@ -1641,7 +1651,8 @@ def test_veto(clerk, data):
             bill = {
                 "no": 7, "title": "Invitation of Sam", "kind": "invite",
                 "status": "passed", "author_id": 99, "act": 3,
-                "tally_line": "a sealed tally", "veto_message_id": 555,
+                "tally_line": "✅ 4 / ❌ 1 / 🤍 2 · needed 4 of 7",
+                "veto_message_id": 555,
                 "veto": {
                     "until": (now + clerk.timedelta(hours=hours_left)).isoformat(),
                     "needed": 1, "cast": [],

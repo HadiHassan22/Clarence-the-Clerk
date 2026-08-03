@@ -5,8 +5,10 @@ else; every dispatch is validated, executed by hand-written handlers, and
 logged. Stage 2 ships minor (read-only) tools; major act-gated tools come
 with the executor stage.
 
-Anonymity firewall: get_bill and get_act strip ballots, anonymous-note
-authorship, and sealed tallies before the model ever sees them.
+Anonymity firewall: get_bill and get_act strip individual ballots and
+anonymous-note authorship before the model ever sees them. Closing tallies
+are not stripped -- they are on the public record either way, and a clerk
+who cannot read the record he keeps is no use to anybody.
 """
 
 import asyncio
@@ -101,20 +103,11 @@ async def _list_acts(guild, invoker, args):
     return json.dumps(index)
 
 
-def _bill_kind(bill_no):
-    for b in _load(_paths["data"] / "bills.json", []):
-        if b["no"] == bill_no:
-            return b.get("kind", "ordinary")
-    return "ordinary"
-
-
 async def _get_act(guild, invoker, args):
     act_no = int(args["act_no"])
     for a in _load(_paths["data"] / "acts.json", []):
         if a["act"] == act_no:
             a = copy.deepcopy(a)
-            if _bill_kind(a.get("bill")) in PEOPLE_KINDS:
-                a.pop("tally", None)  # sealed, and stays sealed
             return json.dumps(a)
     return json.dumps({"error": f"no Decision {act_no} on record"})
 
@@ -156,8 +149,11 @@ async def _get_bill(guild, invoker, args):
                     if named:
                         veto["by"] = named
             if b.get("kind") in PEOPLE_KINDS:
-                b.pop("tally", None)
-                b.pop("tally_line", None)
+                # The tally stays: it is printed on the decision in the
+                # record, so hiding it here only stops him reading out
+                # what anybody can already scroll to. A vote still on the
+                # floor has no tally written yet and its ballots went out
+                # the door above, so blind-while-open survives this.
                 b.pop("invite_url", None)
             notes = []
             for slots in b.pop("notes", {}).values():
