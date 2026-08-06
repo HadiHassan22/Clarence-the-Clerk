@@ -374,6 +374,30 @@ VOTING_FLAG_HELP = {
                          "landing where silence lands",
 }
 
+# Which feature reads a number, where only one of them does. Everything not
+# named here belongs to the vote itself and is true of every house.
+#
+# It is here rather than in modules.py because the fact it records is this
+# table's: `poll_quorum_share` is a poll's number in the same way that its
+# bounds are its bounds. What the screens do with that is theirs -- a house
+# that does not run community polls is not shown three numbers about them,
+# because a figure nothing reads is noise on a screen whose whole job is to
+# be read, and the same reasoning already says a switched-off feature's
+# settings are read by nobody. Nothing here refuses a value: somebody
+# setting a poll's window before switching polls on is early, not wrong.
+VOTING_OWNER = {
+    "poll_hours": "polls",
+    "poll_share": "polls",
+    "poll_quorum_share": "polls",
+}
+
+
+def owned_by(name):
+    """The feature key this setting belongs to, or None for the ones that
+    are every house's."""
+    return VOTING_OWNER.get(name)
+
+
 # What counts as on and off when somebody types one rather than pressing it.
 TRUE_WORDS = {"1", "on", "true", "yes", "y", "enable", "enabled"}
 FALSE_WORDS = {"0", "off", "false", "no", "n", "disable", "disabled"}

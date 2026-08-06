@@ -4296,6 +4296,18 @@ def test_poll_arithmetic(data):
           "counted for the quorum and against nothing else",
           got["answer"] == polls.YES and got["needed"] == 1)
 
+    print("\na room that turned up to say nothing did not say no")
+    silent = polls.draft(1, "Robin", "Move game night?")
+    for uid in range(20):
+        polls.cast(silent, uid, polls.ABSTAIN)
+    got = polls.decided(silent, 50, 0.5, 0.2)
+    check("a quorum's worth of abstentions is quorate", got["quorate"])
+    check("and reports no answer rather than 'no', which would put a "
+          "position in the mouths of the only people who turned up",
+          got["answer"] is None)
+    check("with no bar quoted, because nothing was being decided",
+          not got["needed"])
+
     print("\nshort of the quorum there is no result, not a quiet one")
     thin = polls.draft(1, "Robin", "Move game night?")
     for uid in range(3):
@@ -4348,9 +4360,24 @@ def test_poll_arithmetic(data):
 
     print("\na poll never ends early, and that is the point")
     open_one = polls.draft(1, "Robin", "q")
-    polls.open_poll(open_one, 1, 48, 10, 20)
+    polls.open_poll(open_one, 1, 48)
     check("the window is stamped when it opens, not when it was drafted",
           open_one["ends_at"] and open_one["status"] == polls.OPEN)
+    # The status and the window are one write because `is_over` reads an
+    # open poll without a window as already due. Opening one either side of
+    # the Discord round trip that posts the card left it on disk in exactly
+    # that state, so a close tick landing in the gap shut a poll that was
+    # not up yet.
+    check("opening never leaves it open without a window to be open for",
+          not polls.is_over(open_one))
+    polls.posted(open_one, 10, 20)
+    check("the room and the message arrive after, and close nothing",
+          open_one["message_id"] == 20 and not polls.is_over(open_one))
+    failed = polls.unopen(polls.open_poll(polls.draft(1, "Robin", "q"), 2, 48))
+    check("a card that could not be posted goes back to a draft",
+          failed["status"] == polls.DRAFT)
+    check("and does not keep the window of the attempt that failed",
+          "ends_at" not in failed and not polls.is_over(failed))
     check("and it is not over yet", not polls.is_over(open_one))
     later = datetime.now(timezone.utc) + timedelta(hours=49)
     check("it is over when the clock says so", polls.is_over(open_one, later))
@@ -4365,6 +4392,116 @@ def test_poll_arithmetic(data):
     check("the ballots are gone", "ballots" not in open_one)
     check("the counts survive", open_one["result"]["counts"][polls.YES] == 1)
     check("and it is closed", open_one["status"] == polls.CLOSED)
+
+
+def test_house_screen(clerk, data):
+    """`/house` fits in a Discord message, whatever the table grows to.
+
+    It did not, and the way it failed is the reason this test is worth
+    having: Discord rejects an over-long message with a 400 rather than
+    shortening it, the interaction is never answered, and what the person
+    who ran the command sees is "the application did not respond". Nothing
+    in the logs says the settings table got too long. Adding the poll
+    numbers and the counting switches took `/house` from twelve rows to
+    nineteen and pushed it over 2000 characters, and the panel -- which cut
+    at a fixed 1990 -- answered, having quietly dropped the newest settings
+    off the bottom.
+
+    So the ceiling is asserted directly, at the worst size the screen can
+    be, and separately from the rule that no setting is ever silently lost.
+    """
+    print("\nthe screens that print the rules fit in a message")
+
+    import bindings
+    import modules
+
+    settings.configure(data)
+    guild_id = 9500
+    modules.reset(guild_id)
+
+    # The longest a server name is allowed to be, so the head of the screen
+    # is as big as Discord will ever make it.
+    guild = types.SimpleNamespace(
+        id=guild_id, name="N" * 100, roles=[], members=[], categories=[],
+        text_channels=[], get_channel=lambda cid: None,
+        get_role=lambda rid: None,
+    )
+
+    body = clerk.house_body(guild)
+    check("the default house fits, with room to spare",
+          len(body) <= clerk.MESSAGE_LIMIT)
+    check("and says both halves: what is on, and what it votes by",
+          "has switched on" in body and "What it votes by" in body)
+
+    print("\na house with no bell yet is told how to get one")
+    check("the pings are on out of the box, and the role is not",
+          clerk.ringing(guild) and clerk.bell_role(guild) is None)
+    check("so the screen says where one is made, rather than showing "
+          "nothing and leaving `/setup` pointing back at it",
+          "Apply" in body and "bell" in body.lower())
+    check("and there is no button to press until there is a role to hold",
+          clerk.house_view(guild, False) is None)
+    clerk.set_ringing(guild, False)
+    check("a house that turned the pings off is told that instead, rather "
+          "than being sent to make a role it does not want",
+          "Apply" not in clerk.house_body(guild)
+          and "off here" in clerk.house_body(guild))
+    clerk.set_ringing(guild, True)
+
+    print("\nno setting is dropped to make it fit")
+    shown = clerk.voting_names(guild)
+    check("every setting the house is shown is named in the body",
+          all(f"`{name}`" in body for name in shown))
+    check("and its value with it",
+          all(f"`{name}` **" in body for name in shown))
+
+    print("\nthe poll numbers belong to the poll feature")
+    check("a house with polls off is not shown a poll quorum",
+          "poll_quorum_share" not in shown)
+    modules.set_enabled(guild_id, "polls", True)
+    on = clerk.voting_names(guild)
+    body_on = clerk.house_body(guild)
+    check("switching polls on brings its three numbers with it",
+          all(n in on for n in
+              ("poll_hours", "poll_share", "poll_quorum_share")))
+    check("and the screen still fits with them",
+          len(body_on) <= clerk.MESSAGE_LIMIT)
+    check("nothing else moved", len(on) == len(shown) + 3)
+
+    print("\nthe fullest it can ever be still fits")
+    every = {name: settings.VOTING_RULES[name][2]
+             for name in settings.VOTING_HELP}
+    every.update({name: not settings.VOTING_FLAGS[name]
+                  for name in settings.VOTING_FLAGS})
+    settings.set_voting(guild_id, **every)
+    full = clerk.house_body(guild)
+    check("every number at its maximum and every switch flipped, so every "
+          "row carries the mark saying it is the house's own",
+          len(full) <= clerk.MESSAGE_LIMIT)
+    check("the marks are on the choices, not on the defaults: a fresh "
+          "server spent three hundred characters saying nothing happened",
+          "*(yours)*" in full and "his default" not in full)
+
+    print("\nwhen it will not fit, the meanings go and the settings stay")
+    room = len("\n".join(clerk.voting_lines(guild))) - 1
+    squeezed = clerk.voting_block(guild, room)
+    check("the bare rendering is what a budget too small falls back to",
+          len(squeezed) <= room)
+    check("and it still names every setting, because a number you cannot "
+          "see is a rule you cannot read",
+          all(f"`{name}` **" in squeezed for name in clerk.voting_names(guild)))
+
+    print("\nthe dropdowns offer exactly what the screen printed")
+    numbers = clerk.NumberSelect(guild)
+    switches = clerk.SwitchSelect(guild)
+    offered = [o.value for o in numbers.options] + [o.value for o in switches.options]
+    check("no dropdown offers a setting the panel does not print",
+          set(offered) == set(clerk.voting_names(guild)))
+    check("and neither is empty, which Discord refuses outright",
+          numbers.options and switches.options)
+
+    settings.set_voting(guild_id, **{k: None for k in every})
+    modules.reset(guild_id)
 
 
 def test_polls(clerk, data):
@@ -4792,6 +4929,7 @@ def main():
             skip("the debate thread", "discord.py is not installed")
             skip("the bell", "discord.py is not installed")
             skip("the bell is asked for", "discord.py is not installed")
+            skip("the house screen", "discord.py is not installed")
             skip("community polls", "discord.py is not installed")
             skip("the filing handlers", "discord.py is not installed")
             skip("the chat room", "discord.py is not installed")
@@ -4807,6 +4945,7 @@ def main():
             test_debate_thread(clerk, data)
             test_bell(clerk, data)
             test_bell_is_asked_for(clerk, data)
+            test_house_screen(clerk, data)
             test_polls(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)

@@ -111,8 +111,10 @@ entirely — it is a vote about somebody who is not in the server yet, and
 what it hands out is a link.
 
 `Bell` is the one role nobody hands out: it is picked up, by whoever wants
-telling when a new vote opens, from `/house`. It starts empty, so the
-first ballot in a fresh server mentions nobody. A house that would rather
+telling when a new vote opens, from `/house`. Apply is what makes it, so a
+server that was here before it was should press Apply again — `/house`
+says so where the button would otherwise be. It starts empty, so the first
+ballot in a fresh server mentions nobody. A house that would rather
 nothing in it was ever pinged switches the whole thing off on the same
 **Roles & votes** screen, and then no ballot mentions anybody however many
 people are holding it. Eugene can ring it and nobody else can — it is
@@ -283,11 +285,13 @@ Setting one wakes Conversation. **Details** says what is configured.
 ## The numbers the server votes by
 
 Thresholds, windows and caps are the server's, not the repo's. **Numbers**
-on the `/setup` panel prints every one of them and says which this server
-chose rather than inherited; picking one opens a box with its current value
-and its bounds, and `default` puts it back. One at a time on purpose — a
-form that changes six of them at once is a form somebody will change six of
-them at once with.
+on the `/setup` panel prints them and marks the ones this server chose
+rather than inherited; picking one opens a box with its current value and
+its bounds, and `default` puts it back. One at a time on purpose — a form
+that changes six of them at once is a form somebody will change six of them
+at once with. A number belonging to a feature arrives with the feature: a
+house that does not run community polls is not shown three numbers about
+them, and switching polls on is what puts them on the screen.
 
 | Number | What it decides | Default |
 |---|---|---|

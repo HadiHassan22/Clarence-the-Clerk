@@ -3306,11 +3306,18 @@ async def open_confirmed_poll(guild, poll):
             # second poll, and must not be told the first one failed.
             return fresh
         poll = fresh or poll
-        poll["status"] = polls.OPEN
+        # Status and window in the same write. Marking it open and stamping
+        # the window either side of a Discord round trip left it on disk,
+        # for as long as that call took, as an open poll with no `ends_at`
+        # -- which `polls.is_over` reads as one that is already due, so a
+        # close tick landing in the gap would shut a poll that had not been
+        # posted yet. The room and the message id are what wait for the
+        # send now, and nothing closes a poll for the want of those.
+        polls.open_poll(poll, poll["id"], hours)
         polls.put(guild.id, poll)
-    # Sent before the window is stamped so a poll that cannot be posted --
-    # no permissions, a deleted room -- never becomes an open poll nobody
-    # can answer. Its status goes back if this throws.
+    # A poll that cannot be posted -- no permissions, a deleted room --
+    # must not stay an open poll nobody can answer, so it goes back to a
+    # draft, window and all, if this throws.
     try:
         card = await channel.send(
             view=Card(poll_segments(guild, poll), poll_rows(poll)),
@@ -3319,15 +3326,15 @@ async def open_confirmed_poll(guild, poll):
     except discord.HTTPException as e:
         log.warning(f"could not post poll {poll.get('id')}: {e!r}")
         async with _state_lock:
-            poll["status"] = polls.DRAFT
-            polls.put(guild.id, poll)
+            polls.put(guild.id, polls.unopen(poll))
         return None
     async with _state_lock:
-        polls.open_poll(poll, poll["id"], hours, channel.id, card.id)
+        polls.posted(poll, channel.id, card.id)
         polls.put(guild.id, poll)
-    # Painted once more so the card carries its own closing time, which is
-    # only known once the window has been stamped on it.
-    await paint_poll(guild, poll)
+    # No repaint. The window is stamped before the send now, so the card
+    # carries its own closing time from the first draw -- it used to be
+    # posted without one and immediately edited to add it, which is a
+    # second API call and a visible flicker on every poll opened.
     log.info(f"community poll opened: no. {poll['id']} by {poll.get('author')}")
     return poll
 
@@ -5330,21 +5337,81 @@ VOTING_SWITCHES = settings.VOTING_FLAG_HELP
 shown_value = powers.shown
 
 
-def voting_lines(guild):
-    """Every number and switch, what it means, and whether it is theirs or
-    his."""
+# Discord refuses a message longer than this, and refuses it with a 400
+# rather than by shortening it -- so a screen that outgrows the limit does
+# not come back trimmed, it does not come back at all, and what the person
+# who ran the command sees is "the application did not respond".
+#
+# `/house` did exactly that the day the poll numbers and the counting
+# switches landed: nineteen rows where there had been twelve, and a body
+# that was over the limit before the module summary was added to it. The
+# panel had it worse in the quieter direction -- it was already cutting at
+# 1990, so it did come back, having silently dropped the newest settings
+# off the bottom. Hence a budget rather than a trim.
+MESSAGE_LIMIT = 2000
+
+
+def voting_names(guild):
+    """The settings this house is actually shown, in table order.
+
+    A number belonging to a feature this house does not run is left out.
+    That is the panel's own rule about a switched-off feature -- its
+    settings are read by nobody -- applied to the screen that lists them,
+    and it is why a house with community polls off is not asked to think
+    about a quorum share. Nothing refuses the value: it is unlisted, not
+    locked.
+    """
+    out = []
+    for table in (VOTING_BLURBS, VOTING_SWITCHES):
+        for name in table:
+            owner = settings.owned_by(name)
+            if owner is None or modules.enabled(guild.id, owner):
+                out.append(name)
+    return out
+
+
+def voting_lines(guild, blurbs=True):
+    """Every number and switch this house is shown, and what it is set to.
+
+    The house's own choices are what carries a mark now, rather than the
+    defaults. On a fresh server the old way was nineteen rows each ending
+    in the same four words about being a default -- three hundred
+    characters spent saying that nothing had happened, on a screen that had
+    just run out of room. The few somebody changed are the ones worth
+    pointing at, and the line underneath already says how many there are.
+
+    `blurbs=False` drops the meanings and keeps every setting, for the one
+    case where the full rendering will not fit in a message.
+    """
     held = numbers(guild)
     chosen = settings.voting_overrides(guild.id)
+    both = {**VOTING_BLURBS, **VOTING_SWITCHES}
     rows = []
-    for table in (VOTING_BLURBS, VOTING_SWITCHES):
-        for name, blurb in table.items():
-            # Not `-#` subtext: Discord only honours that at the start of a
-            # line, and this is the end of one.
-            mark = "" if name in chosen else " *(his default)*"
-            rows.append(
-                f"- `{name}` **{shown_value(name, held[name])}**: {blurb}{mark}"
-            )
+    for name in voting_names(guild):
+        # Not `-#` subtext: Discord only honours that at the start of a
+        # line, and this is the end of one.
+        mark = " *(yours)*" if name in chosen else ""
+        blurb = f": {both[name]}" if blurbs else ""
+        rows.append(
+            f"- `{name}` **{shown_value(name, held[name])}**{blurb}{mark}"
+        )
     return rows
+
+
+def voting_block(guild, budget):
+    """The settings, in as much detail as there is room for.
+
+    Rich rows where they fit, bare ones where they do not. What goes when
+    something has to go is the explanations -- which are still on the
+    panel's own dropdowns and in `list_settings` -- and never a setting,
+    because a number you cannot see is a rule you cannot read, and being
+    able to read the rules for free is the whole of what this screen is
+    for.
+    """
+    rich = "\n".join(voting_lines(guild))
+    if len(rich) <= budget:
+        return rich
+    return "\n".join(voting_lines(guild, blurbs=False))
 
 
 class NumberModal(discord.ui.Modal):
@@ -5405,7 +5472,12 @@ class NumberModal(discord.ui.Modal):
 
 
 class NumberSelect(discord.ui.Select):
+    """Only what the screen above it lists. A dropdown offering a number
+    whose value is not printed anywhere on the panel is a way to change a
+    setting you cannot read back."""
+
     def __init__(self, guild):
+        shown = set(voting_names(guild))
         super().__init__(
             placeholder="Change one…", min_values=0, max_values=1, row=0,
             options=[
@@ -5413,7 +5485,7 @@ class NumberSelect(discord.ui.Select):
                     label=name,
                     value=name,
                     description=blurb[:100],
-                ) for name, blurb in VOTING_BLURBS.items()
+                ) for name, blurb in VOTING_BLURBS.items() if name in shown
             ],
         )
 
@@ -5431,6 +5503,7 @@ class SwitchSelect(discord.ui.Select):
 
     def __init__(self, guild):
         held = numbers(guild)
+        shown = set(voting_names(guild))
         super().__init__(
             placeholder="Turn one on or off…", min_values=0, max_values=1, row=1,
             options=[
@@ -5438,7 +5511,7 @@ class SwitchSelect(discord.ui.Select):
                     label=f"{name}: {shown_value(name, held[name])}",
                     value=name,
                     description=blurb[:100],
-                ) for name, blurb in VOTING_SWITCHES.items()
+                ) for name, blurb in VOTING_SWITCHES.items() if name in shown
             ],
         )
 
@@ -5468,21 +5541,23 @@ async def open_numbers(interaction, note=None):
     view = StewardView(interaction.user.id)
     view.add_item(NumberSelect(guild))
     view.add_item(SwitchSelect(guild))
-    body = [
-        f"## What {guild.name} votes by",
-        *voting_lines(guild),
-        "-# Each is held inside a range where the rest of the machinery "
-        "still means what it says.",
-    ]
+    head = f"## What {guild.name} votes by\n"
+    tail = ("\n-# Each is held inside a range where the rest of the machinery "
+            "still means what it says.")
+    # The note goes in the part that is never squeezed. It is the sentence
+    # saying what the press just did, and cutting the message at a fixed
+    # length put it first in the queue to be lost -- so the one screen that
+    # confirms a change was the one that stopped confirming it.
     if note:
-        body += ["", note]
+        tail += "\n\n" + note
+    content = (head
+               + voting_block(guild, MESSAGE_LIMIT - len(head) - len(tail))
+               + tail)[:MESSAGE_LIMIT]
     if interaction.response.is_done():
         return await interaction.edit_original_response(
-            content="\n".join(body)[:1990], view=view
+            content=content, view=view
         )
-    await interaction.response.edit_message(
-        content="\n".join(body)[:1990], view=view
-    )
+    await interaction.response.edit_message(content=content, view=view)
 
 
 # ---------- what this place is ----------
@@ -6296,19 +6371,26 @@ class PurgeView(discord.ui.View):
 
 def house_body(guild):
     """The whole of `/house` as one piece of text, so the bell can redraw
-    the screen without anybody running the command a second time."""
+    the screen without anybody running the command a second time.
+
+    Built to a budget rather than cut at the end: what is switched on, and
+    the line saying how many numbers are the house's, are both short and
+    both survive whatever happens: the settings are rendered into whatever
+    is left. The final clamp is a backstop for a server whose name and
+    blocked features are long enough to fill the message on their own, and
+    it never fires on the bare rendering, which is a third of the room.
+    """
     chosen = len(settings.voting_overrides(guild.id))
     tail = ("\n-# These are all the defaults so far: just tell me what you "
             "want changed." if not chosen else
             f"\n-# {chosen} of these numbers are yours; the rest are the "
             f"ones he came with.")
-    return (
-        f"## What {guild.name} has switched on\n"
-        + module_summary(guild)
-        + "\n\n## What it votes by\n"
-        + "\n".join(voting_lines(guild))
-        + tail
-    )
+    tail += bell_note(guild)
+    head = (f"## What {guild.name} has switched on\n"
+            + module_summary(guild)
+            + "\n\n## What it votes by\n")
+    room = MESSAGE_LIMIT - len(head) - len(tail)
+    return (head + voting_block(guild, room) + tail)[:MESSAGE_LIMIT]
 
 
 class BellButton(discord.ui.Button):
@@ -6364,6 +6446,29 @@ class BellButton(discord.ui.Button):
             content=house_body(guild) + note,
             view=house_view(guild, not self.holding),
         )
+
+
+def bell_note(guild):
+    """Why there is no bell to press, when there is not one.
+
+    A server that was here before the bell was has the feature switched on
+    and no role to hold, because nothing makes one but Apply -- and the
+    button is drawn only where the role exists, so that house opens
+    `/house` and finds nothing at all. Meanwhile `/setup` → Roles & votes
+    tells them the bell is picked up under `/house`. That is a circle, and
+    the way out of it was reading the source.
+
+    It goes in the tail rather than the body so the settings are squeezed
+    before it is: it is the one line on the screen that is about something
+    the reader cannot otherwise find out.
+    """
+    if not ringing(guild):
+        return ("\n-# Ballot pings are off here, so no vote mentions "
+                "anybody. `/setup` → Roles & votes turns them back on.")
+    if bell_role(guild) is None:
+        return ("\n-# No bell role here yet: `/setup` → Apply makes one, and "
+                "then this screen grows a button to pick it up.")
+    return ""
 
 
 def house_view(guild, holding):

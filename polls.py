@@ -321,9 +321,19 @@ def decided(poll, size, share, quorum_share):
         result["top"] = top
         return result
     deciding = tally[YES] + tally[NO]
+    if not deciding:
+        # A quorum's worth of people turned up and every one of them said
+        # they had no view. That is an answer about the room and it is not
+        # "no": reporting it as one would put words in the mouths of the
+        # only people who bothered to come, and "no" is a thing somebody
+        # then acts on. It reads as a tie between nothing, which is what it
+        # is -- the same shape a tied choice poll reports.
+        result["answer"] = None
+        result["needed"] = 0
+        return result
     bar = needed(deciding, share)
     result["needed"] = bar
-    result["answer"] = YES if tally[YES] >= bar and deciding else NO
+    result["answer"] = YES if tally[YES] >= bar else NO
     return result
 
 
@@ -331,18 +341,44 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def open_poll(poll, poll_id, hours, channel_id, message_id):
-    """A confirmed draft becoming a poll in a room, in one place.
+def open_poll(poll, poll_id, hours):
+    """A confirmed draft becoming an open poll, in one place.
 
     The window is stamped here rather than at the draft, because a draft
     that sat for fifty minutes should not open with ten minutes left on it.
+
+    It is stamped in the same breath as the status, and that is load
+    bearing: `is_over` reads an open poll with no window as one that is
+    already due, so a poll that is OPEN before it has an `ends_at` is a
+    poll the close loop will shut on its next tick. The card it is going to
+    live on does not exist yet -- posting it is a round trip -- so the room
+    and the message arrive separately, in `posted`. Those two are safe to
+    be missing: nothing closes a poll for the want of them.
     """
     poll["id"] = poll_id
     poll["status"] = OPEN
-    poll["channel_id"] = channel_id
-    poll["message_id"] = message_id
     poll["opened_at"] = _now().isoformat()
     poll["ends_at"] = (_now() + timedelta(hours=hours)).isoformat()
+    return poll
+
+
+def posted(poll, channel_id, message_id):
+    """Where the card for an open poll ended up."""
+    poll["channel_id"] = channel_id
+    poll["message_id"] = message_id
+    return poll
+
+
+def unopen(poll):
+    """Back to a draft, for a poll whose card could not be posted.
+
+    The window goes with it. A draft carrying the closing time of an
+    attempt that failed would open, when somebody pressed again, with
+    whatever was left of a window it never actually had.
+    """
+    poll["status"] = DRAFT
+    poll.pop("opened_at", None)
+    poll.pop("ends_at", None)
     return poll
 
 
