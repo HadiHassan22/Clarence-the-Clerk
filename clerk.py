@@ -10,11 +10,13 @@ Roles:      given by people, not earned at a button. Eugene reads them.
 Proposing: say what should change (title/what/why), Eugene publishes it,
             opens a thread on it to argue in, and runs an anonymous
             ballot.
-Voting:     thresholds count against the roster, not against turnout, so a
-            vote ends the moment its result is settled rather than when the
-            clock runs out. A majority carries most things; a removal wants
-            three quarters. voting.floor_hours is only the backstop for a
-            vote nobody finishes.
+Voting:     thresholds count against the roster rather than turnout unless
+            the house says otherwise, so a vote ends the moment its result
+            is settled rather than when the clock runs out -- and where the
+            house counts against turnout, the ending rule follows it. A
+            majority carries most things; a removal wants all the eligible
+            bar two. voting.floor_hours is only the backstop for a vote
+            nobody finishes.
 At close:   result posted, passed proposals become numbered decisions in
             the record, and the thread -- the argument and the final notes
             both -- is locked and archived where it stands. Choice ballots
@@ -51,6 +53,7 @@ import brain
 import builder
 import duties
 import modules
+import polls
 import powers
 import providers
 import roster
@@ -132,6 +135,7 @@ log = logging.getLogger("clerk")
 COOPERATIVE = "Cooperative"  # holds a vote: whoever picked up a chore
 MEMBER = "Member"            # in the room, no vote; unused while all of
                              # us are in the cooperative
+BELL = "Bell"                # rung when a ballot opens, and never otherwise
 
 # Said to somebody who is not in the cooperative. It names the way in on
 # purpose: a refusal that only says no leaves a new arrival stuck, which is
@@ -281,6 +285,82 @@ def member_role(guild):
     return (
         bindings.role(guild, "member")
         or discord.utils.get(guild.roles, name=MEMBER)
+    )
+
+
+# ---------- the bell ----------
+# One ping, when a new ballot opens, to the people who asked for one. It
+# rides on the ballot's own card and nowhere else: no card in #votes
+# advertising itself, no message before the proposal and none after it.
+#
+# Opt-in on both sides. Somebody who wants telling picks the role up on
+# `/house`; a house that would rather nothing in it was ever pinged turns
+# the whole thing off under `/setup` -> Roles & votes. Neither of those is
+# the default state of anybody: a fresh server has the role and nobody in
+# it, so the first ballot mentions nobody at all.
+
+RINGING = "bell"
+
+
+def bell_role(guild):
+    return (
+        bindings.role(guild, "bell")
+        or discord.utils.get(guild.roles, name=BELL)
+    )
+
+
+def ringing(guild):
+    """Whether this house rings the bell at all.
+
+    On out of the box and harmless there, because the role starts empty:
+    nothing is pinged until somebody asks to be. The switch is for the
+    house that does not want the option to exist, and it is a house-level
+    answer rather than a per-person one, which is why it is not simply a
+    matter of everybody dropping the role.
+    """
+    if guild is None:
+        return False
+    return bool(settings.get(guild.id, RINGING, True))
+
+
+def set_ringing(guild, on):
+    """A house back on the default stops being stored, like every other
+    switch here, so a later change to the default reaches them."""
+    settings.put(guild.id, **{RINGING: None if on else False})
+
+
+def bell_for(guild):
+    """The role a new ballot should ring, or None when there is nobody to
+    ring it for.
+
+    Four ways to be nobody and they all end here: the house switched the
+    bell off, nobody ever made the role, nobody holds it, or there is no
+    server in the question. Each of them means the card goes up exactly as
+    it did before there was a bell, because a mention with nothing behind
+    it is a line of blue text that then has to explain itself.
+    """
+    if guild is None or not ringing(guild):
+        return None
+    role = bell_role(guild)
+    if role is None:
+        return None
+    holders = [m for m in getattr(role, "members", ())
+               if not getattr(m, "bot", False)]
+    return role if holders else None
+
+
+def ring(bell=None):
+    """What a card is allowed to ping: the bell, or nothing.
+
+    Named on every send rather than left to the default, and the reason is
+    not the bell. A proposal's What and Why are somebody else's words drawn
+    straight onto the card, so a proposal that says `@everyone` becomes an
+    `@everyone` unless the message that carries it says otherwise -- and
+    Eugene has Administrator, so Discord will honour it.
+    """
+    return discord.AllowedMentions(
+        everyone=False, users=False,
+        roles=[bell] if bell is not None else False,
     )
 
 
@@ -743,6 +823,31 @@ def is_blind(bill):
     return bill.get("kind") in ("invite", "kick")
 
 
+def removal_bar(guild, bill):
+    """What carries a removal, and how many people that is out of.
+
+    Not a share of anything, and deliberately so: it is a count of the
+    people who would have to be convinced -- all of them bar a couple --
+    which is also why a house counting against turnout does not move it. A
+    removal settled among whoever turned up is three people showing
+    somebody the door on a quiet Tuesday, and this bar exists to be
+    unreachable that way.
+
+    Eligibility is snapshotted at filing and intersected with the current
+    keyholders, so a shrinking house cannot lower the bar mid-floor, and a
+    cold member cache cannot either.
+    """
+    snapshot = set(bill.get("eligible_ids") or [])
+    current = {
+        m.id for m in getattr(guild, "members", ())
+        if in_cooperative(m) and not m.bot and m.id != bill.get("target_id")
+    }
+    eligible = (snapshot & current) if snapshot else current
+    held = numbers(guild)
+    need = max(len(eligible) - held["removal_spare"], held["kick_min_yes"])
+    return need, len(eligible)
+
+
 def vote_state(guild, bill):
     """Everything the ballot needs to describe itself right now.
 
@@ -752,22 +857,28 @@ def vote_state(guild, bill):
     words -- the ballot itself, the receipt, the nudge -- branches on that
     one key rather than keeping a second set of sums of its own.
 
-    Every vote is the cooperative's and is carried against the roster, so
-    `need` is a count of yes votes and not voting counts as a no.
+    `need` is a count of yes votes and `counted` is what they are counted
+    against: the roster out of the box, so not voting is a no, or the
+    ballots cast where the house has said so. `clinch` is what ends the
+    vote where it stands -- see `vote_settled`, which is the only place the
+    difference between the two shows.
     """
     ballots = bill.get("ballots", {})
     roll = electorate(guild, bill)
     size = len(roll)
     tier = vote_tier(bill)
     figures = numbers(guild)
+    share = roster.share_for(tier, figures)
     yes = sum(1 for v in ballots.values() if v == "yes")
     no = sum(1 for v in ballots.values() if v == "no")
     abstain = sum(1 for v in ballots.values() if v == "abstain")
+    against = roster.counted(size, len(ballots), abstain, figures)
     st = {
         "size": size,
+        "counted": against,
         "tier": tier,
         "audience": COOPERATIVE_ONLY,
-        "need": roster.required(size, tier, roster.share_for(tier, figures)),
+        "need": roster.required(against, tier, share),
         "yes": yes,
         "no": no,
         "abstain": abstain,
@@ -777,9 +888,22 @@ def vote_state(guild, bill):
         "counts": {},
         "leader": 0,
         "leaders": [],
-        "clinch": 0,
+        # The bar measured against the widest this vote's denominator could
+        # ever get. Counted against the roster that is the bar itself and
+        # nothing changes; counted against turnout it is what the whole
+        # roll would have asked for, because every ballot still to come
+        # widens the denominator under a threshold already met.
+        "clinch": roster.required(
+            roster.most_counted(size, abstain, figures), tier, share),
         "round": bill.get("round", 1),
     }
+    if bill.get("kind") == "kick":
+        # A removal is carried on its own bar rather than on its tier's
+        # share, and the ballot has to quote the number the close will use.
+        # It read the fundamental share here and the bar at the close, so a
+        # removal could say it needed six and pass on five.
+        st["need"], st["counted"] = removal_bar(guild, bill)
+        st["clinch"] = st["need"]
     if st["options"]:
         counts = {o: 0 for o in st["options"]}
         for v in ballots.values():
@@ -792,7 +916,9 @@ def vote_state(guild, bill):
         # Passage is a majority of votes cast, counted at close -- but an
         # option past half the whole roster has that majority already,
         # whoever else turns up, so this is the count that ends the vote
-        # where it stands.
+        # where it stands. Neither counting switch reaches this: a choice
+        # ballot is already decided among the votes cast, and there is no
+        # abstain button to step out of them.
         st["clinch"] = size // 2 + 1
     return st
 
@@ -1012,7 +1138,10 @@ async def paint_floor(guild, bill):
         # Somebody who deletes a live ballot must not thereby delete the
         # vote, so it goes back up and the proposal is told where.
         try:
-            fresh = await floor.send(view=view)
+            # Put back silently. The bell is rung when a proposal opens,
+            # not when a card comes back from being deleted: whoever asked
+            # to be told about this vote was told about it days ago.
+            fresh = await floor.send(view=view, allowed_mentions=ring())
         except discord.HTTPException as e:
             return log.warning(f"could not put the floor card for bill "
                                f"{bill['no']} back up: {e!r}")
@@ -1021,7 +1150,11 @@ async def paint_floor(guild, bill):
         await update_bill(guild, bill)
         return log.info(f"floor card for bill {bill['no']} was gone; reposted")
     try:
-        await msg.edit(view=view)
+        # A card is edited on every vote, at close, and again at every
+        # boot. None of those is a new proposal, so none of them may ping
+        # anybody: an edit that is allowed a mention is a bell that rings
+        # once a minute on a busy vote.
+        await msg.edit(view=view, allowed_mentions=ring())
     except discord.HTTPException:
         # A ballot posted before the proposal became one card cannot be
         # edited into one: Discord will not put the layout on a message
@@ -1030,7 +1163,8 @@ async def paint_floor(guild, bill):
         # Without the proposal's own words, which are already up there in
         # the messages that ballot was posted under.
         try:
-            await msg.edit(content=ballot_content(guild, bill, text=False))
+            await msg.edit(content=ballot_content(guild, bill, text=False),
+                           allowed_mentions=ring())
         except discord.HTTPException as e:
             log.warning(f"could not repaint the floor card for bill "
                         f"{bill['no']}: {e!r}")
@@ -1084,9 +1218,17 @@ async def repaint_cards(guild):
 def vote_settled(st):
     """Whether a vote's result can still change.
 
-    Passing is settled the instant enough yes votes exist: the threshold is a
-    share of the roster, not of turnout, so once it is met no later ballot can
-    take it back. Failing waits for everyone, because a no can still become a
+    Passing is settled the instant the yes votes clear `clinch`, which is
+    the threshold measured against the widest denominator this vote could
+    still end up with. Counting against the roster that is the threshold
+    itself, so the fifth yes of eight ends it where it stands. Counting
+    against turnout it is what the whole roll would have asked for, because
+    every ballot still to come widens the denominator underneath a bar that
+    has already been met -- so a turnout vote is called early only where
+    the yes votes alone would have carried the whole house, and otherwise
+    waits, which is the price of that rule and not a bug in it.
+
+    Failing waits for everyone either way, because a no can still become a
     yes while the vote is open -- an unreachable threshold is only genuinely
     unreachable once nobody is left to change their mind.
 
@@ -1106,7 +1248,7 @@ def vote_settled(st):
         # An option past half the room has a majority of however many end
         # up voting, whoever else turns up.
         return st["leader"] >= st["clinch"]
-    return st["yes"] >= st["need"]
+    return st["yes"] >= st["clinch"]
 
 
 async def maybe_autoclose(guild, bill):
@@ -1144,6 +1286,14 @@ def standing_line(guild, bill, carried="It already has what it needs."):
                 f"**{st['leaders'][0]}** leads with {st['leader']}.")
     if is_blind(bill):
         return f"{st['voted']} of {st['size']} have voted."
+    if numbers(guild)[roster.TURNOUT] and not vote_settled(st):
+        # Counted against turnout there is no fixed distance left to run: a
+        # yes lifts the denominator as well as the count, so "one more
+        # carries it" is a promise the arithmetic will not keep -- at three
+        # cast it takes two, and the third yes makes it three of four.
+        return (f"{st['yes']} of the {st['counted']} cast so far are yes and "
+                f"it needs {st['need']} of them, but the bar moves with "
+                f"every ballot that arrives.")
     left = max(st["need"] - st["yes"], 0)
     if left == 0:
         return carried
@@ -1196,11 +1346,17 @@ async def cast_ballot(interaction, choice=None, index=None):
         )
     ballots[uid] = choice
     await update_bill(interaction.guild, bill)
-    note = (
-        "Counted as present and undecided; it goes to neither side."
-        if choice == "abstain"
-        else "You can change it until the vote closes."
-    )
+    # What an abstention does is the one thing on this receipt a house can
+    # change, and the person casting one is owed the version in force here
+    # rather than the one the clerk shipped with.
+    if choice != "abstain":
+        note = "You can change it until the vote closes."
+    elif numbers(interaction.guild)[roster.ABSTAIN_OUT]:
+        note = ("Counted as present and undecided, and out of the count "
+                "altogether: it lowers what carries this rather than "
+                "standing in the way of it.")
+    else:
+        note = "Counted as present and undecided; it goes to neither side."
     await interaction.response.send_message(
         f"Your ballot: **{choice}**. {note} "
         f"{standing_line(interaction.guild, bill, carried='That carries it.')} "
@@ -1243,8 +1399,11 @@ class MemberBallotRow(discord.ui.ActionRow):
     """The ballot for admitting someone. Three choices instead of two,
     because in a house this small "I do not know them well enough to say"
     is an honest answer, and the two-button ballot made it look like
-    absence. It goes to neither side: passage is still yes against no,
-    which is what the standing orders say."""
+    absence. It goes to neither side: passage is still yes against the bar,
+    which is what the standing orders say. Whether it also comes out of the
+    count is the house's -- `abstain_steps_out` -- and this is the one
+    ballot in the building that offers the button, so it is the one that
+    setting is really about."""
 
     @discord.ui.button(
         label="Yes", emoji="✅",
@@ -1391,8 +1550,19 @@ async def file_bill(guild, author, title, what, why, kind="ordinary",
     # result. The buttons are the only thing that varies by kind; the card
     # above them is painted from the proposal itself, so a ballot shows
     # what it needs from its first second rather than once somebody votes.
+    bell = bell_for(guild)
+    segments = floor_segments(guild, record)
+    if bell is not None:
+        # The ping rides on the card. A mention needs to be in the text to
+        # be a mention at all, so it goes on the end of the line that
+        # already says where the ballot stands rather than earning a line
+        # of its own -- and it is written here, once, at the open. Every
+        # repaint after this is drawn from the proposal alone, so the
+        # mention is gone by the first vote and no edit can ring it again.
+        segments[-1] += f" · {bell.mention}"
     card = await floor.send(
-        view=Card(floor_segments(guild, record), ballot_rows(record))
+        view=Card(segments, ballot_rows(record)),
+        allowed_mentions=ring(bell),
     )
     record["message_id"] = card.id
     record["ballot_message_id"] = card.id
@@ -1470,6 +1640,24 @@ def invite_what(guild, name, discord_id=""):
 def removal_what(guild, name):
     """The What on a removal: who, and where from."""
     return f"{name} will be removed from {guild.name}."
+
+
+def removal_weight(guild):
+    """What a removal costs, said before anybody names a person.
+
+    Both doors onto a removal say it, so it is written once and in this
+    house's own figures. One of them had the window and the bar typed out
+    as words, which stayed the shipped 72 hours and all-but-two however the
+    house had since voted -- a sentence quoting a rule nothing enforced,
+    to the person about to use it.
+    """
+    held = numbers(guild)
+    spare = held["removal_spare"]
+    return (
+        "Removal is the cooperative's heaviest instrument: a "
+        f"{held['removal_hours']:g}-hour window, and it passes only if all "
+        f"eligible voters but {spare} say yes."
+    )
 
 
 class BillModal(discord.ui.Modal, title="Make a proposal"):
@@ -1702,9 +1890,7 @@ class SubmitBillView(discord.ui.View):
                 "That one is the cooperative's.", ephemeral=True
             )
         await interaction.response.send_message(
-            "Removal is the cooperative's heaviest instrument: a "
-            f"{numbers(interaction.guild)['removal_hours']:g}-hour window, "
-            "and it passes only if all eligible voters but two say yes.",
+            removal_weight(interaction.guild),
             view=KickTargetView(),
             ephemeral=True,
         )
@@ -2655,52 +2841,47 @@ async def execute_kick(guild, bill):
 async def close_bill(guild, bill):
     if bill.get("options"):
         return await close_multi(guild, bill)
-    ballots = bill.get("ballots", {})
-    yes = sum(1 for v in ballots.values() if v == "yes")
-    no = sum(1 for v in ballots.values() if v == "no")
-    abstain = sum(1 for v in ballots.values() if v == "abstain")
+    # The same sums the ballot has been showing all along. They used to be
+    # counted again here, which is how a close can quietly rule by a rule
+    # the line under the buttons never mentioned.
+    st = vote_state(guild, bill)
+    yes, no, abstain = st["yes"], st["no"], st["abstain"]
     bill["tally"] = {"yes": yes, "no": no}
     if bill.get("kind") == "invite":
-        # Recorded, and not subtracted from anything. The threshold is a
-        # share of the roster, so an abstention neither carries the door
-        # nor lowers what carries it: it is a seat that showed up and
-        # said nothing, and it lands where silence lands. Printed because
-        # "4 yes of 7, and 2 of the rest were present" is a different
-        # story from "4 yes of 7, and 3 said no".
+        # Recorded, and subtracted from the count only where the house has
+        # asked for that. Out of the box a threshold is a share of the
+        # roster, so an abstention neither carries the door nor lowers what
+        # carries it: it is a seat that showed up and said nothing, and it
+        # lands where silence lands. Printed either way, because "4 yes of
+        # 7, and 2 of the rest were present" is a different story from "4
+        # yes of 7, and 3 said no".
         bill["tally"]["abstain"] = abstain
 
     if bill.get("kind") == "kick":
-        # eligibility is snapshotted at filing and intersected with current
-        # keyholders, so a shrinking house cannot lower the bar mid-floor,
-        # and a cold member cache cannot either
-        snapshot = set(bill.get("eligible_ids") or [])
-        current = {
-            m.id for m in guild.members
-            if in_cooperative(m) and not m.bot and m.id != bill.get("target_id")
-        }
-        eligible = (snapshot & current) if snapshot else current
-        required = max(len(eligible) - 2, numbers(guild)["kick_min_yes"])
-        bill["threshold"] = {"eligible": len(eligible), "required": required}
-        passed = yes >= required
+        bill["threshold"] = {"eligible": st["counted"], "required": st["need"]}
+        passed = yes >= st["need"]
         # The bar goes on the line with the count, the same as every other
-        # close. A removal's threshold is not a share of the roster, so
+        # close. A removal's threshold is not a share of anything, so
         # without it printed there is no reading 2 / 3 correctly.
-        line = f"✅ {yes} / ❌ {no} · needed {required} of {len(eligible)}"
+        line = f"✅ {yes} / ❌ {no} · needed {st['need']} of {st['counted']}"
         await finalize_bill(guild, bill, passed, line)
         if passed:
             await execute_kick(guild, bill)
         return
 
-    st = vote_state(guild, bill)
     line = f"✅ {yes} / ❌ {no}"
     if bill.get("kind") == "invite":
         line += f" / 🤍 {abstain}"
     if st["size"] > 0:
+        # `counted` beside the roster, because they are the same number
+        # only while the house counts against the roster, and a record that
+        # says "needed 3 of 5" a year from now has to say which five.
         bill["threshold"] = {
-            "roster": st["size"], "required": st["need"], "tier": st["tier"],
+            "roster": st["size"], "counted": st["counted"],
+            "required": st["need"], "tier": st["tier"],
         }
         passed = yes >= st["need"]
-        line += f" · needed {st['need']} of {st['size']}"
+        line += f" · needed {st['need']} of {st['counted']}"
     else:
         # A cold member cache would otherwise read as an empty roster and
         # fail everything. Falling back to the old rule is wrong slowly;
@@ -2715,7 +2896,13 @@ async def close_multi(guild, bill):
     """Choice ballots: round 1 needs a strict majority of votes cast;
     otherwise a runoff opens with the leading options, decided by
     plurality. Ties in the runoff fail; the status quo never has to
-    defend itself."""
+    defend itself.
+
+    None of that is the house's to set, and the counting switches do not
+    reach it. A choice ballot is already decided among the votes cast, and
+    a share above a majority here would not raise a bar -- it would only
+    send every ballot to a runoff that a plurality settles anyway, which is
+    a threshold that reads as strict and binds on nothing."""
     options = bill["options"]
     counts = {o: 0 for o in options}
     for v in bill.get("ballots", {}).values():
@@ -2764,6 +2951,617 @@ async def close_multi(guild, bill):
 
     await update_bill(guild, bill)
     log.info(f"runoff opened: proposal no. {bill['no']} ({tally_line})")
+
+
+# ---------- asking the whole server ----------
+# The one thing he runs that reaches past the cooperative, and it is built
+# to be unable to reach back. A poll has its own store, its own room and
+# its own close; it earns no number, touches no record, and none of the
+# functions above are asked about one. That separation is the feature. The
+# audience split was taken out of this file once for being threaded through
+# a single pipeline, and the way to have it back without having that back
+# is for a poll to share nothing with a proposal but the building.
+#
+# What that costs is a second set of small functions down here that look a
+# little like the ones above. That is the price, it is paid on purpose, and
+# it is cheaper than one `if audience ==` in `close_bill`.
+
+POLL_WHAT = 400
+POLL_WHY = 200
+
+
+def polls_room(guild):
+    """The room community polls go in, or None if the house has not bound
+    one. Never falls back to the floor: a poll in the cooperative's room is
+    the exact confusion this feature is shaped to avoid."""
+    return room(guild, "polls")
+
+
+def poll_room_note(guild):
+    """Why a poll cannot go up here, or None when it can."""
+    if not module_live(guild, "polls"):
+        return module_note(guild, "polls")
+    if polls_room(guild) is None:
+        return ("There is no room bound for the `polls` job, so a community "
+                "poll has nowhere to go. An admin can point me at one with "
+                "`/setup`.")
+    return None
+
+
+def poll_audience(guild):
+    """How many people a poll is being put to.
+
+    Everybody here who is not a bot, and no other test. Not the roll, not
+    who is awake, not who has a role: the quorum is a share of the room,
+    and the room is the room. Away is a cooperative idea and has no meaning
+    for somebody who never signed up to be counted in the first place.
+    """
+    if guild is None:
+        return 0
+    return sum(1 for m in guild.members if not m.bot)
+
+
+def poll_figures(guild):
+    held = numbers(guild)
+    return held["poll_share"], held["poll_quorum_share"], held["poll_hours"]
+
+
+def poll_quorum(guild):
+    _share, quorum_share, _hours = poll_figures(guild)
+    return polls.quorum(poll_audience(guild), quorum_share)
+
+
+def poll_text(poll):
+    """The question as the card shows it, and the whole of it when that is
+    less. Same bargain the floor makes: a room of polls is a list, and a
+    question nobody scrolls past is a question nobody answers."""
+    question = (poll.get("question") or "").strip()
+    why = (poll.get("why") or "").strip()
+    shown_q, cut_q = clip(question, POLL_WHAT)
+    shown_why, cut_why = clip(why, POLL_WHY)
+    lines = [line for line in (f"### {shown_q}",
+                               f"-# {shown_why}" if shown_why else "") if line]
+    return "\n".join(lines), (cut_q or cut_why)
+
+
+def poll_standing(guild, poll):
+    """Where an open poll is, in one line: turnout against the quorum, what
+    has been said, and when it shuts.
+
+    The quorum is on the line because it is the only number that decides
+    whether any of this gets reported, and a poll four answers short of
+    counting looks identical to one that is fine without it.
+    """
+    share, quorum_share, _hours = poll_figures(guild)
+    size = poll_audience(guild)
+    tally = polls.counts(poll)
+    voted = sum(tally.values())
+    floor = polls.quorum(size, quorum_share)
+    said = " · ".join(
+        f"{'🤍 ' if name == polls.ABSTAIN else ''}{name} {count}"
+        for name, count in tally.items() if name != polls.ABSTAIN or count
+    )
+    parts = [f"`{bar(voted, floor)}` {voted} of {size} answered"]
+    parts.append("enough to report" if voted >= floor
+                 else f"{floor - voted} more to report")
+    if said:
+        parts.append(said)
+    ends = poll.get("ends_at")
+    if ends:
+        try:
+            when = int(datetime.fromisoformat(ends).timestamp())
+            parts.append(f"closes <t:{when}:R>")
+        except (TypeError, ValueError):
+            # A card that will not draw is a poll nobody can answer. The
+            # closing time is the one thing on this line that is worth less
+            # than the line itself, so it is the one thing that goes.
+            log.warning(f"poll {poll.get('id')} has an unreadable ends_at")
+    return " · ".join(parts)
+
+
+def poll_verdict(guild, poll):
+    """What a closed poll came to, in the words it is reported in.
+
+    Never "passed" and never "carried". Those words belong to the
+    cooperative and mean somebody has to go and do something; a poll means
+    the room was asked and this is what it said.
+    """
+    result = poll.get("result") or {}
+    tally = result.get("counts") or {}
+    said = " · ".join(f"{name} {count}" for name, count in tally.items()
+                      if name != polls.ABSTAIN or count)
+    if not result.get("quorate"):
+        head = (f"**No result.** {result.get('voted', 0)} of "
+                f"{result.get('room', 0)} answered, and "
+                f"{result.get('quorum', 0)} were needed for this to report "
+                f"anything.")
+        # The split goes under it even here. It is not a result and must
+        # not read as one, but a poll that fell four short is worth
+        # knowing about, and hiding the numbers would only mean somebody
+        # asks the room the same question again next week.
+        return f"{head}\n-# {said}" if said else head
+    answer = result.get("answer")
+    if answer is None:
+        leaders = result.get("leaders") or []
+        head = (f"**Tied**, between {' and '.join(leaders)}."
+                if leaders else "**No answer.** Nobody chose anything.")
+    else:
+        head = f"**The room said: {answer}.**"
+    tail = f"{result['voted']} of {result['room']} answered · {said}"
+    if result.get("needed"):
+        tail += f" · {result['needed']} of those who chose carried it"
+    return f"{head}\n-# {tail}"
+
+
+def poll_segments(guild, poll):
+    """The whole card, open or closed. One message per poll from the moment
+    it goes up to the result on it, redrawn and never added to."""
+    body, _cut = poll_text(poll)
+    who = poll.get("author") or "somebody"
+    if poll.get("status") == polls.CLOSED:
+        return [body, f"-# Asked by {who}. Closed.",
+                poll_verdict(guild, poll)]
+    return [
+        body,
+        f"-# Asked by {who}. Anyone here can answer, answers are "
+        f"anonymous, and nothing here binds anybody.",
+        poll_standing(guild, poll),
+    ]
+
+
+async def cast_poll_answer(interaction, choice=None, index=None):
+    """Record one answer on a community poll, or retract it.
+
+    Everyone in the server may answer and that is the whole of the gate --
+    but it is still a gate, and it is asked here rather than left to the
+    channel's permissions, for the same reason `may_vote` is: a card that
+    survived a restart or a room whose overwrites drifted must not become a
+    way into something.
+    """
+    guild = interaction.guild
+    poll = polls.by_field(guild.id, "message_id", interaction.message.id)
+    if poll is None or poll.get("status") != polls.OPEN:
+        return await interaction.response.send_message(
+            "This poll has closed.", ephemeral=True
+        )
+    if getattr(interaction.user, "bot", False):
+        return await interaction.response.send_message(
+            "Bots do not answer polls.", ephemeral=True
+        )
+    if index is not None:
+        options = poll.get("options") or []
+        if index >= len(options):
+            return await interaction.response.send_message(
+                "That answer is not on this poll.", ephemeral=True
+            )
+        choice = options[index]
+    if choice is not None and not polls.may_answer(poll, choice):
+        return await interaction.response.send_message(
+            "That answer is not on this poll.", ephemeral=True
+        )
+    async with _state_lock:
+        fresh = polls.by_id(guild.id, poll["id"])
+        if fresh is None or fresh.get("status") != polls.OPEN:
+            return await interaction.response.send_message(
+                "This poll has closed.", ephemeral=True
+            )
+        moved = polls.cast(fresh, interaction.user.id, choice)
+        if moved:
+            polls.put(guild.id, fresh)
+        poll = fresh
+    if choice is None:
+        await interaction.response.send_message(
+            "Answer withdrawn." if moved else "You have no answer to withdraw.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"Your answer: **{choice}**. You can change it until the poll "
+            f"closes, and nobody ever sees how you answered.",
+            ephemeral=True,
+        )
+    if moved:
+        await paint_poll(guild, poll)
+
+
+class PollRow(discord.ui.ActionRow):
+    """A yes/no poll. Abstain is on it because turning up to say nothing is
+    what tells a quorum apart from a room that was not listening."""
+
+    @discord.ui.button(
+        label="Yes", emoji="✅",
+        style=discord.ButtonStyle.success, custom_id="clerk:poll_yes",
+    )
+    async def yes(self, interaction, button):
+        await cast_poll_answer(interaction, polls.YES)
+
+    @discord.ui.button(
+        label="No", emoji="❌",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:poll_no",
+    )
+    async def no(self, interaction, button):
+        await cast_poll_answer(interaction, polls.NO)
+
+    @discord.ui.button(
+        label="No view", emoji="🤍",
+        style=discord.ButtonStyle.secondary, custom_id="clerk:poll_abstain",
+    )
+    async def abstain(self, interaction, button):
+        await cast_poll_answer(interaction, polls.ABSTAIN)
+
+    @discord.ui.button(
+        label="Withdraw", style=discord.ButtonStyle.secondary,
+        custom_id="clerk:poll_retract",
+    )
+    async def retract(self, interaction, button):
+        await cast_poll_answer(interaction)
+
+
+class PollChoiceRows(list):
+    """A choice poll: one button per answer, and the same two greys on the
+    end. A bare instance with dummy labels routes presses after a restart,
+    exactly as `MultiBallotRows` does for a ballot."""
+
+    def __init__(self, options=None):
+        super().__init__()
+        labels = options if options is not None else [
+            f"Option {i + 1}" for i in range(polls.MAX_OPTIONS)
+        ]
+        row = discord.ui.ActionRow()
+        for i, label in enumerate(labels[:polls.MAX_OPTIONS]):
+            if len(row.children) == 5:
+                self.append(row)
+                row = discord.ui.ActionRow()
+            button = discord.ui.Button(
+                label=str(label)[:80],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"clerk:pollopt_{i}",
+            )
+            button.callback = self._make_callback(i)
+            row.add_item(button)
+        for label, emoji, custom_id, handler in (
+            ("No view", "🤍", "clerk:pollopt_abstain", self._abstain),
+            ("Withdraw", None, "clerk:pollopt_retract", self._retract),
+        ):
+            if len(row.children) == 5:
+                self.append(row)
+                row = discord.ui.ActionRow()
+            button = discord.ui.Button(
+                label=label, emoji=emoji,
+                style=discord.ButtonStyle.secondary, custom_id=custom_id,
+            )
+            button.callback = handler
+            row.add_item(button)
+        self.append(row)
+
+    @property
+    def children(self):
+        return [button for row in self for button in row.children]
+
+    def _make_callback(self, index):
+        async def callback(interaction):
+            await cast_poll_answer(interaction, index=index)
+        return callback
+
+    async def _abstain(self, interaction):
+        await cast_poll_answer(interaction, polls.ABSTAIN)
+
+    async def _retract(self, interaction):
+        await cast_poll_answer(interaction)
+
+
+def poll_rows(poll):
+    if poll.get("status") == polls.CLOSED:
+        # A closed poll keeps its card and loses its buttons. Leaving them
+        # there is a room full of things that look answerable.
+        return []
+    if poll.get("options"):
+        return PollChoiceRows(poll["options"])
+    return [PollRow()]
+
+
+async def paint_poll(guild, poll):
+    """Redraw a poll's card where it stands.
+
+    A card somebody deleted is not rebuilt. A proposal is the cooperative's
+    business and gets reposted; a poll that somebody with Manage Messages
+    removed from a public room has been taken down, and putting it back is
+    arguing with them.
+    """
+    channel = guild.get_channel(poll.get("channel_id") or 0) or polls_room(guild)
+    if channel is None or not poll.get("message_id"):
+        return
+    try:
+        message = await channel.fetch_message(poll["message_id"])
+    except (discord.NotFound, discord.Forbidden):
+        return
+    except discord.HTTPException as e:
+        log.warning(f"could not fetch poll {poll.get('id')}: {e!r}")
+        return
+    try:
+        await message.edit(
+            view=Card(poll_segments(guild, poll), poll_rows(poll)),
+            allowed_mentions=ring(),
+        )
+    except discord.HTTPException as e:
+        log.warning(f"could not repaint poll {poll.get('id')}: {e!r}")
+
+
+async def open_confirmed_poll(guild, poll):
+    """Put a confirmed draft in front of the server.
+
+    The only thing in this file that writes in the polls room, and it does
+    it exactly once per poll: the close is an edit to this card and there
+    is no other message. A room whose whole content is the polls somebody
+    opened is one where an unread channel means a question is waiting.
+    """
+    channel = polls_room(guild)
+    if channel is None:
+        return None
+    _share, _quorum_share, hours = poll_figures(guild)
+    async with _state_lock:
+        fresh = polls.by_id(guild.id, poll["id"]) if poll.get("id") else None
+        if fresh is not None and fresh.get("status") != polls.DRAFT:
+            # Two presses on one confirmation. The second must not open a
+            # second poll, and must not be told the first one failed.
+            return fresh
+        poll = fresh or poll
+        poll["status"] = polls.OPEN
+        polls.put(guild.id, poll)
+    # Sent before the window is stamped so a poll that cannot be posted --
+    # no permissions, a deleted room -- never becomes an open poll nobody
+    # can answer. Its status goes back if this throws.
+    try:
+        card = await channel.send(
+            view=Card(poll_segments(guild, poll), poll_rows(poll)),
+            allowed_mentions=ring(),
+        )
+    except discord.HTTPException as e:
+        log.warning(f"could not post poll {poll.get('id')}: {e!r}")
+        async with _state_lock:
+            poll["status"] = polls.DRAFT
+            polls.put(guild.id, poll)
+        return None
+    async with _state_lock:
+        polls.open_poll(poll, poll["id"], hours, channel.id, card.id)
+        polls.put(guild.id, poll)
+    # Painted once more so the card carries its own closing time, which is
+    # only known once the window has been stamped on it.
+    await paint_poll(guild, poll)
+    log.info(f"community poll opened: no. {poll['id']} by {poll.get('author')}")
+    return poll
+
+
+async def close_poll(guild, poll):
+    """Count a poll, seal it, and say what the room said on its own card."""
+    share, quorum_share, _hours = poll_figures(guild)
+    async with _state_lock:
+        fresh = polls.by_id(guild.id, poll["id"])
+        if fresh is None or fresh.get("status") != polls.OPEN:
+            return None
+        result = polls.decided(fresh, poll_audience(guild), share, quorum_share)
+        polls.close(fresh, result)
+        polls.put(guild.id, fresh)
+        poll = fresh
+    await paint_poll(guild, poll)
+    log.info(f"community poll closed: no. {poll['id']} "
+             f"({result.get('answer')!r}, {result['voted']}/{result['room']})")
+    return poll
+
+
+@tasks.loop(seconds=60)
+async def check_polls():
+    """Shut the polls whose windows have run out, and sweep the drafts
+    nobody confirmed. Its own loop rather than a branch inside the floor's,
+    so a house with polls off runs none of it and a poll that throws cannot
+    stop a proposal closing."""
+    for guild in houses():
+        try:
+            if not module_live(guild, "polls"):
+                continue
+            polls.sweep(guild.id)
+            for poll in polls.due(guild.id):
+                try:
+                    await close_poll(guild, poll)
+                except Exception as e:
+                    log.error(f"failed to close poll {poll.get('id')}: {e!r}")
+        except Exception as e:
+            log.error(f"the poll check failed in {guild.id}: {e!r}")
+
+
+# ---------- agreeing to put one up ----------
+# A proposal is filed the moment somebody says what they want, with no
+# confirmation step, because it goes to eight people who all signed up to
+# read it. This one does not. It goes in front of everybody in the
+# building, most of whom never asked to be asked anything, and the person
+# opening it should have seen that sentence before it happens rather than
+# after. So it is the one thing in here that is agreed to twice, and the
+# card below is where the second time happens -- in the place it was asked
+# for, whether that is a slash command or a conversation.
+
+def poll_preview(guild, poll):
+    """What they are agreeing to, with the numbers filled in.
+
+    The audience is a count and not a word, because "everyone" reads as an
+    abstraction and "142 people" does not, and the difference between the
+    two is the whole reason this card exists.
+    """
+    size = poll_audience(guild)
+    floor = poll_quorum(guild)
+    _share, _quorum_share, hours = poll_figures(guild)
+    inside = len(cooperative_members(guild))
+    answers = poll.get("options") or [polls.YES, polls.NO]
+    body, _cut = poll_text(poll)
+    return "\n".join([
+        f"## This goes to the whole of {guild.name}",
+        f"Everyone here can see it and answer it: **{size} people**, not "
+        f"the {inside} on the roll. It decides nothing. No proposal is "
+        f"filed, nothing reaches the record, and nobody is bound by the "
+        f"answer.",
+        "",
+        body,
+        f"-# Answers: {' · '.join(answers)} · open {hours:g}h · "
+        f"{floor} answers needed before anything is reported",
+    ])
+
+
+class PollConfirm(discord.ui.View):
+    """The second yes. Persistent, because the conversational half of this
+    is a real message in a real room, and a deploy between asking and
+    agreeing must not leave a live button with nothing behind it."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _draft(self, interaction):
+        """The draft this card belongs to, having checked who is pressing.
+
+        Three questions, and all three are asked on the press rather than
+        trusted from when the card went up: it is still a draft, the
+        presser is the person who asked for it, and they are still in the
+        cooperative. The last one matters because a card can sit for an
+        hour, and a poll opened in somebody's name after they left the roll
+        is a poll nobody is answerable for.
+        """
+        guild = interaction.guild
+        poll = polls.by_field(guild.id, "draft_message_id", interaction.message.id)
+        if poll is None or poll.get("status") != polls.DRAFT:
+            await interaction.response.edit_message(
+                content="That draft is no longer waiting.", view=None
+            )
+            return None
+        if interaction.user.id != poll.get("author_id"):
+            await interaction.response.send_message(
+                "This one is not yours to put up. Whoever asked for it "
+                "agrees to it.", ephemeral=True,
+            )
+            return None
+        if not in_cooperative(interaction.user):
+            await interaction.response.send_message(
+                "A community poll is opened by the cooperative, and you are "
+                "not on the roll any more.", ephemeral=True,
+            )
+            return None
+        return poll
+
+    @discord.ui.button(
+        label="Put it to the server", style=discord.ButtonStyle.primary,
+        custom_id="clerk:poll_confirm",
+    )
+    async def confirm(self, interaction, button):
+        poll = await self._draft(interaction)
+        if poll is None:
+            return
+        note = poll_room_note(interaction.guild)
+        if note:
+            return await interaction.response.edit_message(
+                content=note, view=None
+            )
+        await interaction.response.edit_message(
+            content="Putting it up…", view=None
+        )
+        opened = await open_confirmed_poll(interaction.guild, poll)
+        if opened is None:
+            return await interaction.edit_original_response(
+                content="I could not post it. Check I can write in the "
+                        "polls room.",
+            )
+        where = polls_room(interaction.guild)
+        await interaction.edit_original_response(
+            content=f"It is up in {where.mention}, open to everyone here.",
+        )
+
+    @discord.ui.button(
+        label="Discard", style=discord.ButtonStyle.secondary,
+        custom_id="clerk:poll_discard",
+    )
+    async def discard(self, interaction, button):
+        poll = await self._draft(interaction)
+        if poll is None:
+            return
+        async with _state_lock:
+            kept = [p for p in polls.load(interaction.guild.id)
+                    if p.get("id") != poll.get("id")]
+            polls.save(interaction.guild.id, kept)
+        await interaction.response.edit_message(
+            content="Discarded. Nothing was posted.", view=None
+        )
+
+
+async def offer_poll(guild, author, question, why=None, options=None):
+    """Write a draft down and return it, ready to be confirmed.
+
+    Stored rather than held in memory so that the hour a draft may sit for
+    survives a redeploy: what is cheap to rebuild is the card, and what is
+    not is the question somebody typed.
+    """
+    async with _state_lock:
+        poll = polls.draft(author.id, author.display_name, question, why, options)
+        poll["id"] = polls.next_id(guild.id)
+        polls.put(guild.id, poll)
+    return poll
+
+
+async def send_poll_confirm(guild, poll, send):
+    """Put the confirmation card up through whichever door asked for it,
+    and remember which message it is so the button can find its draft.
+
+    `send` is the one difference between the two doors -- an ephemeral
+    reply to a slash command, a message in the room for a conversation --
+    and it returns the message it sent.
+    """
+    message = await send(poll_preview(guild, poll), PollConfirm())
+    if message is not None:
+        async with _state_lock:
+            fresh = polls.by_id(guild.id, poll["id"]) or poll
+            fresh["draft_message_id"] = message.id
+            polls.put(guild.id, fresh)
+    return message
+
+
+class PollModal(discord.ui.Modal, title="Ask the whole server"):
+    """The form. It says who it is going to before the boxes, because the
+    confirmation after it is a second chance to notice and this is the
+    first."""
+
+    question = discord.ui.TextInput(
+        label="The question, as the server will read it",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        placeholder="Should we move game night to Saturdays?",
+    )
+    why = discord.ui.TextInput(
+        label="Any context. Blank is fine.",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=400,
+    )
+    choices = discord.ui.TextInput(
+        label="Answers, one per line. Blank for yes/no.",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=400,
+        placeholder="Saturday\nSunday\nLeave it where it is",
+    )
+
+    async def on_submit(self, interaction):
+        options = polls.clean_options(str(self.choices).splitlines())
+        refusal = polls.options_refusal(options)
+        if refusal:
+            return await interaction.response.send_message(refusal, ephemeral=True)
+        poll = await offer_poll(
+            interaction.guild, interaction.user,
+            str(self.question).strip(), str(self.why).strip() or None, options,
+        )
+
+        async def send(content, view):
+            await interaction.response.send_message(
+                content, view=view, ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return await interaction.original_response()
+
+        await send_poll_confirm(interaction.guild, poll, send)
 
 
 @tasks.loop(seconds=60)
@@ -2860,17 +3658,21 @@ def nudge_text(guild, bill):
     ballot does; anything else shows the distance left to run, which is the
     part that makes the nudge worth sending at all.
 
-    What silence costs depends on the vote. A yes/no ballot is carried
-    against the whole roster, so not voting is as good as a no. A choice
-    ballot is settled among the votes cast, so silence is not a vote
-    against anything -- it just hands the answer to whoever did turn up,
-    and saying otherwise would be a lie told to get somebody to click.
+    What silence costs depends on the vote, and on how this house counts.
+    A yes/no ballot carried against the whole roster makes not voting as
+    good as a no. A choice ballot is settled among the votes cast, so
+    silence is not a vote against anything -- it just hands the answer to
+    whoever did turn up -- and a house counting against turnout has said
+    the same of every vote it holds. Saying otherwise would be a lie told
+    to get somebody to click, which is the one thing a nudge cannot be.
     """
     st = vote_state(guild, bill)
     if st["options"]:
         cost = "and the answer is being chosen without you"
     elif is_blind(bill):
         cost = "and the house is still short of a view"
+    elif numbers(guild)[roster.TURNOUT]:
+        cost = "and it is being settled among whoever does vote"
     else:
         cost = "and silence counts against it"
     try:
@@ -2906,10 +3708,22 @@ async def send_nudges(guild, silent=False):
         duties.mark_said(guild.id, duties.nudge_key(bill, user_id))
 
 
+# Two of them, because the whole point of Away is what it costs you, and
+# that depends on how the house counts. Told the roster version in a house
+# counting turnout, somebody would be reassured about a thing that was
+# never happening to them.
 AWAY_GONE = (
     "A fortnight quiet, so I have taken you off the roster for now. Nobody "
     "thinks anything of it and nothing you did is undone: it only means "
     "votes stop counting your silence as a no. Say anything here and you are "
+    "straight back on."
+)
+
+AWAY_GONE_TURNOUT = (
+    "A fortnight quiet, so I have taken you off the roster for now. Nobody "
+    "thinks anything of it and nothing you did is undone: votes here are "
+    "counted among whoever casts one, so it only means you are not one of "
+    "the number they are measured against. Say anything here and you are "
     "straight back on."
 )
 
@@ -2922,7 +3736,9 @@ async def tell_away(guild, silent=False):
     members = [m for m in guild.members if not m.bot and in_cooperative(m)]
     gone, back, quiet_now = duties.away_changes(
         guild.id, members, lambda m: roster.away_reason(guild.id, m))
-    told = [(m, AWAY_GONE) for m in gone] + [(m, AWAY_BACK) for m in back]
+    stepped_out = (AWAY_GONE_TURNOUT if numbers(guild)[roster.TURNOUT]
+                   else AWAY_GONE)
+    told = [(m, stepped_out) for m in gone] + [(m, AWAY_BACK) for m in back]
     if not silent:
         for member, line in told:
             if duties.muted(guild.id, member.id):
@@ -3237,6 +4053,88 @@ BILL_ACTIONS = {
 }
 
 
+# ---------- a poll, asked for in conversation ----------
+
+async def act_open_community_poll(guild, invoker, args, context=None):
+    """Draft a community poll and put the confirmation in front of whoever
+    asked for it. Opens nothing.
+
+    This is the one tool in the building that does not do the thing it is
+    named after. Everything else Eugene is handed acts on the first ask --
+    a proposal is filed, a setting is changed, and asking somebody to
+    confirm is a small insult to a person who already said what they
+    wanted. A poll is the exception because of who is on the other end of
+    it: the cooperative signed up to be asked things and the other hundred
+    and forty people in the server did not, and a model that misreads
+    "what does everyone think" as an instruction would spend that room's
+    attention on Eugene's guess. So the tool writes the question down,
+    shows it to them with the audience counted, and stops.
+    """
+    channel = (context or {}).get("channel")
+    # A room in this server, and nothing else. No channel at all means
+    # there is nowhere to ask for the second yes, which is the whole of
+    # what the tool is for. A direct message is worse than useless: the
+    # card would go up somewhere with no guild behind it, and the button
+    # would come back looking for a server it cannot see. He is reachable
+    # by DM, so this is a real door and not a hypothetical one.
+    if channel is None or getattr(channel, "guild", None) is None:
+        return json.dumps({
+            "error": "I can only offer a poll in a room in the server it "
+                     "would go to. Ask me in a channel there, or use "
+                     "`/poll`.",
+        })
+    if guild is None or channel.guild.id != guild.id:
+        return json.dumps({
+            "error": "That room is not in the server this poll would go to.",
+        })
+    if not in_cooperative(invoker):
+        return json.dumps({
+            "error": "A community poll is put up by the cooperative. "
+                     "Answering one is open to everybody here; opening one "
+                     "is not.",
+        })
+    note = poll_room_note(guild)
+    if note:
+        return json.dumps({"error": note})
+    question = _clean(args.get("question"), 500)
+    if not question:
+        return json.dumps({"error": "a poll needs a question"})
+    options = polls.clean_options(args.get("options") or None)
+    refusal = polls.options_refusal(options)
+    if refusal:
+        return json.dumps({"error": refusal})
+    poll = await offer_poll(
+        guild, invoker, question, _clean(args.get("why"), 400) or None, options
+    )
+
+    async def send(content, view):
+        return await channel.send(
+            content, view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    try:
+        await send_poll_confirm(guild, poll, send)
+    except discord.HTTPException as e:
+        log.warning(f"could not offer poll in {getattr(channel, 'id', '?')}: {e!r}")
+        return json.dumps({"error": "I could not put the confirmation up in "
+                                    "this room."})
+    return json.dumps({
+        "offered": "a confirmation is waiting in this room",
+        "question": question,
+        "answers": options or [polls.YES, polls.NO],
+        "goes_to": poll_audience(guild),
+        "note": "Nothing is posted until they press it themselves. Say in "
+                "one line that it is there and who it would go to. Do not "
+                "press it for them and do not ask again if they ignore it.",
+    })
+
+
+POLL_ACTIONS = {
+    "open_community_poll": act_open_community_poll,
+}
+
+
 # ---------- the other end of the two things Eugene starts ----------
 # A nudge you cannot stop is a nuisance, and a standing list of unfinished
 # work with no way to say "done" is a nag. Both of these are member-tier for
@@ -3398,8 +4296,21 @@ def brain_lines(guild):
 # split keeps the rules testable on a laptop:
 # and only the lookups need a server.
 
+ROLE_LOOKUPS = {
+    "cooperative": lambda guild: cooperative_role(guild),
+    "member": lambda guild: member_role(guild),
+    "bell": lambda guild: bell_role(guild),
+}
+
+
 def role_for(guild, key):
-    return cooperative_role(guild) if key == "cooperative" else member_role(guild)
+    """A role by the job it does. An unknown key is nobody rather than
+    whichever role the last branch of an if happened to name: this used to
+    answer `member` to anything that was not `cooperative`, which meant a
+    third job would have quietly reported itself bound from the day it was
+    declared."""
+    lookup = ROLE_LOOKUPS.get(key)
+    return lookup(guild) if lookup else None
 
 
 def bound_rooms(guild, keys=None):
@@ -4087,6 +4998,42 @@ class JoinButton(discord.ui.Button):
         await open_roles(interaction, f"You are in. {coop.mention} is yours.")
 
 
+class BellSwitch(discord.ui.Button):
+    """The house's answer to whether anybody here is ever pinged.
+
+    Not the same question as whether you personally want telling, which is
+    yours and lives on `/house`. This one is a house that has decided its
+    rooms are quiet ones, and it outranks the role: switched off, a ballot
+    mentions nobody however many people are holding the bell, and nobody
+    has to be chased into dropping it one at a time.
+    """
+
+    def __init__(self, on):
+        super().__init__(
+            label="Ballot pings: on" if on else "Ballot pings: off",
+            style=discord.ButtonStyle.secondary, row=4,
+        )
+
+    async def callback(self, interaction):
+        guild = interaction.guild
+        now = ringing(guild)
+        set_ringing(guild, not now)
+        log.info(f"guild {guild.id}: ballot pings -> {'off' if now else 'on'}")
+        if now:
+            return await open_roles(
+                interaction,
+                "**Ballot pings off.** No proposal mentions anybody here "
+                "again. Whoever holds the bell keeps it and stops being "
+                "rung.",
+            )
+        await open_roles(
+            interaction,
+            "**Ballot pings on.** A new ballot mentions whoever asked to be "
+            "told, on the ballot's own card. Nobody is asking yet unless "
+            "they have picked the role up under `/house`.",
+        )
+
+
 async def open_roles(interaction, note=None):
     guild = interaction.guild
     view = StewardView(interaction.user.id)
@@ -4095,11 +5042,14 @@ async def open_roles(interaction, note=None):
     view.add_item(GrantSelect(2))
     view.add_item(RevokeSelect(3))
     view.add_item(JoinButton())
+    view.add_item(BellSwitch(ringing(guild)))
     inside = cooperative_members(guild)
     body = [
         "## Who holds a vote",
         "`cooperative` votes. `member` is in the room without one: leave it "
-        "unbound if everyone here votes.",
+        "unbound if everyone here votes. `bell` is who a new ballot pings, "
+        "and it is picked up under `/house` by whoever wants it rather than "
+        "handed out from here.",
         "",
         f"**In the cooperative: {len(inside)}**"
         + (": " + ", ".join(m.display_name for m in inside[:20])
@@ -4371,17 +5321,13 @@ async def open_brain(interaction, note=None):
 # decision comes through this same function and the steward stops being the
 # only way in.
 
-# What each number means lives in settings.py, beside its bounds.
+# What each number means lives in settings.py, beside its bounds. How one
+# reads on a screen, and how far back changing it goes, live in powers.py,
+# where the tool that changes one by conversation can reach them too: this
+# panel is no longer the only door onto these.
 VOTING_BLURBS = settings.VOTING_HELP
 VOTING_SWITCHES = settings.VOTING_FLAG_HELP
-
-
-def shown_value(name, value):
-    """One setting as a person reads it. A switch is on or off; a number
-    that happens to be stored as 1.0 is 1."""
-    if settings.is_flag(name):
-        return "on" if value else "off"
-    return f"{value:g}" if isinstance(value, float) else str(value)
+shown_value = powers.shown
 
 
 def voting_lines(guild):
@@ -4445,13 +5391,7 @@ class NumberModal(discord.ui.Modal):
             except (TypeError, ValueError):
                 asked = None
         held = " (held at the nearest it can be)" if asked is not None and asked != now else ""
-        tail = (
-            "Votes already on the floor keep the window they were filed with; "
-            "thresholds are worked out fresh, so those move now."
-            if number in ("floor_hours", "removal_hours")
-            else "It applies to every vote from this moment, including the "
-                 "ones already open."
-        )
+        tail = powers.reaches(number)
         await health_log(
             guild,
             f"⚙️ `{number}` {was:g} → {now:g}, by {interaction.user.display_name}.",
@@ -4519,24 +5459,8 @@ class SwitchSelect(discord.ui.Select):
         await open_numbers(
             interaction,
             f"`{name}` is **{shown_value(name, now)}**. "
-            + VETO_SWITCH_TAIL.get(name, "It applies from this moment."),
+            + powers.reaches(name),
         )
-
-
-# What flipping one actually means, said at the moment somebody flips it.
-# A veto is the one setting here that reaches backwards -- into windows
-# that are open right now -- and somebody switching it should be told that
-# rather than finding out from a button that stopped working.
-VETO_SWITCH_TAIL = {
-    "invite_veto": "It reaches the windows already open, so an invitation "
-                   "that carried in the last few hours is covered by "
-                   "whatever this now says.",
-    "proposal_veto": "It reaches the windows already open, so a proposal "
-                     "that carried in the last few hours is covered by "
-                     "whatever this now says.",
-    "veto_anonymous": "It applies to vetoes cast from now on. One already "
-                      "cast keeps the rule it was cast under.",
-}
 
 
 async def open_numbers(interaction, note=None):
@@ -4926,6 +5850,12 @@ async def do_apply(interaction):
         bindings.bind_role(guild.id, "member", member.id)
         say(f"bound `cooperative` → {coop.mention} and "
             f"`member` → {member.mention}")
+        # The rest of what the switched-on features want. Made empty and
+        # bound: a role nobody holds pings nobody, so this leaves the door
+        # open without putting anybody through it.
+        for key, made in (await builder.ensure_module_roles(guild, say)).items():
+            bindings.bind_role(guild.id, key, made.id)
+            say(f"bound `{key}` → {made.mention}")
 
         # The whole point: somebody ends up inside.
         you = interaction.user
@@ -5110,8 +6040,7 @@ async def slash_remove(interaction: discord.Interaction):
     # The weight of the thing is said before the picker, not after, so
     # nobody names a person without having read what it costs.
     await interaction.response.send_message(
-        "Removal is the cooperative's heaviest instrument: a 72-hour window, "
-        "and it passes only if all eligible voters but two say yes.",
+        removal_weight(interaction.guild),
         view=KickTargetView(),
         ephemeral=True,
     )
@@ -5147,6 +6076,29 @@ async def slash_close(interaction: discord.Interaction, number: int):
     if report.get("outstanding"):
         lines += ["", "Still wanted:"] + [f"- {item}" for item in report["outstanding"]]
     await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(
+    name="poll", description="Ask the whole server a question. It decides nothing"
+)
+@app_commands.guild_only()
+async def slash_poll(interaction: discord.Interaction):
+    if await refuse_unless(interaction, "polls"):
+        return
+    # Opening one is the cooperative's, answering one is everybody's, and
+    # that split is the feature rather than an oversight. A room where
+    # anyone can put a question to everyone is a room with a question in it
+    # every day; the people who carry the place decide what it is asked.
+    if not keyed_in(interaction):
+        return await refuse(
+            interaction,
+            "A community poll is put up by the cooperative, though anyone "
+            "here can answer one. " + NOT_INSIDE,
+        )
+    note = poll_room_note(interaction.guild)
+    if note:
+        return await refuse(interaction, note)
+    await interaction.response.send_modal(PollModal())
 
 
 @bot.tree.command(name="bills", description="What is open for a vote right now")
@@ -5342,31 +6294,115 @@ class PurgeView(discord.ui.View):
         )
 
 
-@bot.tree.command(name="house", description="What Eugene is running for this server")
-@app_commands.guild_only()
-async def slash_house(interaction: discord.Interaction):
-    """What is switched on and what this house votes by, read-only and free.
-
-    The point of the command is that it costs nothing and needs no key: a
-    house whose brain is dormant, or whose bill has run out for the month,
-    can still read its own numbers. A rule you cannot read is a rule nobody
-    trusts. Changing one is done by asking him, or on the panel.
-    """
-    if not keyed_in(interaction):
-        return await refuse(interaction, "That one is for people who are in.")
-    guild = interaction.guild
+def house_body(guild):
+    """The whole of `/house` as one piece of text, so the bell can redraw
+    the screen without anybody running the command a second time."""
     chosen = len(settings.voting_overrides(guild.id))
     tail = ("\n-# These are all the defaults so far: just tell me what you "
             "want changed." if not chosen else
             f"\n-# {chosen} of these numbers are yours; the rest are the "
             f"ones he came with.")
-    await interaction.response.send_message(
+    return (
         f"## What {guild.name} has switched on\n"
         + module_summary(guild)
         + "\n\n## What it votes by\n"
         + "\n".join(voting_lines(guild))
-        + tail,
-        ephemeral=True,
+        + tail
+    )
+
+
+class BellButton(discord.ui.Button):
+    """Asking to be told about new votes, and asking him to stop.
+
+    Here rather than in `#votes`, which is ballots and nothing else: a
+    standing card offering notifications is read once and scrolled past for
+    ever, and it spends the rest of its life sitting between somebody and
+    the vote they came in to cast. This screen is already the one a member
+    opens to find out how their house works, it costs nothing to draw, and
+    the answer it gives changes with the press.
+    """
+
+    def __init__(self, holding):
+        super().__init__(
+            label="Stop telling me about new votes" if holding
+            else "Tell me when a vote opens",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.holding = holding
+
+    async def callback(self, interaction):
+        guild, you = interaction.guild, interaction.user
+        bell = bell_role(guild)
+        if bell is None:
+            return await interaction.response.edit_message(
+                content=house_body(guild)
+                + "\n-# There is no bell here to pick up. `/setup` → Apply "
+                  "makes one.",
+                view=None,
+            )
+        try:
+            if self.holding:
+                await you.remove_roles(bell, reason="/house: no more ringing")
+            else:
+                await you.add_roles(bell, reason="/house: ring me")
+        except discord.HTTPException as e:
+            return await interaction.response.edit_message(
+                content=house_body(guild)
+                + f"\n-# Could not: {e!r}: my role has to sit above "
+                  f"`{bell.name}` in the list.",
+                view=house_view(guild, self.holding),
+            )
+        # Told what changed from what was pressed, not from `you.roles`:
+        # Discord tells him about the new roles down the gateway a moment
+        # later, so reading them back here answers with the old ones.
+        note = ("\n-# Done. No vote will mention you again; the floor is "
+                "still there whenever you want to look."
+                if self.holding else
+                "\n-# Done. A new vote will mention you once, on the ballot "
+                "itself. Nothing else will.")
+        await interaction.response.edit_message(
+            content=house_body(guild) + note,
+            view=house_view(guild, not self.holding),
+        )
+
+
+def house_view(guild, holding):
+    """The bell, where there is one to press.
+
+    A house that has switched the pings off, or has no bell role at all,
+    gets no button and no explanation of a button it has not got.
+    """
+    if not ringing(guild) or bell_role(guild) is None:
+        return None
+    view = discord.ui.View(timeout=600)
+    view.add_item(BellButton(holding))
+    return view
+
+
+@bot.tree.command(name="house", description="What Eugene is running for this server")
+@app_commands.guild_only()
+async def slash_house(interaction: discord.Interaction):
+    """What is switched on and what this house votes by, free and unchanged
+    by reading it.
+
+    The point of the command is that it costs nothing and needs no key: a
+    house whose brain is dormant, or whose bill has run out for the month,
+    can still read its own numbers. A rule you cannot read is a rule nobody
+    trusts. Changing one is done by asking him, or on the panel.
+
+    The one button on it changes nothing about the house. It is where you
+    say whether you personally want telling when a vote opens, which is the
+    same question this screen answers about everything else and the only
+    one on it whose answer is yours alone.
+    """
+    if not keyed_in(interaction):
+        return await refuse(interaction, "That one is for people who are in.")
+    guild = interaction.guild
+    bell = bell_role(guild)
+    view = house_view(guild, bell is not None and bell in interaction.user.roles)
+    await interaction.response.send_message(
+        house_body(guild), ephemeral=True,
+        **({"view": view} if view is not None else {}),
     )
 
 
@@ -5556,9 +6592,13 @@ async def setup_hook():
     # them on the floor.
     toolbox.configure(
         HERE, DATA,
-        {**BILL_ACTIONS, **DUTY_ACTIONS,
+        {**BILL_ACTIONS, **DUTY_ACTIONS, **POLL_ACTIONS,
          **powers.ACTIONS_TABLE},
         in_cooperative=in_cooperative, numbers=numbers,
+        # The same question the setup panel's own check asks, so rewriting
+        # the configuration by asking is shut to exactly the people it is
+        # shut to by pressing.
+        is_steward=is_admin,
     )
     # The officer's hands. in_cooperative goes in twice on purpose: the
     # harness uses it to decide who may reach the elevated tools at all,
@@ -5590,6 +6630,13 @@ async def setup_hook():
     bot.add_view(Card(rows=MultiBallotRows()))
     bot.add_view(NotesView())
     bot.add_view(Card(rows=[VetoRow()]))
+    # The same routing problem the ballots have, and one more: a deploy
+    # between somebody being shown a confirmation and pressing it must
+    # leave the button working, or the question they typed is gone with no
+    # way to say so.
+    bot.add_view(Card(rows=[PollRow()]))
+    bot.add_view(Card(rows=PollChoiceRows()))
+    bot.add_view(PollConfirm())
     # One or the other, never both. A command registered globally *and*
     # to a guild shows up twice in that guild's picker, and both copies
     # persist -- so doing both to be safe is the one option that is
@@ -5696,6 +6743,8 @@ async def on_ready():
             log.error(f"could not settle into {guild.id}: {e!r}")
     if not check_floor.is_running():
         check_floor.start()
+    if not check_polls.is_running():
+        check_polls.start()
     if not furniture_loop.is_running():
         furniture_loop.start()
     if not duty_loop.is_running():

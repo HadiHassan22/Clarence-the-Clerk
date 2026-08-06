@@ -276,16 +276,45 @@ VOTING = "voting"
 # share above 1 is a threshold that can never be met, a window of zero is a
 # vote that closes before anybody sees it, and a quorum of 0 makes a public
 # poll decidable by its own author alone.
+#
+# No share goes below a half, the ordinary tier included. Under the roster
+# denominator a vote is closed the moment it is decided, so a bar below a
+# majority would let a proposal be settled and announced while more of the
+# house than voted for it had not yet been asked -- and the close is what
+# stops them being asked. A house that wants a smaller bar in practice is
+# asking for `count_turnout`, which is a different rule and says so.
 VOTING_RULES = {
     "floor_hours":        (48.0, 0.01, 24 * 30.0, float),
     "removal_hours":      (72.0, 0.01, 24 * 30.0, float),
+    "normal_share":       (0.5, 0.5, 1.0, float),
     "fundamental_share":  (0.75, 0.5, 1.0, float),
     "invite_share":       (0.5, 0.5, 1.0, float),
     "kick_min_yes":       (3, 1, 100, int),
+    # Never every last one of them: silence is a no here whatever the
+    # denominator says, so a bar of everybody hands one person who never
+    # logs in a permanent block on every removal there will ever be.
+    "removal_spare":      (2, 1, 100, int),
     "away_days":          (14, 1, 365, int),
     "veto_hours":         (24.0, 0.01, 24 * 30.0, float),
     "invite_vetoes":      (1, 1, 100, int),
     "proposal_vetoes":    (1, 1, 100, int),
+    # The three a community poll runs on. They are here, in with the rest,
+    # because the door is what makes a number the house's: bounds, the
+    # panel, the steward's gate and the tool that changes one by asking all
+    # come from this table, and a second table for the poll would be a
+    # second set of all four. That they read against a different
+    # denominator is `polls.py`'s business, not this table's.
+    #
+    # No early close on a poll, so the window is the whole of how long one
+    # runs rather than a backstop. `poll_share` counts against the answers
+    # given and stops at a half for the ordinary reason -- an answer that
+    # wins on fewer than half of the people who chose between them is not
+    # what anybody reads "the room said yes" to mean. The quorum is what
+    # stops that being four people, so it can be set low but never to
+    # nothing.
+    "poll_hours":         (48.0, 0.01, 24 * 30.0, float),
+    "poll_share":         (0.5, 0.5, 1.0, float),
+    "poll_quorum_share":  (0.2, 0.01, 1.0, float),
 }
 
 # How each number reads to somebody who has to decide whether to change it.
@@ -295,13 +324,18 @@ VOTING_RULES = {
 VOTING_HELP = {
     "floor_hours": "how long an ordinary vote stays open if nothing settles it",
     "removal_hours": "the same, for a removal",
+    "normal_share": "the share an ordinary proposal needs (0.5 is a plain majority)",
     "fundamental_share": "the share of the roster a removal or a rule change needs",
     "invite_share": "the share of the roster an invitation needs (0.5 is a plain majority)",
     "kick_min_yes": "the fewest yes votes a removal can ever pass on",
+    "removal_spare": "how many of the eligible a removal may leave unconvinced",
     "away_days": "a quiet spell this long takes you out of the count",
     "veto_hours": "how long after a proposal carries it can still be vetoed",
     "invite_vetoes": "how many vetoes overturn a passed invitation",
     "proposal_vetoes": "how many overturn any other passed proposal",
+    "poll_hours": "how long a community poll stays open (it never ends early)",
+    "poll_share": "the share of the answers given that carries a yes/no community poll",
+    "poll_quorum_share": "the share of the server that must answer for a community poll to report anything",
 }
 
 # The switches a house votes by, as against the numbers. Same store, same
@@ -314,16 +348,30 @@ VOTING_HELP = {
 # one that comes with a last word attached. Everything else starts without
 # one: a veto over every proposal is a permanent hold for whoever wants it
 # most, and a house should have to ask for that on purpose.
+#
+# The other two say who a share is counted against. Both ship off, which is
+# the rule the clerk has always had: the roster is the denominator, so not
+# voting is a no, and an abstention is recorded and subtracted from nothing.
+# A house may have either instead, and should know what it is buying --
+# counting against turnout hands the answer to whoever turns up, and it
+# costs the early close in most cases, because every ballot still to come
+# widens the denominator and can put a threshold back out of reach.
 VOTING_FLAGS = {
     "invite_veto": True,
     "proposal_veto": False,
     "veto_anonymous": False,
+    "count_turnout": False,
+    "abstain_steps_out": False,
 }
 
 VOTING_FLAG_HELP = {
     "invite_veto": "whether a passed invitation can still be vetoed",
     "proposal_veto": "the same, for every other kind of proposal",
     "veto_anonymous": "whether a veto is cast without naming who cast it",
+    "count_turnout": "whether a share is counted against the votes cast "
+                     "rather than the whole roster",
+    "abstain_steps_out": "whether an abstention leaves the count rather than "
+                         "landing where silence lands",
 }
 
 # What counts as on and off when somebody types one rather than pressing it.

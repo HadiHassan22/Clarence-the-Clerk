@@ -22,22 +22,28 @@ time to look up belongs below. If you change a rule, change it here too --
 this is a summary of the page, and a summary that disagrees with it is worse
 than no summary at all.*
 
-- **The roster is the denominator.** Not turnout. Someone absent counts as a
-  no, which is why Away exists: it takes you out of the count, needs no
-  reason, and 14 quiet days sets it on its own. A vote about you recuses you
-  automatically. The roster freezes when a vote opens.
+- **The roster is the denominator**, unless the house has said otherwise.
+  Not turnout. Someone absent counts as a no, which is why Away exists: it
+  takes you out of the count, needs no reason, and 14 quiet days sets it on
+  its own. A vote about you recuses you automatically. The roster freezes
+  when a vote opens. A house may count against the votes cast instead, or
+  let an abstention step out of the count; both are settings, and the live
+  figures say which is in force here.
 - **Two tiers.** *Normal*: a majority of the roster: is the default for
   everything: settings, bots, features, admissions, bans, ownership.
   *Fundamental*: 75% of the roster: is removals, rule changes, changes to
   how voting works, permanent bans, and safety or permission settings.
-  Shares, never counts, and never a share of turnout. There is no unanimity
-  tier and no quorum on anything counted against the roster.
+  Shares, never counts, and no share goes under a majority. There is no
+  unanimity tier and no quorum on anything counted against the roster.
 - **Speak now**: say what you intend, silence for 10 minutes means yes, one
   objection turns it into a vote. For anything reversible but worth flagging.
   Anything reversible in a minute needs no process at all.
 - **A vote ends the moment its result can no longer change**, not when the
-  clock runs out. Passing is called the instant the yes votes arrive. Failing
-  waits until everybody has voted, because a no can still become a yes.
+  clock runs out. Counted against the roster, passing is called the instant
+  the yes votes arrive; counted against turnout, only once the yes votes
+  alone would carry the whole roll, because every ballot still to come moves
+  the bar. Failing waits until everybody has voted either way, because a no
+  can still become a yes.
 - **A proposal that has passed is not always finished.** Where the house keeps
   a veto, a proposal that carried can be taken back inside a short window
   afterwards by anybody who could have voted on it. Which kinds it covers,
@@ -67,10 +73,10 @@ than no summary at all.*
 - **Nudges are rationed.** One DM at the halfway mark, to whoever has not
   voted, and only on a priority vote: Fundamental tier, or filed as
   priority by its author.
-- **Every vote is the cooperative's.** There is no second kind of ballot put
-  to the wider server. A house that wants everybody to have a vote gives
-  everybody the role; that is one decision, taken once, rather than a
-  parallel poll that decides nothing.
+- **Every vote is the cooperative's**, and nothing put to the wider server
+  decides anything. A house that wants everybody to have a vote gives
+  everybody the role; that is one decision, taken once, and it is the only
+  way the electorate ever widens.
 - **Ties fail**: the status quo never has to defend itself. Below 3 active
   people everything except safety and admissions is suspended.
 - **One thing cannot be amended at any threshold**: everyone is respected,
@@ -100,10 +106,13 @@ agreed design that is not yet running code.
   privately, and tells you again when you are back on.
 - Thresholds counted against the roster: a **majority** for everything, **75%**
   for a removal. Shares, not fixed counts — they move as the roster does, and
-  the cooperative sets the shares themselves.
+  the cooperative sets the shares themselves, along with what they are counted
+  against and whether an abstention stays in the count.
 - **Self-closing votes. Every vote here ends the moment it is decisive**, and
   the clock is only ever a backstop. What decisive means follows from what
   carries it: for a roster-counted vote, the yes votes reaching what is needed;
+  for a turnout-counted one, the yes votes reaching what the whole roster would
+  have asked, since anything less can be undone by the next ballot arriving;
   for a choice ballot, an option past half the roster, which is a majority of
   however many end up voting. If everyone has voted, it closes then too,
   whichever kind it is.
@@ -210,9 +219,12 @@ wired up.
 ## 1. Who counts
 
 Everyone holding the `Cooperative` role is on the **roster** by default. The
-roster is the denominator for every threshold below, with no exceptions.
-Holding `Member` instead means you are in the room, see everything, and do not
-cast a ballot: there is one electorate here, and it is this one (§11).
+roster is the denominator for every threshold below, and it is the one this
+house counts against; a house that would rather count against the votes cast
+sets that, and everything below reads the same with the smaller number in
+place of the larger. Holding `Member` instead means you are in the room, see
+everything, and do not cast a ballot: there is one electorate here, and it is
+this one (§11).
 
 **Away.** Anyone can mark themselves Away at any time. One command, no reason
 needed, no permission needed, nobody thinks anything of it. Away people are not
@@ -260,7 +272,18 @@ this for anything reversible but worth flagging.
 
 Normal is a plain majority, because that is what people already expect a vote
 to mean, and it keeps the everyday case easy. Round up, and a threshold never
-asks for more than the roster holds.
+asks for more than the roster holds — nor for less than a majority, whichever
+tier it is and whatever share the house sets. A bar under half would carry a
+proposal with more of the house against it than for it, and, since a vote ends
+the moment it is decided, would end it before the rest of them were asked.
+
+**A removal is the exception on this table.** It sits at Fundamental for
+everything that follows from the tier — the private word to whoever has not
+voted, the discussion first — but what carries it is not a share of anything.
+It is all the eligible bar two, and never fewer than three yes; both figures
+are the house's to set, and neither moves when the house changes what its
+shares are counted against. Nobody should be shown the door on a share of
+whoever happened to turn up.
 
 **The thresholds are shares, not numbers.** The roster moves — people join,
 leave, and step away — and what a vote needs moves with it, on its own, with
@@ -274,13 +297,17 @@ roster.** Unanimity would hand every single person a permanent veto, and it
 could never be undone, because undoing it would need unanimity too. And a
 roster-counted threshold already contains its own turnout requirement — a
 majority of the roster cannot be reached without that many people actually
-voting.
+voting. That last part is what a house gives up if it moves to counting
+against the votes cast: the bar is then a share of whoever turned up, and
+nothing underneath it says how many that has to be.
 
 **Every number on this page is the cooperative's to set**, not the code's: the
-tier shares, the window, the quiet spell that steps somebody out of the count.
-They live in the server's own settings and can be changed without touching the
-repo. What is fixed is the *shape* — that there are tiers, and that everything
-is counted against the roster.
+tier shares, the window, the quiet spell that steps somebody out of the count,
+and the two rules above them — what a share is counted against, and whether an
+abstention stays in that count. They live in the server's own settings and can
+be changed without touching the repo. What is fixed is the *shape* — that
+there are tiers, that a share is a share, and that nothing carries on less
+than a majority of whatever it is counted against.
 
 **One thing is not on this table at all:** the core value, set out in §14.
 Not amendable, at any threshold.
@@ -338,6 +365,14 @@ runs out.
 The moment the yes votes reach what the tier needs, it has passed, and Eugene
 closes and announces it on the spot. A room already in voice can settle
 something in under a minute this way.
+
+That works because the roster is the denominator: the bar is fixed while the
+ballot runs, so nothing arriving later can put it back out of reach. A house
+counting against the votes cast has changed that — every ballot cast widens
+the denominator and lifts the bar — so there a vote is called early only when
+the yes votes alone would have carried the whole roster, and otherwise runs to
+its backstop. The ending rule follows the counting rule; Eugene never says a
+vote is settled while it is not.
 
 Failing is called differently, and deliberately. Eugene waits until everyone
 has voted before calling a vote lost, because a no can still turn into a yes
@@ -404,6 +439,14 @@ publishes the full split then: yes, no, abstentions where the ballot has them,
 and the number it needed. Blind is about the vote in progress. It was never
 meant to be a permanent seal, and for a while the code treated it as one while
 the figures sat in the record's own files regardless.
+
+**Abstaining** is a seat that turned up and said nothing, and the ballot that
+offers it is the invitation, where "I do not know them well enough to say" is
+an honest answer. Out of the box it is recorded and subtracted from nothing:
+the bar is a share of the roster, so an abstention neither carries a proposal
+nor lowers what carries it. A house that would rather it stepped out of the
+count sets that, and then abstaining lowers the bar instead of sitting under
+it.
 
 The reason for secrecy is that you shouldn't have to know your friend voted to
 ban someone. That reason doesn't apply to renaming a channel.
@@ -524,19 +567,54 @@ as a punishment.
 
 ## 11. One electorate
 
-Every vote here is the cooperative's. There is no second kind of ballot put to
-the wider server.
-
-There used to be: an advisory poll, open to everyone in the room, carried by a
-majority of whoever voted once a quorum turned up, deciding nothing. It was a
-reasonable idea and it cost more than it was worth. It doubled the machinery —
-two electorates, two quorum rules, two rooms, two ways for a vote to end — and
-the second one existed to produce an answer nobody was bound by.
+Every **vote** here is the cooperative's. Nothing put to the wider server
+decides anything, and that is the line the whole design sits on.
 
 A house that wants everybody to have a vote gives everybody the cooperative
 role. That is one decision, taken once, in the open, by people who already
-hold the role — and afterwards there is still only one kind of ballot, one
-denominator, and one meaning for the word "carried".
+hold it — and afterwards there is still one kind of ballot, one denominator,
+and one meaning for the word "carried".
+
+### Community polls
+
+Off unless a house switches them on, and separate from everything above.
+
+A community poll is a question put to everyone in the server, answered
+anonymously, deciding nothing. No proposal is filed by it, nothing reaches
+the record, no decision is numbered, and nobody is bound by the answer. The
+word for what happens at the end of one is *reported*, never *carried*.
+
+This existed once as a second kind of ballot inside the same pipeline and
+was removed for it: two electorates, two quorum rules and two ways for a
+vote to end, all threaded through one set of functions, to produce an answer
+nobody was bound by. It is back on the condition that it shares nothing. Its
+own store, its own room, its own close. If it ever needs a branch inside
+something the cooperative uses, it has gone wrong again.
+
+The counting rule is not the cooperative's and cannot be. A roll is people
+who signed up to be counted, so silence there is a position; a server is
+not, and most of a server is quiet on any given day. Counting silence as a
+no would put every poll out of reach the morning it opened. So a poll is
+decided among the people who answered it, and the quorum — a share of the
+room, never nothing — is the whole of what stops four people answering for
+six hundred. Short of it, nothing is reported at all: not the leader, not
+which way it was leaning.
+
+- **Opening one is the cooperative's**, the same as filing. **Answering one
+  is open to everyone here.**
+- **It is agreed to twice.** Everything else Eugene does happens on the
+  first ask. This one shows you a card first, saying in a count rather than
+  a word how many people it goes to, and nothing is posted until the person
+  who asked presses it themselves.
+- **Eugene never offers it.** Not as an option, not as a follow-up. If it
+  has not been asked for in so many words, it does not exist.
+- **The room holds polls and nothing else.** No greeting, no closing report,
+  and he does not answer there even when mentioned. A close is an edit to
+  the poll's own card.
+- A poll never ends early. Its denominator moves with every answer, so there
+  is no point at which the result can no longer change — the property the
+  cooperative's early close is built on, and one a turnout rule does not
+  have.
 
 ## 12. When things stall
 

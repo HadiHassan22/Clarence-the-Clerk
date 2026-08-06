@@ -8,8 +8,9 @@ says first, because otherwise somebody has to remember to ask.
 Three of them, and the list is meant to stay short:
 
 - a vote halfway through its window, with a quiet word to whoever has not
-  voted, because a threshold counted against the roster makes silence read as
-  a no and nobody should lose a vote by forgetting
+  voted, because a threshold counted against the roster -- which is how a
+  house counts unless it has said otherwise -- makes silence read as a no,
+  and nobody should lose a vote by forgetting
 - somebody the roster has stopped counting after a fortnight of quiet, told
   rather than dropped without a word -- the rules of procedure promise this
   in as many words

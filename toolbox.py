@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import modules
+import settings
 
 log = logging.getLogger("toolbox")
 
@@ -32,7 +33,7 @@ PEOPLE_KINDS = ("invite", "kick")
 
 
 def configure(here: Path, data: Path, actions=None, in_cooperative=None,
-              numbers=None):
+              numbers=None, is_steward=None):
     """actions: hand-written handlers injected by clerk.py, so the harness
     never reaches into the bot's internals itself.
 
@@ -42,7 +43,11 @@ def configure(here: Path, data: Path, actions=None, in_cooperative=None,
 
     numbers(guild) is the same bargain for the figures those thresholds are
     worked out from: given, the report quotes the house's own; withheld, it
-    quotes the defaults rather than inventing anything."""
+    quotes the defaults rather than inventing anything.
+
+    is_steward(member) is whoever could already reshape the server by hand,
+    and it is asked before anything that rewrites the configuration. A host
+    that does not supply it gets the strict reading, same as the roll."""
     _paths["here"] = here
     _paths["data"] = data
     _paths["log"] = data / "logs" / "executor_log.json"
@@ -50,6 +55,7 @@ def configure(here: Path, data: Path, actions=None, in_cooperative=None,
     _adopt_legacy_log(data)
     _paths["in_cooperative"] = in_cooperative
     _paths["numbers"] = numbers
+    _paths["is_steward"] = is_steward
     _actions.update(actions or {})
 
 
@@ -233,8 +239,11 @@ async def _server_info(guild, invoker, args):
         import roster
 
         figures = _paths.get("numbers")
-        held = figures(guild) if figures is not None else {}
-        away_days = held.get("away_days", roster.AUTO_AWAY_DAYS)
+        # The shipped set where nothing has been wired up, rather than one
+        # constant reached for by name: a complete set is the only kind
+        # that is safe to read a threshold out of.
+        held = figures(guild) if figures is not None else settings.voting()
+        away_days = held["away_days"]
         size = len(roster.active(guild, keyed, away_days=away_days))
         info["roster"] = {
             "counted": size,
@@ -254,6 +263,20 @@ async def _server_info(guild, invoker, args):
                     "roster: a poll open to the whole server is carried by a "
                     "majority of whoever votes, once quorum is met.",
         }
+        # The three figures above are shares of the roster. Where the house
+        # counts some other way they are the ceiling rather than the figure
+        # of the day, and a ceiling quoted as a threshold is a wrong number
+        # given confidently.
+        if held.get(roster.TURNOUT):
+            info["roster"]["counted_against"] = (
+                "the votes cast, not the roster: the needs above are the "
+                "most a vote can ask, and the real bar falls with turnout"
+            )
+        elif held.get(roster.ABSTAIN_OUT):
+            info["roster"]["counted_against"] = (
+                "the roster less the abstentions: the needs above are the "
+                "most a vote can ask"
+            )
         if held:
             info["voting_numbers"] = held
     return json.dumps(info)
@@ -411,81 +434,164 @@ DUTY_TOOLS = {
 }
 
 # ---------- the officer's tools ----------
-# Everything here changes the server rather than the record: it deletes
-# messages, silences people, hands out roles, and rewrites how the place
-# polices itself. Two things follow from that.
+# What reads how this server is set up, without moving any of it. "officer"
+# is gated in dispatch() against the cooperative roll and refused outright
+# to anybody else, which is a second lock on a door the brain already
+# refuses to open for a stranger. One gate is one bug away from no gate.
 #
-# The first is the tier. "officer" is gated in dispatch() against the
-# cooperative roll and refused outright to anybody else, which is a second
-# lock on a door the brain already refuses to open for a stranger. One gate
-# is one bug away from no gate.
-#
-# The second is the wording. These descriptions tell the model to act, not
-# to check first, because a tool that asks "are you sure?" is a tool people
-# stop using -- and the thing they use instead is a human with the same
-# button and a worse memory. The confirming was done when the house decided
-# who is in the cooperative. What is genuinely not his to do -- removing a
-# member of it, revealing a ballot, handing out the vote -- the handlers
-# refuse in Python, where no amount of persuasion reaches.
+# The wording of everything below and in STEWARD_TOOLS tells the model to
+# act, not to check first, because a tool that asks "are you sure?" is a
+# tool people stop using -- and the thing they use instead is a human with
+# the same button and a worse memory. What is genuinely not his to do --
+# removing a member of the cooperative, revealing a ballot, handing out the
+# vote -- the handlers refuse in Python, where no amount of persuasion
+# reaches.
 
 OFFICER_TOOLS = {
+    "list_features": {
+        "description": "Every feature this server can run and whether each "
+        "is running, waiting on something, or switched off. Call this to "
+        "answer 'what do you do here' or before changing a setting whose "
+        "feature might be off.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "list_settings": {
+        "description": "The numbers and switches this house votes by: how "
+        "long a vote stays open, what share carries a removal or a rule "
+        "change, how long a quiet spell takes somebody out of the count, "
+        "whether a proposal that has carried can still be vetoed. Says what "
+        "each is now, what it means, what it defaults to, and the range a "
+        "number has to stay inside. Read this before changing one rather "
+        "than guessing at a name.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+# ---------- the steward's tools ----------
+# The three that rewrite the configuration rather than read it, and they are
+# a tier of their own because the panel that does the identical thing has
+# always been shut to everyone but whoever runs the server. At the officer
+# tier they were open to the whole cooperative, which made asking Eugene a
+# way round a lock instead of a second key for it -- anybody counted by a
+# threshold could have had it lowered.
+#
+# The names below are read out of settings.py and modules.py rather than
+# typed here. A second list of them is how the model comes to refuse a
+# setting that exists, or offers a feature that does not.
+
+STEWARD_TOOLS = {
     "set_feature": {
-        "description": "Switch one of the features on or off for this "
-        "server: governance, chat, "
-        "moderation, welcome, log, health. This is the "
-        "master switch -- 'turn the filters on', 'stop greeting people', "
-        "'we do not want the log'. A feature that is off does nothing and "
-        "its settings are read by nobody, so switch it on before tuning it. "
-        "Say plainly if switching one off takes another with it.",
+        "description": "Switch one of this server's features on or off. This "
+        "is the master switch -- 'stop answering when we talk to you', 'we "
+        "do not want the record'. A feature that is off does nothing and its "
+        "settings are read by nobody, so switch it on before tuning it. Say "
+        "plainly if switching one off takes another with it.",
         "parameters": {
             "type": "object",
             "properties": {
-                "feature": {"type": "string",
-                            "description": "one of the twelve names above"},
+                "feature": {"type": "string", "enum": list(modules.keys()),
+                            "description": "which one; list_features says "
+                                           "what each does"},
                 "on": {"type": "boolean",
                        "description": "true to switch it on, false to switch it off"},
             },
             "required": ["feature", "on"],
         },
     },
-    "list_features": {
-        "description": "The ten features and whether each is running, "
-        "waiting on something, or switched off. Call this to answer 'what "
-        "do you do here' or before changing a setting whose feature might "
-        "be off.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "list_settings": {
-        "description": "The numbers this house votes by: how long a vote "
-        "stays open, what share carries a removal or a rule change, the "
-        "quorum on a public poll, and how long a quiet spell takes somebody "
-        "out of the count. Says what each one is now, what it means, what it "
-        "defaults to, and the range it has to stay inside. Read this before "
-        "changing one rather than guessing at a name.",
-        "parameters": {"type": "object", "properties": {}},
-    },
     "set_setting": {
-        "description": "Change one of the numbers this house votes by. Held "
-        "inside its bounds, so a value that would break the machinery comes "
-        "back refused with the range it had to be in. These are the "
-        "cooperative's own rules: change one when somebody asks, say what it "
-        "was and what it is, and never argue about which way it should go.",
+        "description": "Change one of the numbers or switches this house "
+        "votes by, or put one back with the value 'default'. A value outside "
+        "its bounds comes back held at the nearest it can be, with the "
+        "range: report what came back, never what you asked for. These are "
+        "the cooperative's own rules, so change one when somebody asks, say "
+        "what it was, what it is and how far back it reaches, and never "
+        "argue about which way it should go.",
         "parameters": {
             "type": "object",
             "properties": {
                 "key": {"type": "string", "description": "the exact name, from list_settings"},
-                "value": {"type": "number"},
+                "value": {
+                    "type": "string",
+                    "description": "a number; or on/off for the switches, "
+                                   "which are: " + ", ".join(settings.VOTING_FLAGS),
+                },
             },
             "required": ["key", "value"],
         },
     },
     "reset_settings": {
-        "description": "Put every number back to the one he arrived with, and "
-        "say which of them this house had changed.",
-        "parameters": {"type": "object", "properties": {}},
+        "description": "Put settings back to the ones he arrived with, and "
+        "say which of them this house had chosen. Name the ones they meant; "
+        "leave the argument out only when somebody asks for the lot, because "
+        "that discards every choice the house has ever made here.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "exact names, from list_settings",
+                },
+            },
+        },
     },
 }
 
+
+# The one tool that reaches past the cooperative, and the only one whose
+# description spends words telling him when *not* to reach for it. That is
+# not decoration: everything else here is something the eight people in the
+# room asked for, and this puts a question in front of everybody in the
+# building. The cost of picking it wrongly is not a bad answer, it is a
+# notification to a hundred and forty people who never asked to be polled,
+# and no amount of apologising afterwards takes it back.
+POLL_TOOLS = {
+    "open_community_poll": {
+        "description": "Offer to put a question to the WHOLE SERVER, not "
+        "the cooperative. Nothing is posted by this tool: it shows the "
+        "person a confirmation which only they can press.\n"
+        "Use it ONLY when they have explicitly asked to poll the server, "
+        "ask everyone, or put something to the whole room. Those words, or "
+        "words that plainly mean them, from them and not from you.\n"
+        "NEVER offer, suggest, mention or hint at this. Not as an option, "
+        "not as a follow-up, not as 'I could also ask everyone'. If they "
+        "want something decided, that is `propose` and it goes to the "
+        "cooperative -- a poll decides nothing and binds nobody, so "
+        "reaching for it when somebody wanted a decision wastes the "
+        "server's attention and gets them no answer. If you are not sure "
+        "which they meant, ask them in one line, and if they have not "
+        "raised it at all then it does not exist.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "the question, as the server will read it, in their words"},
+                "why": {"type": "string", "description": "any context they gave, in their voice. Optional"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2 to 10 answers for a choice poll, or omit entirely for yes/no",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
+
+for _name, _spec in POLL_TOOLS.items():
+    REGISTRY[_name] = {
+        # Member tier, and the gate that matters is not this one. Opening a
+        # poll is the cooperative's, and the handler asks that itself --
+        # here as everywhere, because `_tier_check` knows about the roll and
+        # nothing about which of the two things on it a tool needs.
+        "tier": "member",
+        # It is handed the room it was asked in, because the confirmation
+        # has to appear where the asking happened. See `dispatch`.
+        "context": True,
+        "description": _spec["description"],
+        "parameters": _spec["parameters"],
+        "handler": None,  # supplied by clerk.py through configure()
+    }
 
 for _name, _spec in {**BILL_TOOLS, **DUTY_TOOLS}.items():
     REGISTRY[_name] = {
@@ -502,6 +608,14 @@ for _name, _spec in {**BILL_TOOLS, **DUTY_TOOLS}.items():
 for _name, _spec in OFFICER_TOOLS.items():
     REGISTRY[_name] = {
         "tier": "officer",
+        "description": _spec["description"],
+        "parameters": _spec["parameters"],
+        "handler": None,  # supplied by clerk.py through configure()
+    }
+
+for _name, _spec in STEWARD_TOOLS.items():
+    REGISTRY[_name] = {
+        "tier": "steward",
         "description": _spec["description"],
         "parameters": _spec["parameters"],
         "handler": None,  # supplied by clerk.py through configure()
@@ -529,21 +643,55 @@ def declarations(guild_id=None):
     ]
 
 
+def _steward_check(invoker):
+    """The rewriting half of the configuration, and why it is not the
+    cooperative's.
+
+    Rewriting it by conversation used to sit at the officer tier, which is
+    the whole roll -- so every member of the cooperative could ask Eugene to
+    drop the share a removal needs, while the panel that does the identical
+    thing has always been shut to everyone but an administrator. That is a
+    way round the lock rather than a second key for it: the protection a
+    threshold is, is protection from the people it is counted over.
+
+    So this asks the same question the panel's own check asks. It is not
+    that thresholds are an administrator's business -- they are exactly not,
+    and the answer to a member who wants one moved is a proposal. It is that
+    a proposal has no hands, and until it has, the only hands are the ones
+    that could already do it by hand.
+    """
+    asks = _paths.get("is_steward")
+    if asks is None:
+        return ("that changes how this server is set up, and this host has "
+                "not told me who runs it")
+    try:
+        if asks(invoker):
+            return None
+    except Exception as e:  # a broken predicate is not a pass
+        log.error(f"steward check failed: {e!r}")
+        return "I could not check who you are, so the answer is no"
+    return ("changing that is the steward's, not mine and not the "
+            "cooperative's: whoever runs this server does it in /setup. If "
+            "you want the house to decide it instead, propose it.")
+
+
 def _tier_check(tier, invoker):
     """Who may reach a tool of this tier, decided in Python.
 
-    The brain already refuses a conversation to anyone outside the
-    cooperative, so in the ordinary run of things this never fires. It is
-    here because the officer's tools time people out and delete rooms full
-    of messages, and a single gate is one bug -- one refactor, one new
-    entry point, one clever prompt -- away from being no gate at all. This
-    one does not read the model's output, only the roll.
+    Two locks, not one. "officer" is the cooperative roll, and the brain
+    already refuses a conversation to anybody outside it, so in the ordinary
+    run of things it never fires -- it is here because a single gate is one
+    bug, one refactor, one new entry point away from being no gate at all.
+    "steward" is the narrower one above it, and the reason is in
+    _steward_check. Neither reads the model's output.
 
-    A host that never told the harness who is in the cooperative gets the
-    strict reading: elevated tools stay shut. Failing closed on a missing
-    answer is the only safe direction when the question is "may this person
-    ban somebody".
+    A host that never told the harness who is on the roll, or who runs the
+    place, gets the strict reading: those tools stay shut. Failing closed on
+    a missing answer is the only safe direction when the question is "may
+    this person move the bar a removal has to clear".
     """
+    if tier == "steward":
+        return _steward_check(invoker)
     if tier != "officer":
         return None
     keyed = _paths.get("in_cooperative")
@@ -560,8 +708,17 @@ def _tier_check(tier, invoker):
             "personal: it is the same rule for everyone outside it.")
 
 
-async def dispatch(guild, invoker, name, args):
-    """The model's only door. Returns a string result; logs everything."""
+async def dispatch(guild, invoker, name, args, context=None):
+    """The model's only door. Returns a string result; logs everything.
+
+    `context` is what the harness knows and the arguments cannot carry --
+    today, the channel the request was made in. It is handed only to the
+    tools whose registry entry asks for it, so the ordinary handler keeps
+    the three arguments it has always had and there is no third thing every
+    one of them has to accept and ignore. It is never merged into `args`:
+    the arguments are the model's and this is not, and a handler that could
+    not tell them apart would be one a prompt could aim at another room.
+    """
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "kind": "tool",
@@ -603,7 +760,10 @@ async def dispatch(guild, invoker, name, args):
         await _audit(entry)
         return json.dumps({"error": "that action is not wired up"})
     try:
-        result = await handler(guild, invoker, args or {})
+        result = await (
+            handler(guild, invoker, args or {}, context or {})
+            if spec.get("context") else handler(guild, invoker, args or {})
+        )
         # "ok" meant only that nothing was raised, so every refusal a
         # handler returns as a sentence -- at the cap, not your role, no
         # such name -- was filed as a success. The audit log could not tell

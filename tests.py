@@ -405,9 +405,11 @@ def test_debate_thread(clerk, data):
     class Floor:
         id, mention, said = 500, "<#500>", 0
         posted = []
+        mentions = []
 
-        async def send(self, content=None, view=None):
+        async def send(self, content=None, view=None, allowed_mentions=None):
             Floor.said += 1
+            Floor.mentions.append(allowed_mentions)
             message = Message(600 + Floor.said)
             Floor.posted.append(message)
             return message
@@ -547,6 +549,249 @@ def test_debate_thread(clerk, data):
           "too, locked and archived where it stands",
           separate.edits.get("locked") is True
           and separate.edits.get("archived") is True)
+
+
+# ---------- the bell ----------
+
+def test_bell(clerk, data):
+    """One ping, when a vote opens, to whoever asked for one.
+
+    Four things are held still. That the ping rides on the ballot's own
+    card rather than arriving as a message beside it, because the floor is
+    one message per proposal. That it happens at the open and at no other
+    moment: not on the edit after every vote, not when a deleted card goes
+    back up. That every way of having nobody to ring -- the house switched
+    it off, no role, an empty role -- produces exactly the card that went
+    up before there was a bell, with no stray text and no empty mention.
+    And that the role he can ping is not a role anybody else can.
+    """
+    print("\nthe bell: rung when a vote opens, and at no other time")
+
+    import bindings
+    import builder
+    import discord
+    import modules
+
+    settings.configure(data)
+
+    class Role:
+        def __init__(self, rid, name, mentionable=False):
+            self.id, self.name = rid, name
+            self.mentionable = mentionable
+            self.members = []
+            self.mention = f"<@&{rid}>"
+
+    class Message:
+        def __init__(self, mid):
+            self.id, self.edits = mid, []
+
+        async def create_thread(self, **kwargs):
+            return Thread(700 + self.id)
+
+        async def edit(self, **kwargs):
+            self.edits.append(kwargs)
+
+    class Thread:
+        def __init__(self, tid):
+            self.id, self.mention = tid, f"<#{tid}>"
+
+        async def send(self, content=None, view=None):
+            return types.SimpleNamespace(id=self.id + 1)
+
+    class Floor:
+        def __init__(self):
+            self.posted, self.mentions = [], []
+
+        async def send(self, content=None, view=None, allowed_mentions=None):
+            self.mentions.append(allowed_mentions)
+            message = Message(800 + len(self.posted))
+            self.posted.append(message)
+            return message
+
+        async def fetch_message(self, mid):
+            found = next((m for m in self.posted if m.id == mid), None)
+            if found is None:
+                raise discord.NotFound(
+                    types.SimpleNamespace(status=404, reason="x"), "x")
+            return found
+
+    made = []
+
+    async def create_role(name=None, permissions=None, mentionable=None,
+                          reason=None):
+        role = Role(1000 + len(made), name, mentionable)
+        made.append(role)
+        guild.roles.append(role)
+        return role
+
+    guild = types.SimpleNamespace(
+        id=9100, name="The Hangout", roles=[], members=[], categories=[],
+        create_role=create_role,
+        get_role=lambda rid: next((r for r in guild.roles if r.id == rid), None),
+        get_channel=lambda _id: None,
+    )
+    author = types.SimpleNamespace(id=7, display_name="Robin", mention="@Robin")
+    said = []
+
+    print("\nthe role is declared where the rooms are, and needed by nothing")
+    check("governance names it beside the cooperative",
+          "bell" in modules.spec("governance")["roles"])
+    check("as optional, so a house that has never made one is not a house "
+          "whose votes are broken",
+          "bell" not in modules.required_roles(guild.id)
+          and modules.blockers(guild.id, "governance",
+                               rooms=("votes", "decisions"),
+                               roles=("cooperative",)) == [])
+    check("and the builder is told to make it, which is a different list",
+          "bell" in modules.wanted_roles(guild.id))
+    check("the bindings know how to hold it", "bell" in bindings.ROLES)
+
+    run(builder.ensure_module_roles(guild, said.append))
+    bell = next((r for r in made if r.name == builder.BELL), None)
+    check(f"Apply makes it: {bell.name if bell else 'nothing'}",
+          bell is not None)
+    check("mentionable by him and by nobody else, so a role people hold to "
+          "hear about a vote cannot be turned round and used to shout",
+          bell.mentionable is False)
+    check("and a second Apply adopts the one that is there rather than "
+          "making a second",
+          run(builder.ensure_module_roles(guild, said.append))["bell"] is bell)
+
+    modules.set_enabled(guild.id, "governance", False)
+    before = len(made)
+    run(builder.ensure_module_roles(guild, said.append))
+    check("a house with the votes switched off is handed no bell for votes "
+          "it does not hold", len(made) == before)
+    modules.set_enabled(guild.id, "governance", True)
+
+    print("\nnobody is rung who has not asked, and no house that said no")
+    bindings.bind_role(guild.id, "bell", bell.id)
+    check("the house rings out of the box, which is safe because the role "
+          "starts empty", clerk.ringing(guild))
+    check("an empty bell is nobody, so a ballot mentions nothing",
+          clerk.bell_for(guild) is None)
+
+    holder = types.SimpleNamespace(id=21, display_name="Sam", bot=False)
+    machine = types.SimpleNamespace(id=22, display_name="A bot", bot=True)
+    bell.members = [holder]
+    check("somebody holding it is somebody to ring",
+          clerk.bell_for(guild) is bell)
+    bell.members = [machine]
+    check("a bot holding it is not: no ping is worth waking a webhook for",
+          clerk.bell_for(guild) is None)
+    bell.members = [holder]
+
+    clerk.set_ringing(guild, False)
+    check("a house that wants no pings in it switches them off",
+          not clerk.ringing(guild))
+    check("and the switch outranks the role: nobody is rung however many "
+          "people are holding it", clerk.bell_for(guild) is None)
+    clerk.set_ringing(guild, True)
+    check("switched back on, the override is dropped rather than pinned",
+          clerk.ringing(guild)
+          and settings.get(guild.id, clerk.RINGING) is None)
+
+    print("\nwhat the card is allowed to ping")
+    only = clerk.ring(bell)
+    check("the bell, and nothing else",
+          only.roles == [bell] and only.users is False and only.everyone is False)
+    nothing = clerk.ring()
+    check("and with no bell, nothing at all: a proposal whose What says "
+          "@everyone must not become one because the card carried it",
+          nothing.roles is False and nothing.users is False
+          and nothing.everyone is False)
+
+    print("\nfiling rings it, once, on the ballot's own message")
+    drawn = []
+    keep_card, keep_floor = clerk.Card, clerk.floor_for
+
+    class Spy(clerk.Card):
+        """The card as it went up, which is the only place a mention can
+        live: the ballot is a layout, so there is no content beside it to
+        hide one in."""
+
+        def __init__(self, segments=(), rows=()):
+            drawn.append("\n\n".join(segments))
+            super().__init__(segments, rows)
+
+    clerk.Card = Spy
+    try:
+        floor = Floor()
+        clerk.floor_for = lambda _g, _b: floor
+        bill = run(clerk.file_bill(guild, author, "A books channel",
+                                   "There shall be a books channel.",
+                                   "People here read."))
+        check("the floor still gets one message and not two: the ping is on "
+              "the ballot, not beside it", len(floor.posted) == 1)
+        check("the mention is on the card that went up",
+              bell.mention in drawn[-1])
+        check("and on a line that was already there, so a card is still "
+              "four lines", len(drawn[-1].splitlines()) <= 4)
+        check("the message names the bell as the one thing it may ping",
+              floor.mentions[-1].roles == [bell])
+        check("and the proposal it is drawn from carries no mention of its "
+              "own, so every repaint from here loses it",
+              bell.mention not in clerk.ballot_content(guild, bill))
+
+        run(clerk.paint_floor(guild, bill))
+        check("an edit after a vote redraws the card without it",
+              bell.mention not in drawn[-1])
+        check("and says outright that it may ping nobody, so a busy vote is "
+              "not a bell that rings once a minute",
+              floor.posted[0].edits[-1]["allowed_mentions"].roles is False)
+
+        floor.posted.clear()
+        run(clerk.paint_floor(guild, bill))
+        check("a card somebody deleted goes back up silently, because "
+              "whoever asked about this vote was told about it days ago",
+              len(floor.posted) == 1 and floor.mentions[-1].roles is False
+              and bell.mention not in drawn[-1])
+
+        print("\nand with nobody to ring, the card is the one it always was")
+        for label, arrange in (
+            ("the house switched the pings off",
+             lambda: clerk.set_ringing(guild, False)),
+            ("nobody holds the bell",
+             lambda: setattr(bell, "members", [])),
+            ("there is no bell role at all",
+             lambda: guild.roles.clear()),
+        ):
+            clerk.set_ringing(guild, True)
+            bell.members = [holder]
+            bindings.bind_role(guild.id, "bell", bell.id)
+            guild.roles[:] = [bell]
+            arrange()
+            if not guild.roles:
+                bindings.bind_role(guild.id, "bell", None)
+            quiet = Floor()
+            clerk.floor_for = lambda _g, _b, room=quiet: room
+            run(clerk.file_bill(guild, author, "A books channel",
+                                "There shall be a books channel.",
+                                "People here read."))
+            check(f"{label}: no mention, no stray text, no empty ping",
+                  bell.mention not in drawn[-1] and "<@&" not in drawn[-1]
+                  and quiet.mentions[-1].roles is False)
+    finally:
+        clerk.Card, clerk.floor_for = keep_card, keep_floor
+
+    print("\nopting in and out is a button on the screen that is already "
+          "about how this house votes")
+    guild.roles[:] = [bell]
+    bindings.bind_role(guild.id, "bell", bell.id)
+    check("the door is not a card in the votes room, which is ballots and "
+          "nothing else",
+          clerk.house_view(guild, False) is not None)
+    check("it offers to start telling you, and to stop",
+          clerk.house_view(guild, False).children[0].label
+          != clerk.house_view(guild, True).children[0].label)
+    clerk.set_ringing(guild, False)
+    check("a house with the pings off shows no button and no explanation of "
+          "a button it has not got", clerk.house_view(guild, False) is None)
+    clerk.set_ringing(guild, True)
+    bindings.bind_role(guild.id, "bell", None)
+    guild.roles.clear()
+    check("and neither does a house that has never made the bell",
+          clerk.house_view(guild, False) is None)
 
 
 # ---------- the filing handlers, for real ----------
@@ -1418,6 +1663,30 @@ def test_roster(data):
     check("a supermajority never asks for less than a majority",
           all(roster.required(n, "fundamental") >= roster.required(n)
               for n in range(1, 40)))
+    check("the ordinary tier takes the house's own share like any other",
+          roster.share_for("normal", {"normal_share": 0.75}) == 0.75
+          and roster.required(8, "normal", 0.75) == 6)
+    check("and the floor holds it at a majority, so half of eight is five "
+          "rather than four", roster.required(8, "normal", 0.5) == 5)
+
+    check("a share is counted against the roster unless the house says "
+          "otherwise", roster.counted(8, 3, 1) == 8)
+    check("a house may count against the ballots cast instead",
+          roster.counted(8, 3, 1, {roster.TURNOUT: True}) == 3)
+    check("and may let an abstention out of whichever of the two it is",
+          roster.counted(8, 3, 1, {roster.ABSTAIN_OUT: True}) == 7
+          and roster.counted(8, 3, 1, {roster.TURNOUT: True,
+                                       roster.ABSTAIN_OUT: True}) == 2)
+    check("the widest a count can still get is the whole roll, less the "
+          "abstentions already out of it",
+          roster.most_counted(8, 2, {roster.TURNOUT: True}) == 8
+          and roster.most_counted(8, 2, {roster.ABSTAIN_OUT: True}) == 6)
+    check("and counting against turnout never asks for more than the "
+          "roster would have, which is what makes it safe to end a vote on "
+          "the roster's figure however the house counts",
+          all(roster.required(roster.counted(n, v, 0, {roster.TURNOUT: True}))
+              <= roster.required(n)
+              for n in range(1, 30) for v in range(0, n + 1)))
 
     everyone = lambda m: True  # noqa: E731
     guild = types.SimpleNamespace(id=1, members=[
@@ -1467,7 +1736,9 @@ def test_voting(clerk, data):
         kick = bill({}, kind="kick", target_id=3)
         st = clerk.vote_state(guild, kick)
         check("a removal drops its subject from its own roster", st["size"] == 7)
-        check("and asks a tier higher", st["need"] == 6)
+        check("and asks for its own bar -- all the eligible but two -- "
+              "rather than its tier's share, which is the number the close "
+              "has always used", st["need"] == 5 and st["counted"] == 7)
 
         four = {str(i): "yes" for i in range(1, 5)}
         check("four yes of eight is not settled",
@@ -1518,6 +1789,15 @@ def test_voting_numbers(data):
           stock["floor_hours"] == 48 and stock["fundamental_share"] == 0.75)
     check("and asking for a particular house's gives the same until it chooses",
           settings.voting(1) == stock)
+    check("the ordinary tier has a figure of its own now, at the plain "
+          "majority it was when it had none",
+          stock["normal_share"] == 0.5)
+    check("and both counting rules ship off, which is the roster "
+          "denominator and the abstention that lands where silence lands",
+          stock["count_turnout"] is False
+          and stock["abstain_steps_out"] is False)
+    check("a removal still leaves two of the eligible unconvinced",
+          stock["removal_spare"] == 2)
 
     accepted, rejected = settings.set_voting(1, floor_hours=6)
     check("a house can set its own window", accepted["floor_hours"] == 6
@@ -1589,6 +1869,190 @@ def test_numbers_bite(clerk, data):
     finally:
         clerk.in_cooperative = original
         settings.set_voting(guild.id, fundamental_share=None, away_days=None)
+
+
+def test_counting_rules(clerk, data):
+    """Who a vote is counted against is the house's, and the rule that ends
+    a vote early has to follow it.
+
+    That is the whole risk in these two switches: a denominator that widens
+    while the ballot is open can put a threshold back out of reach after it
+    was met, and a clerk who announced a result on the strength of it would
+    have closed a vote nobody had won. So most of what follows is about
+    when a vote may be called, and the rest is about the four sums --
+    ballot line, receipt, close, removal -- agreeing on one figure."""
+    print("\nwhat a vote is counted against, and when it may be called")
+    import roster
+
+    roster.configure(data)
+    settings.configure(data)
+    original = clerk.in_cooperative
+    clerk.in_cooperative = lambda m: True
+    gid = 81
+    guild = types.SimpleNamespace(
+        id=gid, name="The Hangout",
+        members=[fake_member(i) for i in range(1, 9)],
+        text_channels=[], get_channel=lambda _id: None,
+        get_role=lambda _id: None, get_member=lambda _id: None,
+    )
+
+    def bill(ballots, **extra):
+        return {"no": 3, "title": "t", "kind": "ordinary", "what": "w",
+                "status": "on_floor", "ballots": dict(ballots), **extra}
+
+    def state(ballots, **extra):
+        return clerk.vote_state(guild, bill(ballots, **extra))
+
+    def yes_from(n):
+        return {str(i): "yes" for i in range(1, n + 1)}
+
+    try:
+        check("an ordinary proposal is counted against the roster and "
+              "carries on a plain majority, exactly as it did when it was "
+              "the one threshold a house could not set",
+              state({})["need"] == 5 and state({})["counted"] == 8)
+        settings.set_voting(gid, normal_share=0.75)
+        check("a house that wants its everyday bar higher says so",
+              state({})["need"] == 6)
+        held, _ = settings.set_voting(gid, normal_share=0.2)
+        check("and cannot put it under a majority, which would carry a "
+              "proposal with more of the house against it than for it -- "
+              "and close the vote before the rest of them were asked",
+              held["normal_share"] == 0.5 and state({})["need"] == 5)
+        settings.set_voting(gid, normal_share=None)
+
+        # ---- an abstention that steps out of the count ----
+        check("an abstention lands where silence lands out of the box",
+              state({"1": "abstain"})["need"] == 5)
+        settings.set_voting(gid, abstain_steps_out=True)
+        stepped = state({"1": "abstain"})
+        check("a house may take it out of the count instead, which lowers "
+              "the bar rather than counting against",
+              stepped["need"] == 4 and stepped["counted"] == 7)
+        check("and the vote can still be called the moment it is decided, "
+              "because every abstention still to come only lowers the bar "
+              "further",
+              clerk.vote_settled(state({**yes_from(4), "5": "abstain"})) is True)
+        settings.set_voting(gid, abstain_steps_out=None)
+
+        # ---- counted against turnout ----
+        check("against the roster, the fifth yes of eight ends it where it "
+              "stands", clerk.vote_settled(state(yes_from(5))) is True)
+        settings.set_voting(gid, count_turnout=True)
+        turnout = state({**yes_from(2), "3": "no"})
+        check("counted against turnout the bar is a share of the ballots "
+              "cast, so three votes ask for two",
+              turnout["counted"] == 3 and turnout["need"] == 2)
+        check("but a vote that has met it is not called, because the next "
+              "ballot widens the denominator underneath it",
+              clerk.vote_settled(turnout) is False)
+        check("what still ends one early is the yes votes carrying the "
+              "whole roll, which no later ballot can take back",
+              clerk.vote_settled(state(yes_from(5))) is True)
+        check("failing waits for everybody under either rule",
+              clerk.vote_settled(
+                  state({str(i): "no" for i in range(1, 5)})) is False)
+        check("and a house that has all voted is over whichever way it "
+              "counts",
+              clerk.vote_settled(
+                  state({str(i): "no" for i in range(1, 9)})) is True)
+        check("the line under the buttons quotes the live bar, not the "
+              "roster's",
+              "2 of 2 yes" in clerk.ballot_line(
+                  guild, bill({**yes_from(2), "3": "no"})))
+        check("and the nudge stops telling people silence counts against "
+              "something it no longer counts against",
+              "settled among whoever does vote" in clerk.nudge_text(
+                  guild, bill({}, priority=True)))
+        check("nor does the receipt promise that one more yes carries it, "
+              "which counted this way it does not: at three cast it takes "
+              "two, and the third yes makes it three of four",
+              "the bar moves with every ballot that arrives"
+              in clerk.standing_line(guild, bill({"1": "yes", "2": "no"})))
+        check("while a vote the yes votes have carried outright is still "
+              "told plainly that they have",
+              clerk.standing_line(guild, bill(yes_from(5)),
+                                  carried="That carries it.")
+              == "That carries it.")
+
+        # ---- the close reads the same rule the ballot showed ----
+        closed = {}
+
+        async def catch(guild_, bill_, passed, tally_line, decided=None):
+            closed.update(passed=passed, line=tally_line,
+                          threshold=bill_.get("threshold"))
+            bill_["status"] = "passed" if passed else "failed"
+
+        real_finalize = clerk.finalize_bill
+        clerk.finalize_bill = catch
+        try:
+            run(clerk.close_bill(guild, bill({**yes_from(2), "3": "no"})))
+            check("the close counts by the rule the ballot was showing: two "
+                  "of the three who voted carries it",
+                  closed["passed"] is True and "needed 2 of 3" in closed["line"])
+            check("and the record says which three, because 'needed 2 of 3' "
+                  "read a year later has to name its denominator",
+                  closed["threshold"]["counted"] == 3
+                  and closed["threshold"]["roster"] == 8)
+            settings.set_voting(gid, count_turnout=None)
+            run(clerk.close_bill(guild, bill({**yes_from(2), "3": "no"})))
+            check("against the roster the same three ballots fail it",
+                  closed["passed"] is False and "needed 5 of 8" in closed["line"])
+
+            # ---- removals keep a bar of their own ----
+            kick = bill({}, kind="kick", target_id=3)
+            st = clerk.vote_state(guild, kick)
+            run(clerk.close_bill(
+                guild, bill(yes_from(5), kind="kick", target_id=3)))
+            check("a removal's ballot and its close quote one bar, which is "
+                  "the bug that made a removal say it needed six and pass "
+                  "on five",
+                  closed["passed"] is True
+                  and f"needed {st['need']} of {st['counted']}" in closed["line"])
+            settings.set_voting(gid, removal_spare=1)
+            check("a house that wants a removal to convince one more says "
+                  "so, and the warning shown before anybody names a person "
+                  "moves with it",
+                  clerk.vote_state(guild, kick)["need"] == 6
+                  and "but 1 say yes" in clerk.removal_weight(guild))
+            settings.set_voting(gid, count_turnout=True)
+            check("and counting against turnout does not reach it: a "
+                  "removal is a count of people to convince, never a share "
+                  "of whoever turned up",
+                  clerk.vote_state(guild, kick)["need"] == 6)
+            settings.set_voting(gid, count_turnout=None, removal_spare=None)
+
+            small = types.SimpleNamespace(
+                id=gid, name="The Hangout",
+                members=[fake_member(i) for i in range(1, 5)],
+                text_channels=[], get_channel=lambda _id: None,
+                get_role=lambda _id: None, get_member=lambda _id: None,
+            )
+            check("the floor under the bar is the house's too, so four "
+                  "people cannot show somebody the door on one vote",
+                  clerk.vote_state(small, bill({}, kind="kick",
+                                               target_id=4))["need"] == 3)
+        finally:
+            clerk.finalize_bill = real_finalize
+
+        # ---- what the switches deliberately do not reach ----
+        settings.set_voting(gid, count_turnout=True, abstain_steps_out=True)
+        poll = bill({"1": "Tue", "2": "Thu"}, options=["Tue", "Thu"])
+        check("neither switch reaches a choice ballot, which was always "
+              "settled among the votes cast and has no abstention to step "
+              "out of them", clerk.vote_state(guild, poll)["clinch"] == 5)
+        settings.set_voting(gid, count_turnout=None, abstain_steps_out=None)
+
+        shown = "\n".join(clerk.voting_lines(guild))
+        check("and every new rule is on the panel beside the rest, since a "
+              "rule nobody can read is a rule nobody trusts",
+              all(f"`{name}`" in shown for name in
+                  ("normal_share", "removal_spare", "count_turnout",
+                   "abstain_steps_out")))
+    finally:
+        clerk.in_cooperative = original
+        settings.set_voting(gid, normal_share=None, removal_spare=None,
+                            count_turnout=None, abstain_steps_out=None)
 
 
 def test_veto(clerk, data):
@@ -1958,7 +2422,7 @@ def test_cards_survive(clerk, data):
             self.id, self.mention = rid, f"<#{rid}>"
             self.sent, self.held = 0, {}
 
-        async def send(self, content=None, view=None):
+        async def send(self, content=None, view=None, allowed_mentions=None):
             self.sent += 1
             msg = Msg(self.id * 10 + self.sent)
             self.held[msg.id] = msg
@@ -2934,6 +3398,15 @@ def test_modules(data):
           "and the bindings know how to hold",
           all(room in modules.ROOM_PLAN
               for spec in modules.SPEC.values() for room in spec["rooms"]))
+    # Roles read exactly like rooms: a mapping, so one can be optional. A
+    # tuple would still iterate, and every role in it would silently become
+    # required the day somebody added one that is not.
+    import bindings as _bindings
+    check("and every role, with the same answer to whether the module can "
+          "run without it",
+          all(isinstance(spec["roles"], dict) for spec in modules.SPEC.values())
+          and all(role in _bindings.ROLES
+                  for spec in modules.SPEC.values() for role in spec["roles"]))
     check("no two modules claim the same setting group",
           len([g for s in modules.SPEC.values() for g in s["settings"]])
           == len({g for s in modules.SPEC.values() for g in s["settings"]}))
@@ -2963,7 +3436,7 @@ def test_modules(data):
     # checks quietly stopped testing anything the last time one was cut.
     modules.SPEC["_dependant"] = {
         "name": "Dependant", "blurb": "", "default": True, "rooms": {},
-        "roles": (), "needs": ("chat",), "brain": True, "settings": (),
+        "roles": {}, "needs": ("chat",), "brain": True, "settings": (),
         "builds": False, "commands": (), "tools": (),
     }
     try:
@@ -3391,35 +3864,46 @@ def test_turn_shape(data):
 
 
 def test_officer_gate(data):
-    """The lock that does not read the model's output.
+    """The locks that do not read the model's output.
 
     brain.py already refuses a conversation to anyone outside the
-    cooperative, so this gate should never fire in the ordinary run of
-    things. It exists for the day something else calls dispatch.
+    cooperative, so the first of these should never fire in the ordinary run
+    of things. It exists for the day something else calls dispatch. The
+    second fires constantly and is meant to: everyone in the cooperative
+    reaches it and almost nobody passes it.
     """
-    print("\nthe elevated tools are the cooperative's alone")
+    print("\nreading how this place is set up is the cooperative's, "
+          "changing it is not")
 
-    check("the officer's tools are declared to the model",
+    check("the configuration tools are declared to the model",
           {"set_setting", "set_feature", "reset_settings"}
           <= {d["name"] for d in toolbox.declarations()})
-    check("and every one of them sits in the officer tier",
+    check("reading how this place is set up is the cooperative's",
           all(toolbox.REGISTRY[name]["tier"] == "officer"
-              for name in ("set_setting", "set_feature", "list_settings",
-                           "list_features", "reset_settings")))
+              for name in ("list_settings", "list_features")))
+    # Rewriting it is not, and the difference is the whole point: the panel
+    # that moves a threshold has always been shut to everyone but whoever
+    # runs the server, so at the officer tier asking Eugene was a way round
+    # a lock rather than a second key for it.
+    check("and rewriting it is the steward's",
+          all(toolbox.REGISTRY[name]["tier"] == "steward"
+              for name in ("set_setting", "reset_settings", "set_feature")))
     check("while the ordinary ones did not quietly get promoted",
           toolbox.REGISTRY["propose"]["tier"] == "member"
           and toolbox.REGISTRY["lookup"]["tier"] == "minor")
 
     outsider = types.SimpleNamespace(id=1, display_name="Stranger")
     insider = types.SimpleNamespace(id=2, display_name="Somebody")
+    steward = types.SimpleNamespace(id=3, display_name="Whoever Runs It")
 
-    toolbox.configure(HERE, data, in_cooperative=lambda m: m.id == 2)
+    toolbox.configure(HERE, data, in_cooperative=lambda m: m.id in (2, 3),
+                      is_steward=lambda m: m.id == 3)
     denied = json.loads(run(toolbox.dispatch(
-        GUILD, outsider, "set_setting", {"key": "floor_hours", "value": 1})))
+        GUILD, outsider, "list_settings", {})))
     check("someone outside is refused before a handler is even looked up",
           "not in it" in denied.get("error", ""))
     allowed = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "set_setting", {"key": "floor_hours", "value": 1})))
+        GUILD, insider, "list_settings", {})))
     check("someone inside gets through the gate",
           "not in it" not in allowed.get("error", ""))
     reading = json.loads(run(toolbox.dispatch(
@@ -3427,20 +3911,44 @@ def test_officer_gate(data):
     check("and the reading tools are not caught up in it",
           isinstance(reading, list))
 
+    asked = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "set_setting",
+        {"key": "fundamental_share", "value": "0.5"})))
+    check("a member of the cooperative cannot lower the bar that protects "
+          "them by asking for it",
+          "steward" in asked.get("error", ""))
+    pressed = json.loads(run(toolbox.dispatch(
+        GUILD, steward, "set_setting",
+        {"key": "fundamental_share", "value": "0.5"})))
+    check("and whoever could already do it by hand still can",
+          "steward" not in pressed.get("error", ""))
+    check("while reading the numbers was never the part that was shut",
+          "steward" not in allowed.get("error", ""))
+
     toolbox.configure(HERE, data, in_cooperative=None)
     shut = json.loads(run(toolbox.dispatch(
-        GUILD, insider, "reset_settings", {})))
+        GUILD, insider, "list_features", {})))
     check("a host that never said who is on the roll fails shut, not open",
           "roll" in shut.get("error", ""))
+
+    toolbox.configure(HERE, data, in_cooperative=lambda m: True)
+    unsaid = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "reset_settings", {})))
+    check("and one that never said who runs the server fails shut the same "
+          "way, rather than handing the configuration to the whole roll",
+          "who runs it" in unsaid.get("error", ""))
 
     def broken(_member):
         raise RuntimeError("the roll is on fire")
 
-    toolbox.configure(HERE, data, in_cooperative=broken)
+    toolbox.configure(HERE, data, in_cooperative=broken, is_steward=broken)
     burnt = json.loads(run(toolbox.dispatch(
         GUILD, insider, "set_feature", {"feature": "chat", "on": False})))
     check("and a check that throws is a no, not a yes",
           "the answer is no" in burnt.get("error", ""))
+    also_burnt = json.loads(run(toolbox.dispatch(
+        GUILD, insider, "list_features", {})))
+    check("on either gate", "the answer is no" in also_burnt.get("error", ""))
 
     log_entries = json.loads((data / "logs" / "executor_log.json").read_text())
     refusals = [e for e in log_entries if e.get("result") == "denied"]
@@ -3448,6 +3956,816 @@ def test_officer_gate(data):
           len(refusals) >= 3 and all(e.get("detail") for e in refusals))
 
     toolbox.configure(HERE, data)  # back as the rest of the run expects it
+
+
+def test_settings_by_asking(data):
+    """The other door onto the numbers, and whether it behaves like the one
+    with the buttons on it.
+
+    Every failure below was real. The switches could not be reached at all,
+    because the declared type of a value was `number` and a switch is not
+    one. Putting a single number back meant clearing every other choice the
+    house had made beside it. And a change made by asking left no line
+    anywhere, so the same edit was accountable through one door and
+    invisible through the other.
+    """
+    print("\nthe numbers can be changed by asking, not only by pressing")
+    import powers
+
+    store = data / "asking-store"
+    settings.configure(store)
+    said = []
+
+    async def wrote_down(_guild, line):
+        said.append(line)
+
+    powers.configure(None, lambda m: True, wrote_down)
+    toolbox.configure(HERE, store, powers.ACTIONS_TABLE,
+                      in_cooperative=lambda m: True, is_steward=lambda m: True)
+    gid = 8080
+    guild = types.SimpleNamespace(id=gid, name="The Hangout")
+    asker = types.SimpleNamespace(id=7, display_name="Robin")
+
+    def ask(tool, args):
+        return json.loads(run(toolbox.dispatch(guild, asker, tool, args)))
+
+    try:
+        # A switch, typed the way somebody says it out loud.
+        flag = next(iter(settings.VOTING_FLAGS))
+        was = settings.voting(gid)[flag]
+        done = ask("set_setting", {"key": flag, "value": "off" if was else "on"})
+        check("a switch can be set through the tool at all",
+              done.get("done") == "set"
+              and settings.voting(gid)[flag] is (not was))
+        declared = next(d for d in toolbox.declarations()
+                        if d["name"] == "set_setting")
+        check("because the declared type is no longer one only a number fits",
+              declared["parameters"]["properties"]["value"]["type"] != "number")
+        check("and the model is told which names are switches, from the "
+              "same table the handler reads",
+              all(name in declared["parameters"]["properties"]["value"]
+                  ["description"] for name in settings.VOTING_FLAGS))
+
+        # Two numbers changed, one put back.
+        ask("set_setting", {"key": "floor_hours", "value": "12"})
+        ask("set_setting", {"key": "away_days", "value": "30"})
+        back = ask("reset_settings", {"keys": ["floor_hours"]})
+        held = settings.voting(gid)
+        check("one setting goes back to the default on its own",
+              back.get("keys_cleared") == ["floor_hours"]
+              and held["floor_hours"] == settings.voting()["floor_hours"])
+        check("and the other five the house chose are still theirs",
+              held["away_days"] == 30 and held[flag] is (not was))
+        check("naming one nobody had changed is not an error, it is an "
+              "answer",
+              ask("reset_settings", {"keys": ["removal_hours"]})
+              .get("already_default") == ["removal_hours"])
+        cleared = ask("reset_settings", {})
+        check("and the whole lot still goes back at once when asked",
+              set(cleared.get("keys_cleared", [])) == {"away_days", flag}
+              and settings.voting_overrides(gid) == {})
+
+        # Refusals that say what would have worked.
+        unknown = ask("set_setting", {"key": "quorum", "value": "3"})
+        check("a name that is not a setting comes back named",
+              "'quorum' is not a setting" in unknown.get("error", ""))
+        check("and a near miss is offered rather than a shrug",
+              "hours" in ask("set_setting", {"key": "hours", "value": "5"})
+              .get("error", ""))
+        low, high = settings.VOTING_RULES["kick_min_yes"][1:3]
+        out = ask("set_setting", {"key": "kick_min_yes", "value": "900"})
+        check("a value outside its bounds comes back with the range, rather "
+              "than reading like a request that was granted",
+              f"between {low} and {high}" in (out.get("held") or "")
+              and out.get("now") == high)
+        check("a value that is not a number at all comes back with it too",
+              f"between {low} and {high}"
+              in ask("set_setting", {"key": "kick_min_yes", "value": "lots"})
+              .get("error", ""))
+        check("while a value inside them is not reported as a correction",
+              ask("set_setting", {"key": "kick_min_yes", "value": "6"})
+              .get("held") is None)
+        check("a whole number written as a decimal is not mistaken for one "
+              "outside its bounds",
+              ask("set_setting", {"key": "kick_min_yes", "value": "4.0"})
+              .get("now") == 4)
+        check("and a switch given a number is refused as a switch",
+              "on or off" in ask("set_setting",
+                                 {"key": flag, "value": "48"}).get("error", ""))
+        check("a forgotten value asks for one rather than quietly clearing "
+              "the house's choice",
+              "what should" in ask("set_setting", {"key": "away_days"})
+              .get("error", ""))
+
+        # Parity with the panel: the same line, and the same warning about
+        # what the change reaches.
+        said.clear()
+        shipped = powers.shown("floor_hours", settings.voting(gid)["floor_hours"])
+        told = ask("set_setting", {"key": "floor_hours", "value": "6"})
+        check("a change made by asking writes the line a change made by "
+              "pressing writes",
+              len(said) == 1 and "`floor_hours`" in said[0]
+              and f"{shipped} → 6" in said[0] and "Robin" in said[0])
+        check("and says how far back it reaches, in the panel's own words",
+              told.get("reaches") == powers.reaches("floor_hours"))
+        check("which is not the same sentence for a threshold as for a "
+              "window",
+              powers.reaches("fundamental_share") != powers.reaches("floor_hours"))
+        said.clear()
+        ask("reset_settings", {"keys": ["floor_hours"]})
+        check("putting one back is written down too, and says so",
+              len(said) == 1 and "back to the default" in said[0])
+
+        said.clear()
+        ask("set_feature", {"feature": "chat", "on": True})
+        check("and so is a feature switched on by asking",
+              len(said) == 1 and "switched on" in said[0]
+              and "Robin" in said[0])
+    finally:
+        import modules
+        modules.reset(gid)
+        powers.configure(None, None, None)
+        toolbox.configure(HERE, data)
+        settings.configure(data)
+
+
+# ---------- nobody is signed up for the bell ----------
+
+def test_bell_is_asked_for(clerk, data):
+    """The one role Eugene must never put on anybody, or take off them.
+
+    The cooperative role is guarded because it decides who votes. The bell
+    decides nothing whatever, and that is the reason it needs its own test:
+    a role whose only effect is whether somebody's phone lights up is the
+    one nobody thinks to guard, and a clerk who signs a member up for
+    notifications because a third party asked nicely has made a decision
+    about their attention that was never his to make.
+
+    Held shut rather than checked at the door. No tool he is handed names
+    a role, so there is nothing for the model to aim; every hand in
+    clerk.py that moves a role looks that role up itself rather than being
+    passed one; and the single hand that looks up the bell moves it on
+    whoever pressed the button and on nobody else.
+    """
+    print("\nthe bell is asked for, never handed out")
+
+    import ast
+    import bindings
+    import discord
+    import modules
+
+    settings.configure(data)
+
+    print("\nnothing the model can reach names a role at all")
+    aimable = [
+        f"{name}.{prop}"
+        for name, spec in toolbox.REGISTRY.items()
+        for prop, field in spec["parameters"].get("properties", {}).items()
+        if "role" in prop.lower()
+        or "role" in str(field.get("description", "")).lower()
+    ]
+    check(f"no declared tool takes a role to move: {aimable or 'none does'}",
+          not aimable)
+    # The strongest guard is the one that cannot be reached. If a tool ever
+    # does take a role name, this is where somebody finds out that it now
+    # has to refuse the bell in Python, because a tool description is a
+    # request and the model is not the only thing that reads it.
+    check("so the refusal lives in the shape of the toolbox rather than in "
+          "a check somebody has to remember",
+          not any("role" in str(spec["parameters"]).lower()
+                  for spec in toolbox.REGISTRY.values()))
+    # A fuzzy lookup that resolves "bell" to the bell, sitting one caller
+    # away from being the door above. It has none, and this is what fails
+    # when it gets one.
+    reached = [name for name in ("clerk.py", "toolbox.py", "duties.py",
+                                 "brain.py", "builder.py", "roster.py")
+               if "find_role(" in (HERE / name).read_text()]
+    check(f"and the fuzzy role lookup that would answer to 'bell' is called "
+          f"by nothing: {reached or 'nothing'}", not reached)
+
+    print("\nevery hand that moves a role looks the role up itself")
+    moves = [
+        (ast.unparse(node.func.value),
+         ast.unparse(node.args[0]) if node.args else "")
+        for node in ast.walk(ast.parse((HERE / "clerk.py").read_text()))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("add_roles", "remove_roles")
+    ]
+    # Counted, so that a new one is something somebody has to come here and
+    # account for rather than something that arrives quietly. If this fails,
+    # a hand that moves a role has been added or removed: read it, and say
+    # below which role it moves and whose.
+    check(f"there are {len(moves)} hands that move a role, and no more",
+          len(moves) == 7)
+    check("none is handed the role it moves, so no argument and no loop "
+          "variable can steer one at the bell",
+          all(role in ("coop", "role", "bell") for _who, role in moves))
+    check("five of them are the cooperative, which is the house's to give "
+          "and never his",
+          sum(1 for _who, role in moves if role != "bell") == 5)
+    on_the_bell = [who for who, role in moves if role == "bell"]
+    check(f"and the bell is moved in one place only, on {on_the_bell}",
+          on_the_bell == ["you", "you"])
+
+    print("\nand that one place is the presser, in front of the presser")
+    source = (HERE / "clerk.py").read_text()
+    check("where `you` is who pressed the button and cannot be anybody else",
+          "guild, you = interaction.guild, interaction.user" in source)
+
+    class Role:
+        def __init__(self, rid, name):
+            self.id, self.name = rid, name
+            self.members, self.mention = [], f"<@&{rid}>"
+
+    class Person:
+        def __init__(self, uid):
+            self.id, self.roles = uid, []
+
+        async def add_roles(self, role, reason=None):
+            touched.append(("on", self.id, role.name))
+
+        async def remove_roles(self, role, reason=None):
+            touched.append(("off", self.id, role.name))
+
+    class Response:
+        async def edit_message(self, content=None, view=None):
+            drawn.append(content)
+
+    touched, drawn = [], []
+    bell = Role(1400, clerk.BELL)
+    guild = types.SimpleNamespace(
+        id=9101, name="The Hangout", roles=[bell], members=[], categories=[],
+        text_channels=[],
+        get_role=lambda rid: next((r for r in guild.roles if r.id == rid), None),
+        get_channel=lambda _id: None,
+    )
+    bindings.bind_role(guild.id, "bell", bell.id)
+    presser, bystander = Person(31), Person(32)
+    guild.members[:] = [presser, bystander]
+    interaction = types.SimpleNamespace(
+        guild=guild, user=presser, response=Response())
+
+    run(clerk.BellButton(False).callback(interaction))
+    check("pressing it puts the bell on the presser",
+          touched == [("on", presser.id, clerk.BELL)])
+    run(clerk.BellButton(True).callback(interaction))
+    check("and pressing it again takes it back off the same person",
+          touched[-1] == ("off", presser.id, clerk.BELL))
+    check(f"nobody else is touched either way: {[t[1] for t in touched]}",
+          all(uid == presser.id for _way, uid, _name in touched))
+    check("and nothing but the bell is moved by it",
+          all(name == clerk.BELL for _way, _uid, name in touched))
+
+    view = clerk.house_view(guild, False)
+    check("the screen it lives on offers nobody to aim it at: no list of "
+          "members, so there is no other person to press it for",
+          not any(isinstance(child, discord.ui.UserSelect)
+                  for child in view.children))
+    check("which is the difference between it and the panel that hands out "
+          "the cooperative, where picking a person is the whole point",
+          any(isinstance(child, discord.ui.UserSelect)
+              for child in (clerk.GrantSelect(2), clerk.RevokeSelect(3))))
+
+    print("\nthe guard against him doing it is written where he reads")
+    import brain
+    told = brain._PARTS["governance"]
+    check("the governance note tells him the bell is not his to hand out",
+          "bell" in told and "/house" in told)
+    check("and it is in the list of what is not his, beside the vote itself",
+          told.index("What is not yours") < told.index("Putting the bell"))
+    # A guard against the model is not a notice to a member: a screen that
+    # explains what Eugene has been told not to do has spent a line of a
+    # member's attention on a promise they never asked for.
+    check("and nowhere a member reads it",
+          "not his to" not in clerk.house_body(guild)
+          and "Putting the bell" not in source)
+
+    bindings.bind_role(guild.id, "bell", None)
+    modules.reset(guild.id)
+
+
+def test_poll_arithmetic(data):
+    """The counting rule a community poll runs on, on its own.
+
+    It is deliberately not the cooperative's, and this is where that is
+    held still. A poll counts against the people who answered, because a
+    server never signed up to be counted and treating its silence as a no
+    would put every poll out of reach on the morning it opened. The quorum
+    is the whole of what stops that being four people, so the things worth
+    pinning are that it cannot be nothing, that falling short reports no
+    winner at all, and that a tie is a tie rather than a runoff.
+    """
+    print("\nwhat a community poll counts, and against whom")
+
+    import polls
+
+    settings.configure(data)
+
+    print("\nthe quorum is a share of the room, and never nought")
+    check("a fifth of a hundred is twenty", polls.quorum(100, 0.2) == 20)
+    check("rounded up, never down: nineteen people still want four",
+          polls.quorum(19, 0.2) == 4)
+    check("never more than the room holds", polls.quorum(3, 1.0) == 3)
+    check("and never zero while there is anybody at all to ask, because a "
+          "poll that reports on nobody's answer is a press release",
+          polls.quorum(50, 0.001) == 1)
+    check("an empty room has no quorum rather than a quorum of one",
+          polls.quorum(0, 0.2) == 0)
+
+    print("\na yes/no poll is carried among the people who chose")
+    poll = polls.draft(1, "Robin", "Move game night?")
+    for uid, answer in enumerate([polls.YES] * 6 + [polls.NO] * 4):
+        polls.cast(poll, uid, answer)
+    got = polls.decided(poll, 100, 0.5, 0.05)
+    check("ten answers out of a hundred clears a quorum of five",
+          got["quorate"] and got["quorum"] == 5)
+    check("six of the ten who chose carries it", got["answer"] == polls.YES)
+    check("and the bar is a majority of those ten, not of the hundred",
+          got["needed"] == 6)
+
+    print("\nabstaining is turning up, which is the question a quorum asks")
+    quiet = polls.draft(1, "Robin", "Move game night?")
+    for uid in range(4):
+        polls.cast(quiet, uid, polls.ABSTAIN)
+    polls.cast(quiet, 90, polls.YES)
+    got = polls.decided(quiet, 20, 0.5, 0.25)
+    check("five answers meet a quorum of five though four said nothing",
+          got["quorate"] and got["voted"] == 5)
+    check("and the one who chose decides it, because an abstention is "
+          "counted for the quorum and against nothing else",
+          got["answer"] == polls.YES and got["needed"] == 1)
+
+    print("\nshort of the quorum there is no result, not a quiet one")
+    thin = polls.draft(1, "Robin", "Move game night?")
+    for uid in range(3):
+        polls.cast(thin, uid, polls.YES)
+    got = polls.decided(thin, 100, 0.5, 0.2)
+    check("three of a hundred does not reach twenty",
+          not got["quorate"] and got["quorum"] == 20)
+    check("so nothing is reported, not even that yes was ahead: the "
+          "sentence people would quote is the one that must not exist",
+          got["answer"] is None and "leaders" not in got)
+    check("the numbers are still there to be shown", got["voted"] == 3)
+
+    print("\na choice poll reports the leader, or says it was tied")
+    choice = polls.draft(1, "Robin", "Which night?",
+                         options=["Friday", "Saturday"])
+    for uid in range(3):
+        polls.cast(choice, uid, "Friday")
+    for uid in range(3, 5):
+        polls.cast(choice, uid, "Saturday")
+    got = polls.decided(choice, 10, 0.5, 0.1)
+    check("the leader is the answer", got["answer"] == "Friday")
+    check("an option nobody picked is still counted, at nought",
+          polls.counts(polls.draft(1, "R", "q", options=["a", "b"]))["b"] == 0)
+    polls.cast(choice, 5, "Saturday")
+    got = polls.decided(choice, 10, 0.5, 0.1)
+    check("three all is a tie, reported as one",
+          got["answer"] is None and set(got["leaders"]) == {"Friday", "Saturday"})
+    check("and no runoff, because there is no status quo here for a second "
+          "round to protect", "round" not in got)
+
+    print("\nthe shape of a poll, before anybody can answer it")
+    check("blank answers are dropped rather than refused",
+          polls.clean_options(["Friday", "", "  "]) == ["Friday"])
+    check("duplicates go, because two buttons with one label is a result "
+          "nobody can read",
+          polls.clean_options(["Friday", "friday"]) == ["Friday"])
+    check("nothing at all means a yes/no poll",
+          polls.clean_options(["", " "]) is None)
+    check("one answer is not a choice", polls.options_refusal(["Friday"]))
+    check("eleven is too many", polls.options_refusal([str(i) for i in range(11)]))
+    check("two is fine", polls.options_refusal(["a", "b"]) is None)
+    check("and yes/no is fine", polls.options_refusal(None) is None)
+
+    print("\nan answer that was never on the poll cannot be put on it")
+    check("not a made-up option",
+          not polls.may_answer(choice, "Wednesday"))
+    check("nor yes, on a poll that offered neither",
+          not polls.may_answer(choice, polls.YES))
+    check("abstaining is on every poll", polls.may_answer(choice, polls.ABSTAIN))
+
+    print("\na poll never ends early, and that is the point")
+    open_one = polls.draft(1, "Robin", "q")
+    polls.open_poll(open_one, 1, 48, 10, 20)
+    check("the window is stamped when it opens, not when it was drafted",
+          open_one["ends_at"] and open_one["status"] == polls.OPEN)
+    check("and it is not over yet", not polls.is_over(open_one))
+    later = datetime.now(timezone.utc) + timedelta(hours=49)
+    check("it is over when the clock says so", polls.is_over(open_one, later))
+    check("a poll with no window at all is over rather than eternal",
+          polls.is_over({"status": polls.OPEN}))
+    check("a closed one is not 'over' twice",
+          not polls.is_over({"status": polls.CLOSED, "ends_at": "2020-01-01T00:00:00+00:00"}))
+
+    print("\nclosing destroys the answers and keeps the count")
+    polls.cast(open_one, 5, polls.YES)
+    polls.close(open_one, polls.decided(open_one, 4, 0.5, 0.2))
+    check("the ballots are gone", "ballots" not in open_one)
+    check("the counts survive", open_one["result"]["counts"][polls.YES] == 1)
+    check("and it is closed", open_one["status"] == polls.CLOSED)
+
+
+def test_polls(clerk, data):
+    """A question put to the whole server, and every wall around it.
+
+    The audience split was taken out of this repo once for being threaded
+    through the proposal pipeline, so the first thing held still is that it
+    has not come back: a poll shares no store, no room and no closing path
+    with a proposal, and `bills.json` never learns the word.
+
+    Then the four promises made about it. That only the cooperative opens
+    one, though anyone here answers it. That nothing reaches the room until
+    a person has pressed a card telling them, in a count rather than a
+    word, who it goes to. That the room holds polls and nothing else --
+    not a greeting, not a closing report, not Eugene answering somebody who
+    mentioned him under one. And that he is not carrying the tool at all
+    unless the house has switched the feature on.
+    """
+    print("\ncommunity polls: asked of everyone, deciding nothing")
+
+    import bindings
+    import discord
+    import modules
+    import polls
+
+    settings.configure(data)
+    guild_id = 9400
+
+    class Message:
+        def __init__(self, mid, channel):
+            self.id, self.channel = mid, channel
+            self.edits = []
+
+        async def edit(self, **kwargs):
+            self.edits.append(kwargs)
+
+    class Room:
+        def __init__(self, cid, name):
+            self.id, self.name = cid, name
+            self.mention = f"<#{cid}>"
+            self.posted = []
+            self.mentions = []
+
+        async def send(self, content=None, view=None, allowed_mentions=None):
+            self.mentions.append(allowed_mentions)
+            message = Message(5000 + len(self.posted) + self.id, self)
+            self.posted.append((content, view))
+            return message
+
+        async def fetch_message(self, mid):
+            for _c, _v in self.posted:
+                pass
+            found = next((m for m in self._sent() if m.id == mid), None)
+            if found is None:
+                raise discord.NotFound(
+                    types.SimpleNamespace(status=404, reason="x"), "x")
+            return found
+
+        def _sent(self):
+            return getattr(self, "_messages", [])
+
+    # A room that remembers the message objects it made, so a repaint can
+    # find them again.
+    class Floor(Room):
+        def __init__(self, cid, name):
+            super().__init__(cid, name)
+            self._messages = []
+
+        async def send(self, content=None, view=None, allowed_mentions=None):
+            self.mentions.append(allowed_mentions)
+            message = Message(5000 + len(self._messages) + self.id, self)
+            self._messages.append(message)
+            self.posted.append((content, view))
+            return message
+
+    polls_room = Floor(41, "community-polls")
+    coop_role = types.SimpleNamespace(id=77, name="Cooperative")
+
+    def member(uid, name, inside):
+        m = types.SimpleNamespace(
+            id=uid, display_name=name, bot=False,
+            roles=[coop_role] if inside else [],
+        )
+        return m
+
+    inside_a = member(1, "Robin", True)
+    inside_b = member(2, "Sam", True)
+    outsider = member(3, "Kit", False)
+    crowd = [member(100 + i, f"P{i}", False) for i in range(17)]
+    guild = types.SimpleNamespace(
+        id=guild_id, name="The Hangout", roles=[coop_role],
+        members=[inside_a, inside_b, outsider] + crowd,
+        categories=[],
+        get_channel=lambda cid: polls_room if cid == polls_room.id else None,
+        get_role=lambda rid: coop_role if rid == coop_role.id else None,
+    )
+
+    for who in guild.members:
+        who.guild = guild
+    polls_room.guild = guild
+
+    modules.set_enabled(guild_id, "polls", True)
+    bindings.bind_role(guild_id, "cooperative", coop_role.id)
+    bindings.bind_channel(guild_id, "polls", polls_room.id)
+
+    print("\nit is off until a house asks for it, and off means he has never heard of it")
+    modules.set_enabled(guild_id, "polls", False)
+    check("the tool is not declared when the feature is off",
+          not modules.tool_allowed(guild_id, "open_community_poll"))
+    check("so it is not in the list the model is handed",
+          "open_community_poll" not in
+          [d["name"] for d in toolbox.declarations(guild_id)])
+    check("and the room is not one /setup would build",
+          "polls" not in modules.wanted_rooms(guild_id))
+    check("off is the shipped default, so a server that never asks never gets it",
+          not modules.spec("polls")["default"])
+    modules.set_enabled(guild_id, "polls", True)
+    check("switched on, he has it", modules.tool_allowed(guild_id, "open_community_poll"))
+
+    print("\nnothing is shared with the cooperative's machinery")
+    import inspect
+    poll_side = "".join(
+        inspect.getsource(fn) for fn in (
+            clerk.cast_poll_answer, clerk.paint_poll, clerk.open_confirmed_poll,
+            clerk.close_poll, clerk.poll_segments, clerk.poll_verdict,
+            clerk.act_open_community_poll, clerk.offer_poll,
+        )
+    )
+    for forbidden in ("bills_path", "update_bill", "finalize_bill",
+                      "vote_state", "acts_path", "number_act"):
+        check(f"a poll reaches no part of a proposal: {forbidden}",
+              forbidden not in poll_side)
+    check("the poll store is its own file",
+          polls._path(guild_id).name == "polls.json")
+    check("and polls.py imports nothing of the floor's",
+          not any(line.startswith("import clerk") or line.startswith("import roster")
+                  for line in Path(HERE / "polls.py").read_text().splitlines()))
+
+    print("\nonly the cooperative opens one, though anyone here answers")
+    ran = asyncio.get_event_loop_policy().new_event_loop()
+    try:
+        offered = ran.run_until_complete(clerk.act_open_community_poll(
+            guild, outsider, {"question": "Move game night?"},
+            {"channel": polls_room},
+        ))
+        check("somebody outside the roll is refused",
+              "cooperative" in json.loads(offered).get("error", ""))
+        check("and nothing was posted for them", not polls_room.posted)
+
+        print("\nit cannot be asked for anywhere but the server it goes to")
+        elsewhere = json.loads(ran.run_until_complete(
+            clerk.act_open_community_poll(
+                guild, inside_a, {"question": "Move game night?"},
+                {"channel": types.SimpleNamespace(id=1, guild=None)},
+            )))
+        check("a direct message has no server behind it, so the button "
+              "would come back looking for one it cannot see",
+              "error" in elsewhere)
+        other = types.SimpleNamespace(id=2, guild=types.SimpleNamespace(id=1))
+        check("nor a room in somebody else's server",
+              "error" in json.loads(ran.run_until_complete(
+                  clerk.act_open_community_poll(
+                      guild, inside_a, {"question": "q"},
+                      {"channel": other}))))
+        check("and no draft was written down for either",
+              not polls.load(guild_id))
+
+        print("\nthe tool offers; it does not open")
+        before = len(polls_room.posted)
+        offered = ran.run_until_complete(clerk.act_open_community_poll(
+            guild, inside_a, {"question": "Move game night?"},
+            {"channel": polls_room},
+        ))
+        got = json.loads(offered)
+        check("it reports an offer, never an opening", "offered" in got)
+        check("it says who it would go to, as a count", got["goes_to"] == 20)
+        check("a confirmation card went up where it was asked",
+              len(polls_room.posted) == before + 1)
+        stored = polls.load(guild_id)
+        check("the draft is written down, not held in memory",
+              len(stored) == 1 and stored[0]["status"] == polls.DRAFT)
+        check("and it is not open", stored[0].get("message_id") is None)
+
+        print("\nthe confirmation says who it goes to, in a number")
+        preview = clerk.poll_preview(guild, stored[0])
+        check("the whole server, named", "whole of The Hangout" in preview)
+        check("counted, because 'everyone' reads as an abstraction and "
+              "'20 people' does not", "**20 people**" in preview)
+        check("and set against the roll, so the difference is on the card",
+              "not the 2 on the roll" in preview)
+        check("it says plainly that it decides nothing",
+              "decides nothing" in preview and "bound by the answer" in preview)
+
+        print("\nnobody else can press it")
+        pressed = []
+
+        class Interaction:
+            def __init__(self, user, message_id):
+                self.user = user
+                self.guild = guild
+                self.message = types.SimpleNamespace(id=message_id)
+                self.response = types.SimpleNamespace(
+                    send_message=self._say, edit_message=self._edit,
+                )
+
+            async def _say(self, content=None, **kwargs):
+                pressed.append(("ephemeral", content))
+
+            async def _edit(self, content=None, **kwargs):
+                pressed.append(("edit", content))
+
+            async def edit_original_response(self, content=None, **kwargs):
+                pressed.append(("edit", content))
+
+        draft = polls.load(guild_id)[0]
+        confirm = clerk.PollConfirm()
+        press_confirm = next(c for c in confirm.children
+                             if c.custom_id == "clerk:poll_confirm")
+        ran.run_until_complete(
+            press_confirm.callback(Interaction(inside_b, draft["draft_message_id"]))
+        )
+        check("a second member of the cooperative cannot put up somebody "
+              "else's poll", any("not yours" in (c or "") for _k, c in pressed))
+        check("and it is still a draft",
+              polls.load(guild_id)[0]["status"] == polls.DRAFT)
+        check("nothing reached the room", len(polls_room.posted) == before + 1)
+
+        print("\nthe person who asked presses it, and only then is it a poll")
+        pressed.clear()
+        ran.run_until_complete(
+            press_confirm.callback(Interaction(inside_a, draft["draft_message_id"]))
+        )
+        live = polls.load(guild_id)[0]
+        check("now it is open", live["status"] == polls.OPEN)
+        check("it is in the polls room", live["channel_id"] == polls_room.id)
+        check("one message, and it is the poll", len(polls_room.posted) == before + 2)
+        check("its window was stamped at the open, not at the draft",
+              live.get("ends_at") is not None)
+        check("member-written text can never carry a mention out of it",
+              polls_room.mentions[-1] is not None
+              and polls_room.mentions[-1].everyone is False)
+
+        print("\nanyone in the server can answer, roll or no roll")
+        answers = []
+
+        class Press:
+            def __init__(self, user, message_id):
+                self.user, self.guild = user, guild
+                self.message = types.SimpleNamespace(id=message_id)
+                self.response = types.SimpleNamespace(send_message=self._say)
+
+            async def _say(self, content=None, **kwargs):
+                answers.append(content)
+
+        mid = live["message_id"]
+        ran.run_until_complete(clerk.cast_poll_answer(Press(outsider, mid), polls.YES))
+        check("somebody with no role at all is counted",
+              polls.load(guild_id)[0]["ballots"] == {"3": polls.YES})
+        check("and told nobody ever sees it",
+              any("nobody ever sees" in (a or "") for a in answers))
+        ran.run_until_complete(clerk.cast_poll_answer(Press(outsider, mid), polls.NO))
+        check("changing an answer replaces it rather than adding one",
+              polls.load(guild_id)[0]["ballots"] == {"3": polls.NO})
+        ran.run_until_complete(clerk.cast_poll_answer(Press(outsider, mid)))
+        check("and it can be withdrawn", not polls.load(guild_id)[0]["ballots"])
+
+        print("\nan answer nobody offered is refused, whatever the button says")
+        answers.clear()
+        ran.run_until_complete(
+            clerk.cast_poll_answer(Press(inside_a, mid), "Wednesday"))
+        check("checked against the poll, not against the card that was pressed",
+              any("not on this poll" in (a or "") for a in answers))
+        check("and nothing was recorded", not polls.load(guild_id)[0]["ballots"])
+
+        print("\nthe close is an edit to the poll's own card")
+        fresh = polls.load(guild_id)[0]
+        for i, who in enumerate(crowd[:6]):
+            ran.run_until_complete(
+                clerk.cast_poll_answer(Press(who, mid), polls.YES))
+        posted_before = len(polls_room.posted)
+        edits_before = len(polls_room._messages[-1].edits)
+        ran.run_until_complete(clerk.close_poll(guild, polls.load(guild_id)[0]))
+        done = polls.load(guild_id)[0]
+        check("it is closed", done["status"] == polls.CLOSED)
+        check("nothing new was posted to the room",
+              len(polls_room.posted) == posted_before)
+        check("the card it was already on was edited",
+              len(polls_room._messages[-1].edits) > edits_before)
+        check("the answers are destroyed", "ballots" not in done)
+        check("the count survives", done["result"]["counts"][polls.YES] == 6)
+        check("six of twenty clears a fifth", done["result"]["quorate"])
+        check("and the room said yes", done["result"]["answer"] == polls.YES)
+
+        print("\nwhat the card says at the close is what the room said")
+        verdict = clerk.poll_verdict(guild, done)
+        check("reported, never carried: 'carried' is the cooperative's word "
+              "and means somebody has to go and do something",
+              "carried" not in verdict.lower().split("of those")[0])
+        check("it says what the room said", "The room said" in verdict)
+
+        print("\na poll that fell short reports nothing, loudly")
+        thin = ran.run_until_complete(
+            clerk.offer_poll(guild, inside_a, "Anybody there?"))
+        ran.run_until_complete(clerk.open_confirmed_poll(guild, thin))
+        thin = polls.by_id(guild_id, thin["id"])
+        ran.run_until_complete(
+            clerk.cast_poll_answer(Press(outsider, thin["message_id"]), polls.YES))
+        ran.run_until_complete(clerk.close_poll(guild, polls.by_id(guild_id, thin["id"])))
+        shut = polls.by_id(guild_id, thin["id"])
+        check("one answer of twenty is not a quorum", not shut["result"]["quorate"])
+        said = clerk.poll_verdict(guild, shut)
+        check("so it says there is no result", "No result" in said)
+        check("and does not say which way it was leaning",
+              "room said" not in said)
+
+        print("\na draft nobody confirms leaves no trace")
+        stale = ran.run_until_complete(
+            clerk.offer_poll(guild, inside_a, "Never mind"))
+        made = polls.by_id(guild_id, stale["id"])
+        made["created_at"] = (datetime.now(timezone.utc)
+                              - timedelta(hours=polls.DRAFT_HOURS + 1)).isoformat()
+        polls.put(guild_id, made)
+        check("it is swept", polls.sweep(guild_id) == 1)
+        check("and it was never a poll", polls.by_id(guild_id, stale["id"]) is None)
+        check("a fresh draft is not swept",
+              polls.sweep(guild_id) == 0)
+
+        print("\ndiscarding one posts nothing anywhere")
+        gone = ran.run_until_complete(
+            clerk.offer_poll(guild, inside_a, "Forget it"))
+        ran.run_until_complete(clerk.send_poll_confirm(
+            guild, gone,
+            lambda content, view: polls_room.send(content, view=view)))
+        posted_before = len(polls_room.posted)
+        pressed.clear()
+        confirm2 = clerk.PollConfirm()
+        press_discard = next(c for c in confirm2.children
+                             if c.custom_id == "clerk:poll_discard")
+        ran.run_until_complete(press_discard.callback(
+            Interaction(inside_a, polls.by_id(guild_id, gone["id"])["draft_message_id"]),
+        ))
+        check("the draft is gone", polls.by_id(guild_id, gone["id"]) is None)
+        check("and the polls room never heard about it",
+              len(polls_room.posted) == posted_before)
+    finally:
+        ran.close()
+
+    print("\nthe room holds polls and nothing else, ever")
+    clerk_source = Path(HERE / "clerk.py").read_text()
+    senders = [
+        line.strip() for line in clerk_source.splitlines()
+        if "polls_room(" in line
+    ]
+    check("exactly one function in the building writes to it",
+          len([fn for fn in (clerk.open_confirmed_poll,)
+               if "polls_room" in inspect.getsource(fn)]) == 1)
+    check("and the rest only look it up, never send",
+          len(senders) <= 6)
+    check("the furniture loop posts its buttons to the proposals room and "
+          "nowhere else, so no banner ever lands here",
+          "polls" not in inspect.getsource(clerk.ensure_furniture))
+    check("a poll's close is an edit, so no closing report is posted",
+          "send(" not in inspect.getsource(clerk.close_poll))
+
+    print("\nhe never speaks in the polls room")
+    import brain
+    check("not when the chat room is unbound and it is one of his own rooms",
+          not brain.may_speak_in(guild, polls_room))
+    check("and the tool that would put a card there refuses without a room "
+          "to put it in",
+          "channel" in Path(HERE / "clerk.py").read_text()
+          .split("async def act_open_community_poll")[1][:1200])
+
+    print("\nthe numbers are the house's, through the door every number uses")
+    for name in ("poll_hours", "poll_share", "poll_quorum_share"):
+        check(f"`{name}` is a setting a house can change",
+              settings.known_voting(name))
+        check(f"and `{name}` says what it means on the panel",
+              name in settings.VOTING_HELP)
+    check("the quorum can be set low but never to nothing",
+          settings.clamp_voting("poll_quorum_share", 0) > 0)
+    check("and a share below a half is held at one",
+          settings.clamp_voting("poll_share", 0.1) == 0.5)
+    settings.set_voting(guild_id, poll_quorum_share=0.5)
+    check("a house that raises the quorum raises it now",
+          clerk.poll_quorum(guild) == 10)
+    settings.set_voting(guild_id, poll_quorum_share=None)
+
+    print("\nthe guard against offering it lives where the model reads")
+    spec = toolbox.REGISTRY["open_community_poll"]
+    check("the tool is told never to suggest it",
+          "NEVER offer" in spec["description"])
+    check("and told what to reach for instead when somebody wants a decision",
+          "propose" in spec["description"])
+    check("it is handed the room it was asked in, and not through the args",
+          spec.get("context") and "channel" not in spec["parameters"]["properties"])
+    check("and none of that is said on the card a member reads",
+          "NEVER" not in clerk.poll_preview(guild, polls.draft(1, "R", "q")))
+
+    modules.reset(guild_id)
+    bindings.bind_channel(guild_id, "polls", None)
 
 
 def main():
@@ -3464,11 +4782,17 @@ def main():
         test_roster(data)
         test_duties(data)
         test_modules(data)
+        test_poll_arithmetic(data)
         settings.configure(data)  # back to the shared store
         test_officer_gate(data)
+        test_settings_by_asking(data)
+        settings.configure(data)  # back to the shared store
         clerk = load_clerk(data)
         if clerk is None:
             skip("the debate thread", "discord.py is not installed")
+            skip("the bell", "discord.py is not installed")
+            skip("the bell is asked for", "discord.py is not installed")
+            skip("community polls", "discord.py is not installed")
             skip("the filing handlers", "discord.py is not installed")
             skip("the chat room", "discord.py is not installed")
             skip("the colour wording", "discord.py is not installed")
@@ -3481,6 +4805,9 @@ def main():
                  "discord.py is not installed")
         else:
             test_debate_thread(clerk, data)
+            test_bell(clerk, data)
+            test_bell_is_asked_for(clerk, data)
+            test_polls(clerk, data)
             test_filing(clerk, data)
             test_setup_rooms(clerk, data)
             test_prompt_matches_the_tools(data)
@@ -3493,6 +4820,7 @@ def main():
             test_voting(clerk, data)
             test_voting_numbers(data)
             test_numbers_bite(clerk, data)
+            test_counting_rules(clerk, data)
             test_veto(clerk, data)
             test_record_card(clerk, data)
             test_cards_survive(clerk, data)

@@ -118,6 +118,18 @@ ROOM_PLAN = {
         "topic": "Every vote that has closed, one message each. Decisions "
                  "numbered, and the window to take one back.",
     },
+    "polls": {
+        "name": "community-polls", "category": "governance",
+        # Everyone, role or no role. This is the only room he keeps that a
+        # person with nothing at all can answer in, and that is the whole
+        # point of it: a poll the cooperative could reach and nobody else
+        # could is a proposal with extra steps.
+        "visibility": "gate", "read_only": True,
+        "topic": "Questions put to everyone here. Anyone can answer, "
+                 "answers are anonymous, and nothing decided in this room "
+                 "binds anybody: what the cooperative decides is in "
+                 "#decisions.",
+    },
     "chat": {
         # His own room, made under his own name. A server with a channel
         # called `chat` has not thereby asked to be confined to it, and the
@@ -140,7 +152,12 @@ ROOM_PLAN = {
 # rooms:    binding key -> True if the module cannot run without it.
 #           An optional room is one the module improves with and survives
 #           without: `chat` unbound means he talks everywhere, not nowhere.
-# roles:    binding keys that must resolve to a role.
+# roles:    binding key -> True if the module cannot run without it, read
+#           exactly like the rooms above. It was a bare tuple while every
+#           role in it was required, and the bell is not: a house that
+#           never made one holds votes perfectly well, so a required entry
+#           would put governance into dormant on every server that upgraded
+#           and tell them a room was missing that nobody asked for.
 # needs:    other modules. Off downwards, always.
 # brain:    True if it cannot do anything without an AI key.
 # settings: the `warden.SPEC` groups this module owns, so `/house` can
@@ -171,7 +188,11 @@ SPEC = {
         "blurb": "Proposals, anonymous ballots, and the permanent record.",
         "default": True,
         "rooms": {"votes": True, "decisions": True, "proposals": False},
-        "roles": ("cooperative",),
+        # `bell` is who asked to be told a ballot has opened. Optional
+        # because nobody has to be told: the floor is a room you can go and
+        # look at, and a house where nobody wants ringing should look
+        # exactly like a house that never heard of the bell.
+        "roles": {"cooperative": True, "bell": False},
         "needs": (),
         "brain": False,
         "settings": (),
@@ -179,6 +200,28 @@ SPEC = {
         "commands": ("propose", "invite", "remove", "close", "bills"),
         "tools": ("propose", "close_floor", "mark_carried_out",
                   "set_nudges", "lookup"),
+    },
+    "polls": {
+        "name": "Community polls",
+        "blurb": "A question put to the whole server, answered anonymously "
+                 "and deciding nothing.",
+        # Off, and this is the one switch in the table where the default is
+        # doing more work than a default usually does. A poll is the only
+        # thing Eugene runs that reaches past the cooperative, and the
+        # house that has not asked for that should not have a feature
+        # sitting there that a conversation could wander into. Off means
+        # the tool is not declared, so it is not a thing he can be talked
+        # into and not a thing he can offer: a server that never switches
+        # this on has a clerk who has never heard of a poll.
+        "default": False,
+        "rooms": {"polls": True},
+        "roles": {},
+        "needs": (),
+        "brain": False,
+        "settings": (),
+        "builds": True,
+        "commands": ("poll",),
+        "tools": ("open_community_poll",),
     },
     "chat": {
         "name": "Conversation",
@@ -193,7 +236,7 @@ SPEC = {
         # default nobody chose.
         "default": False,
         "rooms": {"chat": False},
-        "roles": (),
+        "roles": {},
         "needs": (),
         "brain": True,
         "settings": (),
@@ -211,7 +254,7 @@ SPEC = {
 # Display order for every list a human reads: what he is for, then what he
 # can be talked into, then the housekeeping. Not alphabetical -- the first
 # three are the reason to install him and belong at the top.
-ORDER = ("governance", "chat")
+ORDER = ("governance", "polls", "chat")
 
 # Tools that belong to no module because they are how a module is
 # configured. Switching every feature off must still leave the way to
@@ -373,8 +416,8 @@ def blockers(guild_id, key, *, rooms=(), roles=(), brain=False):
     for room, required in entry["rooms"].items():
         if required and room not in set(rooms):
             missing.append(f"no `{room}` room is bound")
-    for role in entry["roles"]:
-        if role not in set(roles):
+    for role, required in entry["roles"].items():
+        if required and role not in set(roles):
             missing.append(f"no `{role}` role is bound")
     if entry["brain"] and not brain:
         missing.append("no AI key")
@@ -458,11 +501,28 @@ def required_rooms(guild_id):
     return out
 
 
-def required_roles(guild_id):
+def wanted_roles(guild_id):
+    """Every role the enabled modules ask for, needed or not. What the
+    builder makes, since a role that is only ever optional still has to be
+    made by somebody before anyone can hold it."""
     out = []
     for key in keys():
-        if enabled(guild_id, key):
-            out.extend(r for r in SPEC[key]["roles"] if r not in out)
+        if not enabled(guild_id, key):
+            continue
+        out.extend(r for r in SPEC[key]["roles"] if r not in out)
+    return out
+
+
+def required_roles(guild_id):
+    """The ones an enabled module cannot run without, so the panel can tell
+    the difference between a gap and a preference."""
+    out = []
+    for key in keys():
+        if not enabled(guild_id, key):
+            continue
+        for role, required in SPEC[key]["roles"].items():
+            if required and role not in out:
+                out.append(role)
     return out
 
 

@@ -12,10 +12,15 @@ Three things make that more than a poll bot:
 - **The roster is the denominator, not turnout.** Not voting counts as a
   no, which is why stepping out of the count is one command and happens
   on its own after a quiet fortnight. Thresholds are shares of who is
-  actually here, so they move as the roll does.
+  actually here, so they move as the roll does. A house that wants to
+  count against turnout instead, or to let an abstention out of the
+  count, sets that like any other number.
 - **A vote ends when it is decided.** Passing is called the instant the
   yes votes arrive; failing waits for everyone, because a no can still
-  become a yes.
+  become a yes. The ending rule follows the counting rule: counted
+  against turnout, a vote is called early only where the yes votes alone
+  would have carried the whole roll, because every ballot still to come
+  moves the bar.
 - **Ballots are sealed from everybody, including from him.** They are
   destroyed at close. The tally survives; the votes do not.
 
@@ -45,6 +50,9 @@ them: [examples-charter.md](examples-charter.md).
   nothing: no line of it consults the model.
 - **`powers.py`**: the small hands. Which member somebody meant, and the
   two tools that configure the clerk himself.
+- **`polls.py`**: the arithmetic of a question put to the whole server,
+  which is not the arithmetic of a vote and shares none of it. Discord-free
+  and standard library only, like `roster.py`.
 
 ## Setup
 
@@ -91,16 +99,25 @@ before you press anything. **Rooms** points any job at any channel by
 hand, whatever it is called, which is the way to use one you already
 have under a different name.
 
-Apply makes the `Cooperative` and `Member` roles, binds them, creates the
-channels your switched-on features want and do not have, and — the part
-that matters — **puts you in the cooperative**. Until somebody is in it,
-Eugene refuses everyone, including whoever installed him.
+Apply makes the `Cooperative`, `Member` and `Bell` roles, binds them,
+creates the channels your switched-on features want and do not have, and
+— the part that matters — **puts you in the cooperative**. Until somebody
+is in it, Eugene refuses everyone, including whoever installed him.
 
 After that, **Roles & votes** hands the cooperative to anyone else who
 should have one, and that is the only way onto that roll: it is a chore
 somebody passes to you, not a ballot. `/invite` is a different door
 entirely — it is a vote about somebody who is not in the server yet, and
 what it hands out is a link.
+
+`Bell` is the one role nobody hands out: it is picked up, by whoever wants
+telling when a new vote opens, from `/house`. It starts empty, so the
+first ballot in a fresh server mentions nobody. A house that would rather
+nothing in it was ever pinged switches the whole thing off on the same
+**Roles & votes** screen, and then no ballot mentions anybody however many
+people are holding it. Eugene can ring it and nobody else can — it is
+created unmentionable, so it cannot be turned round and used to shout at
+everyone who opted in.
 
 That door is the one thing here with a last word attached. An invitation
 that passes carries a **veto** button on its decision in `#decisions` for
@@ -159,9 +176,14 @@ a conversation:
   instrument costs before it asks who.
 - **`/close <number>`** — call time on a vote that has had its run.
 - **`/bills`** — what is open for a vote right now.
+- **`/poll`** — ask the whole server something. Off until the house
+  switches community polls on, the cooperative's to open and everyone's to
+  answer, and it decides nothing. You are shown who it goes to, counted,
+  and nothing is posted until you press it.
 - **`/house`** — every feature and whether it is running, and the numbers
-  this house votes by. Read-only, and free; the changing is done by asking
-  him.
+  this house votes by. Free, and nothing on it changes the house; the
+  changing is done by asking him. One button, and it is yours rather than
+  the server's: whether a new ballot mentions you.
 - **`/privacy`** — what leaves this server, where it goes, and how much of
   the room he is holding right now. Anyone can run it, and there is a
   button on it that makes him forget what he is holding.
@@ -261,7 +283,7 @@ Setting one wakes Conversation. **Details** says what is configured.
 ## The numbers the server votes by
 
 Thresholds, windows and caps are the server's, not the repo's. **Numbers**
-on the `/setup` panel prints all eight and says which ones this server
+on the `/setup` panel prints every one of them and says which this server
 chose rather than inherited; picking one opens a box with its current value
 and its bounds, and `default` puts it back. One at a time on purpose — a
 form that changes six of them at once is a form somebody will change six of
@@ -271,33 +293,79 @@ them at once with.
 |---|---|---|
 | `floor_hours` | how long an ordinary vote stays open if nothing settles it | 48 |
 | `removal_hours` | the same, for a removal | 72 |
+| `normal_share` | the share an ordinary proposal needs | 0.5 |
 | `fundamental_share` | the share of the roster a removal or rule change needs | 0.75 |
+| `invite_share` | the share an invitation needs | 0.5 |
 | `kick_min_yes` | the fewest yes votes a removal can ever pass on | 3 |
+| `removal_spare` | how many of the eligible a removal may leave unconvinced | 2 |
 | `away_days` | a quiet spell this long takes you out of the count | 14 |
+| `poll_hours` | how long a community poll stays open (it never ends early) | 48 |
+| `poll_share` | the share of the answers given that carries a yes/no poll | 0.5 |
+| `poll_quorum_share` | the share of the server that must answer before a poll reports anything | 0.2 |
+
+The switches sit beside them, and two of them are the counting rule
+itself: `count_turnout` counts a share against the ballots cast rather
+than against the roster, and `abstain_steps_out` takes an abstention out
+of the count rather than leaving it where silence lands. Both ship off,
+which is the rule described above. The veto's own numbers and switches
+live here too.
 
 Each is held inside a range where the rest of the machinery still means
-what it says, so a share cannot be set above everybody and a window cannot
-be set to nothing. Nothing is cached: a number changed at noon is the one
-he quotes at one minute past, including on votes already open. Votes
-already on the floor keep the window they were filed with.
+what it says, so a share cannot be set above everybody, a window cannot be
+set to nothing, and no share goes under a majority — a bar below half
+would carry a proposal with more of the house against it than for it, and
+end the vote before the rest of them were asked. Nothing is cached: a
+number changed at noon is the one he quotes at one minute past, including
+on votes already open. Votes already on the floor keep the window they
+were filed with.
 
 ## One kind of vote
 
 Every ballot is the cooperative's — `/propose`, `/invite`, `/remove` — and
-every one is counted against the roster, so not voting is a no and it passes
-the moment the yes votes reach what is needed. A ballot with options is
-carried by whichever option gets past half the roster.
+every one is counted against the roster unless the house has said
+otherwise, so not voting is a no and it passes the moment the yes votes
+reach what is needed. A ballot with options is carried by whichever option
+gets past half the roster. A removal is the one vote counted no other way:
+its bar is all the eligible bar a couple, a count of people to convince
+rather than a share of anybody, and the counting rule does not reach it.
 
-There is no second kind put to the wider server. A house that wants everyone
+Nothing put to the wider server decides anything. A house that wants everyone
 to have a vote gives everyone the `Cooperative` role; that is one decision,
 taken once, by people who already hold it — and afterwards there is still one
 electorate, one denominator, and one meaning for "carried".
+
+**A community poll is the one thing that reaches past the roll, and it is off
+until you switch it on.** It asks everyone in the server a question,
+anonymously, and decides nothing: no proposal, no record, no decision number,
+nobody bound. It shares nothing with the machinery above — its own store, its
+own room, its own close — because this existed once as a second audience
+inside the ballot pipeline and was removed for what that cost.
+
+It counts the other way round, and has to. A roll is people who signed up to
+be counted, so silence there is a no; a server is not, so counting its
+silence would put every poll out of reach the day it opened. A poll is
+decided among whoever answered, and `poll_quorum_share` of the room is the
+whole of what stops that being four people — short of it, nothing is
+reported at all, not even which way it was leaning. It never ends early,
+because every answer still to come moves the bar underneath one already met.
+
+Opening one is the cooperative's; answering one is everyone's. It is the only
+thing Eugene does not do on the first ask: `/poll` or asking him shows you a
+card saying how many people it goes to, as a number, and nothing is posted
+until you press it yourself. He never offers it unasked, and he does not
+speak in that room at all — it holds polls and nothing else.
 
 **Nobody is DMed except about a priority vote**, which means one at the
 fundamental tier (a removal, a rule change) or one whose author filed it as
 priority with `/propose priority: True`. Ordinary proposals aren't chased — a
 bot that DMs about everything teaches people to ignore the one that
 mattered.
+
+**And nobody is pinged unless they asked to be.** Picking up `Bell` from
+`/house` puts a mention of it on the ballot card of every new proposal, so
+it lands in your notifications once, when the vote opens. Not when it is
+edited, not when it closes, not when somebody is being nudged. Drop the
+role on the same screen and it stops.
 
 **A proposal is one message and stays one message.** `#votes` gets a single
 card when it is filed — the proposal, its live ballot and its buttons — and
@@ -346,9 +414,10 @@ Three things, none of which consult the model, so none of them cost
 anything:
 
 - **A nudge**, by DM, once, halfway through a vote, to whoever has not
-  cast a ballot — because thresholds count against the roster, so
-  forgetting to vote is the same as voting no. Never in public, never a
-  hint at how anyone voted. Ask him to stop and he stops.
+  cast a ballot — because where thresholds count against the roster,
+  forgetting to vote is the same as voting no, and it says so in the
+  terms the house actually counts by. Never in public, never a hint at
+  how anyone voted. Ask him to stop and he stops.
 - **A word when the roster lets you go.** Fourteen quiet days takes you
   out of the denominator; the standing orders promise he tells you he
   did, and now he does, on both edges.

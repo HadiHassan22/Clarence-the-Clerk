@@ -36,6 +36,7 @@ import modules
 
 COOPERATIVE = "Cooperative"  # holds a vote: the people who picked up a chore
 MEMBER = "Member"            # in the room, no vote
+BELL = "Bell"                # rung when a ballot opens, for whoever asked
 
 # Roles this server used to call something else. Renamed in place rather than
 # recreated, so nobody loses a role they already hold.
@@ -137,7 +138,16 @@ async def ensure_role(guild, name, reason, say):
             say(f"renamed role: {old} -> {name}")
             return stale
     role = await guild.create_role(
-        name=name, permissions=discord.Permissions.none(), reason=reason
+        name=name,
+        permissions=discord.Permissions.none(),
+        # Spelled out rather than left to Discord's default, because one of
+        # these is a role Eugene pings. A mentionable role is one anybody
+        # can ping, so a bell that rings for a new vote would double as a
+        # way to shout at everyone who ever opted in, from any room, as
+        # often as somebody liked. Not mentionable means only a sender with
+        # Mention Everyone can ring it, which is him and not them.
+        mentionable=False,
+        reason=reason,
     )
     say(f"created role: {name}")
     return role
@@ -153,6 +163,38 @@ async def ensure_member(guild, say):
     return await ensure_role(
         guild, MEMBER, "In the room, no vote", say
     )
+
+
+async def ensure_bell(guild, say):
+    return await ensure_role(
+        guild, BELL, "Rung when a ballot opens, for whoever asked to be", say
+    )
+
+
+async def ensure_module_roles(guild, say):
+    """The roles the switched-on features ask for, beyond the two every
+    server gets. Driven off the declaration rather than off a list here, so
+    a server that has switched governance off is not handed a role for
+    votes it does not hold.
+
+    Names live in this file and binding keys live in `modules.py`, which is
+    the same split as the rooms: the plan says what a job is called, this
+    says what it looks like in Discord.
+    """
+    try:
+        wanted = modules.wanted_roles(guild.id)
+    except RuntimeError:
+        # No settings store on this host yet, which is the terminal builder
+        # on a machine that has never run the bot. Nothing can be read as
+        # switched on, so nothing extra is made, and the rooms still get
+        # built. The same meekness `bindings.adopt` has, for the same
+        # reason.
+        return {}
+    made = {}
+    for key in wanted:
+        if key == "bell":
+            made[key] = await ensure_bell(guild, say)
+    return made
 
 
 def overwrites_for(guild, cooperative, owner, spec, default_vis="members",
@@ -441,6 +483,7 @@ async def install(guild, config, say=print, sweep_existing=False):
     refuses the combination."""
     cooperative = await ensure_cooperative(guild, say)
     member = await ensure_member(guild, say)
+    await ensure_module_roles(guild, say)
     owner = guild.owner or await guild.fetch_member(guild.owner_id)
     if sweep_existing:
         say("-- sweep (destructive) --")

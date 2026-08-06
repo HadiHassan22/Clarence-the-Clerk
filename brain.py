@@ -353,8 +353,11 @@ def _roster_now(guild):
     if keyed is None or not hasattr(guild, "members"):
         return ""
     figures = _deps.get("numbers")
-    held = figures(guild) if figures is not None else {}
-    away_days = held.get("away_days", roster.AUTO_AWAY_DAYS)
+    # The shipped set where nothing has been wired up, rather than one
+    # constant reached for by name: a complete set is the only kind that is
+    # safe to read a threshold out of.
+    held = figures(guild) if figures is not None else settings.voting()
+    away_days = held["away_days"]
     size = len(roster.active(guild, keyed, away_days=away_days))
     if not size:
         return ""
@@ -373,12 +376,27 @@ def _roster_now(guild):
     door = ""
     if needs("invite") != needs("normal"):
         door = f" An invitation carries on {needs('invite')}."
+
+    # These are shares of the roster, which is what they are counted
+    # against unless the house has said otherwise. Where it has, they are
+    # the most a vote can ask rather than the figure of the day, and he is
+    # told so: "carries on 5 yes votes" said of a vote that will carry on 3
+    # is a wrong number given confidently, which is the failure this whole
+    # section exists to prevent.
+    counting = ""
+    if held.get(roster.TURNOUT):
+        counting = (" Counted against whoever votes rather than the roster, "
+                    "so those are the most a vote can ask and the real bar "
+                    "falls with the turnout.")
+    elif held.get(roster.ABSTAIN_OUT):
+        counting = (" An abstention steps out of the count here, so those "
+                    "are the most a vote can ask.")
     return (
         f"\n# What a vote needs today\n"
         f"{size} on the roster{aside}. An ordinary proposal carries on "
         f"{needs('normal')} yes votes; a fundamental "
         f"one -- a removal, or a change to the rules or to how voting works "
-        f"-- on {needs('fundamental')}.{door} That is the "
+        f"-- on {needs('fundamental')}.{door}{counting} That is the "
         f"cooperative's own business; a poll open to the whole server is "
         f"carried instead by a majority of whoever votes, once enough of "
         f"them have. Counted just now. Quote these and nothing else: the "
@@ -557,17 +575,24 @@ _PARTS = {
 # Proposals and votes
 When somebody wants something changed, draft it and file it -- do not send them to a button and do not ask them to confirm. Write their reasons in their words, not yours: it is filed in their name and you have no vote on it, so if anyone reads your filing as agreement, say plainly that you only did the paperwork. Then say the number and how it closes, in a few words.
 A vote ends the moment its result can no longer change, not when the clock runs out, so say what it needs rather than only how long it has. When somebody asks you to call it, report in a line: passed or failed, the count, and what still needs doing. That last part matters most -- a decision on the record has not happened yet, and most still need somebody to go and do them.
-You send one private reminder, halfway through a vote, to whoever has not cast a ballot, because silence counts against a proposal. If anyone asks you to stop, do it immediately: no argument, no asking why, no talking them round.
+You send one private reminder, halfway through a vote, to whoever has not cast a ballot, so that nobody loses a vote by forgetting -- what silence costs here is in the figures you are given, and it is not always a no. If anyone asks you to stop, do it immediately: no argument, no asking why, no talking them round.
 You keep a standing list of decisions that passed and have not happened. Never mark one done because it looks done to you; it goes on the record under the name of whoever said so.
 
 # What is not yours
 - Removing somebody in the cooperative. That is a fundamental vote, because a bot with a kick command is a way around the ballot. If they mean it, file it.
 - Handing out the cooperative role. It decides who votes, and it is the house's to give: somebody who has it hands it over under `/setup`. `/invite` is the door into the server and puts nobody on the roll.
+- Putting the bell on anybody, or taking it off. It is picked up under `/house` by the person who wants it and by nobody on their behalf, so send them to press it rather than offering to do it for them.
 - Ballots. Sealed, always, for everybody.
+""",
+    "polls": """
+# Community polls
+A poll goes to everybody in the server. Almost nothing should be one. It decides nothing, binds nobody and reaches people who never signed up to be asked anything, so it is worth spending their attention on only when somebody has said, in their own words, that they want the whole room asked. Until they say it, it does not exist: do not offer it, do not mention it, do not list it among the things you could do, and do not follow a proposal with "I could also ask everyone". If what they want is something decided, that is a proposal and it goes to the cooperative.
+Opening one is the cooperative's, the same as filing. Answering one is open to everyone here.
+This is the one thing you do not do on the first ask. The tool only offers it: they press it themselves, having read who it goes to. Say in a line that the confirmation is there, and leave it. If they ignore it, it was not wanted -- do not raise it again.
 """,
     "chat": """
 # Running the place
-Everyone talking to you is in the cooperative, so when one of them asks for something inside your hands, do it: first time, no confirmation step, no small lecture. Act, then say what you did in one line. That includes the numbers this house votes by -- "shorten the window to a day" is a change to make, not a conversation to have. Read before you write: if you are not certain of a setting's exact name, list them rather than guessing.
+Everyone talking to you is in the cooperative, so when one of them asks for something inside your hands, do it: first time, no confirmation step, no small lecture. Act, then say what you did in one line. The single exception is a community poll, which reaches past the cooperative and is theirs to press. That includes the numbers this house votes by -- "shorten the window to a day" is a change to make, not a conversation to have. Read before you write: if you are not certain of a setting's exact name, list them rather than guessing.
 """,
 }
 
@@ -1069,7 +1094,15 @@ async def _run_turn(guild, member, channel, text, said_already=False,
         results = []
         for call in reply.calls:
             used_tools.append(call.name)
-            result = await toolbox.dispatch(guild, member, call.name, call.args)
+            result = await toolbox.dispatch(
+                guild, member, call.name, call.args,
+                # The room this was asked in, for the one tool that has to
+                # put something in front of somebody rather than answer.
+                # Not in `call.args`: those are the model's and this is
+                # ours, and a channel it could name is a channel it could
+                # be talked into naming.
+                context={"channel": channel},
+            )
             results.append(
                 {"id": call.id, "name": call.name, "result": result[:20000]}
             )
@@ -1155,6 +1188,17 @@ def _is_his(guild, channel):
 def may_speak_in(guild, channel):
     if isinstance(channel, discord.DMChannel):
         return True
+    # Never the polls room, whatever else is bound and whoever mentions him
+    # in it. That room holds one kind of thing -- a question somebody put
+    # to the server -- and the whole of its promise is that an unread
+    # channel there means a poll is waiting. He would otherwise answer in
+    # it by the ordinary rule, because it is a room of his and sits in the
+    # governance category, and a conversation underneath a poll is both
+    # noise in the one room that cannot afford it and a nudge toward an
+    # open ballot from the one participant who is supposed to have no view.
+    polls_room = bindings.bound_channel_id(guild.id, "polls")
+    if polls_room is not None and channel.id == polls_room:
+        return False
     bound = chat_room_id(guild.id)
     if bound is None:
         return _is_his(guild, channel)
@@ -1169,6 +1213,15 @@ async def _point_home(message, guild):
     others clear, so the notice must not become the noise it was meant to
     prevent. Costs nothing: no model is consulted to say this.
     """
+    # Not in the polls room. Refusing to talk there and then talking there
+    # to say so is the same message in the same room, and that room's
+    # promise is that nothing is in it but polls -- a promise a notice
+    # about where to find him breaks exactly as thoroughly as a
+    # conversation would. Somebody who mentions him under a poll gets
+    # silence, which is what a room for answering questions in should give
+    # them.
+    if bindings.bound_channel_id(guild.id, "polls") == message.channel.id:
+        return
     now = datetime.now(timezone.utc).timestamp()
     if now - _pointed.get(message.channel.id, 0) < POINTER_QUIET:
         return

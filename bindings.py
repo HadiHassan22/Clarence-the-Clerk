@@ -27,6 +27,7 @@ ROOMS = {
     "proposals": "Where a new proposal is announced",
     "votes": "Where ballots run",
     "decisions": "The permanent record of what was decided",
+    "polls": "Questions put to the whole server, deciding nothing",
     "chat": "Where people talk to Eugene. He makes this one himself",
 }
 
@@ -41,6 +42,10 @@ ESSENTIAL_ROOMS = ("votes", "decisions")
 ROLES = {
     "cooperative": "Holds a vote",
     "member": "In the room, without a vote",
+    # Held by whoever wants telling, and by nobody else. It decides nothing
+    # and admits nobody to anything: the only thing it changes is whether a
+    # new ballot arrives in your notifications.
+    "bell": "Rung when a ballot opens",
 }
 
 # Categories Eugene files things under, rather than posts into. `chambers`
@@ -69,6 +74,11 @@ JOBS = {
     "the-floor": "votes",
     "decisions": "decisions",
     "gazette": "decisions",
+    "community-polls": "polls",
+    # The bare word too, because a server that had the old polls room -- or
+    # simply has one called `polls` -- means the same room by it, and the
+    # alternative is Eugene building a second one alongside it.
+    "polls": "polls",
     # His own room, by his own name, and only by that. A server's existing
     # `#chat` is not on this list and must never be: binding `chat` does not
     # add a room he talks in, it takes away every other one, and no server

@@ -1,14 +1,20 @@
 """Who a vote is counted against, and how many of them it takes.
 
-Thresholds here count against the roster rather than against turnout, and that
-single choice is what makes a vote able to end early. If five of eight are
-needed and the fifth yes lands, nothing anyone does afterwards can change the
-result, so there is no reason to keep the ballot open for another two days.
+Thresholds here count against the roster rather than against turnout out of
+the box, and that single choice is what makes a vote able to end early. If
+five of eight are needed and the fifth yes lands, nothing anyone does
+afterwards can change the result, so there is no reason to keep the ballot
+open for another two days. A house may count against turnout instead, and
+that is the trade it is making: the bar then moves with every ballot cast,
+so a vote is decided by whoever turned up and mostly cannot be called until
+they all have.
 
 It has one consequence worth being deliberate about: somebody absent counts the
 same as somebody voting no. Away is the release valve. It is meant to be
 frictionless and free of judgement -- a quiet fortnight sets it on its own, and
-nobody is ever expected to explain themselves.
+nobody is ever expected to explain themselves. A house that would rather an
+abstention stepped out of the count than sat in it as a silent no can say so
+too; the arithmetic below is the same either way, only the denominator moves.
 
 That rule is the cooperative's, and it only works because the cooperative is a
 few people who all signed up to be counted -- which is why the cooperative is
@@ -28,13 +34,18 @@ from pathlib import Path
 
 import settings
 
+# The shipped quiet spell, and the only place it is written as a number.
+# What actually decides is `away_days` in settings.VOTING_RULES; this is
+# what the functions below fall back on when nobody has passed one, so that
+# this module still answers on its own.
 AUTO_AWAY_DAYS = 14
 AWAY_ROLE = "away"
 
-# What share of the roster each tier needs. "normal" is a plain majority and
-# is the default for everything, because it is the rule people already expect
-# from a vote. At eight on the roster it asks for five, which is the same
-# number a two-thirds rule would have produced anyway.
+# What share of the roster each tier needs where the house has no figure of
+# its own. "normal" is a plain majority and is the default for everything,
+# because it is the rule people already expect from a vote. At eight on the
+# roster it asks for five, which is the same number a two-thirds rule would
+# have produced anyway.
 #
 # The door sits on a tier of its own, starting at a plain majority -- which
 # is what it always was -- so that a house can price an invitation without
@@ -44,8 +55,20 @@ TIERS = {"normal": None, "invite": 0.5, "fundamental": 0.75}
 
 # Which governance number moves a tier's share. A tier that is not here is
 # one the house has no figure for, and a plain majority stays a plain
-# majority however the settings are written.
-TIER_SHARES = {"invite": "invite_share", "fundamental": "fundamental_share"}
+# majority however the settings are written. The ordinary tier was that
+# case for a while, which made it the one threshold in the building a house
+# could read on the panel and not change.
+TIER_SHARES = {
+    "normal": "normal_share",
+    "invite": "invite_share",
+    "fundamental": "fundamental_share",
+}
+
+# Which switches move the denominator. Named here so the half-dozen places
+# that sum a vote ask the same question of the same table rather than each
+# reaching into the settings for a string of its own.
+TURNOUT = "count_turnout"
+ABSTAIN_OUT = "abstain_steps_out"
 
 # Per server, like everything else he writes down. It was one file at the
 # top of the data directory, which meant one person's last-seen time was
@@ -154,15 +177,56 @@ def share_for(tier, held=None):
     return held.get(name)
 
 
+def counted(size, voted, abstain=0, held=None):
+    """How many a share is counted against, as things stand.
+
+    The roster, out of the box: everybody on the roll, whether or not they
+    have voted, which is what makes silence a no. `count_turnout` counts
+    against the ballots actually cast instead, and `abstain_steps_out`
+    takes the abstentions out of whichever of the two it is.
+
+    One function because five callers need this number -- the ballot line,
+    the receipt, the nudge, the close and the rule that ends a vote early
+    -- and five sums of the same figure is five chances for a house to be
+    told one thing on the ballot and ruled by another at the close.
+    """
+    held = held or {}
+    base = voted if held.get(TURNOUT) else size
+    if held.get(ABSTAIN_OUT):
+        base -= abstain
+    return max(base, 0)
+
+
+def most_counted(size, abstain=0, held=None):
+    """The largest that count can still become, whoever votes from here.
+
+    Everybody left turning up and none of them abstaining, which is the
+    denominator a threshold has to clear to be genuinely out of reach of
+    the rest of the room. Under the roster it is simply today's count, and
+    a vote can be called the moment the yes votes reach it; under turnout
+    it is the whole roll, which is why counting that way costs the early
+    close except where a proposal has the house behind it outright.
+    """
+    return counted(size, size, abstain, held)
+
+
 def required(size, tier="normal", share=None):
-    """How many yes votes carry a roster of this size.
+    """How many yes votes carry a count of this size.
 
-    `share` is the house's own figure for *this* tier, from `share_for`;
-    None falls back to the tier's shipped share.
+    `size` is whatever the share is counted against -- the roster, or the
+    votes cast where the house counts that way. `share` is the house's own
+    figure for *this* tier, from `share_for`; None falls back to the tier's
+    shipped share.
 
-    Never returns more than the roster holds, so a threshold can't become
-    unreachable, and never less than a majority, so a supermajority tier can
-    never ask for fewer votes than an ordinary one.
+    Never returns more than the count holds, so a threshold can't become
+    unreachable, and never less than a majority. The floor keeps a
+    supermajority tier from asking for fewer votes than an ordinary one,
+    and it binds the ordinary tier's own share as well: a bar below half
+    means a proposal carrying while more of the count is against it than
+    for it, and -- since a vote ends the moment it is decided -- carrying
+    before the rest of them were ever asked. So the shares stop at a half
+    and a house that wants an easier bar counts against turnout instead,
+    which is a rule that says out loud what it does.
     """
     if size <= 0:
         return 1
